@@ -1,0 +1,12 @@
+services:
+  orca:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      ORCA_DEMAND: ${ORCA_DEMAND:-tlc}            # real NYC TLC trips, prepared during the image build
+      ORCA_DB: /app/backend/ledger/orca.db        # keep trip history across restarts
+    volumes:
+      - orca-ledger:/app/backend/ledger
+    restart: unless-stopped
+volumes:
+  orca-ledger:

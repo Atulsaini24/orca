@@ -1,0 +1,17 @@
+.venv/
+backend/.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+backend/data/*
+!backend/data/.gitkeep
+build-test/
+.pytest_cache/
+web/node_modules/
+web/dist/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db

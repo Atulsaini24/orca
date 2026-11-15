@@ -1,0 +1,7 @@
+web/node_modules
+web/dist
+backend/data/*.parquet
+backend/data/taxi_zones*
+backend/.venv
+build-test
+**/__pycache__

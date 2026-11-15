@@ -1,0 +1,126 @@
+{
+  "config": {
+    "minutes": 45,
+    "seeds": [
+      1,
+      2
+    ],
+    "fleet": 1200,
+    "demand": "tlc",
+    "data": "C:\\Users\\Tuff\\Downloads\\orca-repo\\backend\\data\\nyc_tlc_2015-01_manhattan.parquet"
+  },
+  "rows": [
+    {
+      "scenario": "steady",
+      "seed": 1,
+      "nearest": {
+        "mean": 72.40969162995594,
+        "p50": 59.0,
+        "p95": 192.0,
+        "served": 3859,
+        "lost": 0,
+        "reoffers": 1218
+      },
+      "orca_heuristic": {
+        "mean": 39.25506800102643,
+        "p50": 30.0,
+        "p95": 102.0,
+        "served": 3897,
+        "lost": 0,
+        "reoffers": 928
+      },
+      "orca_learned": {
+        "mean": 38.18477703741671,
+        "p50": 29.0,
+        "p95": 94.0,
+        "served": 3902,
+        "lost": 0,
+        "reoffers": 864
+      }
+    },
+    {
+      "scenario": "steady",
+      "seed": 2,
+      "nearest": {
+        "mean": 76.07825643640071,
+        "p50": 65.0,
+        "p95": 185.0,
+        "served": 3923,
+        "lost": 0,
+        "reoffers": 1150
+      },
+      "orca_heuristic": {
+        "mean": 40.21901443504231,
+        "p50": 32.0,
+        "p95": 97.14999999999964,
+        "served": 4018,
+        "lost": 0,
+        "reoffers": 959
+      },
+      "orca_learned": {
+        "mean": 40.36406796601699,
+        "p50": 33.0,
+        "p95": 97.0,
+        "served": 4002,
+        "lost": 0,
+        "reoffers": 906
+      }
+    },
+    {
+      "scenario": "stress",
+      "seed": 1,
+      "nearest": {
+        "mean": 149.3980492336275,
+        "p50": 93.0,
+        "p95": 485.0,
+        "served": 4306,
+        "lost": 10,
+        "reoffers": 4218
+      },
+      "orca_heuristic": {
+        "mean": 90.89675650982184,
+        "p50": 49.0,
+        "p95": 338.14999999999964,
+        "served": 4378,
+        "lost": 23,
+        "reoffers": 1282
+      },
+      "orca_learned": {
+        "mean": 94.06494986326345,
+        "p50": 49.0,
+        "p95": 363.0,
+        "served": 4388,
+        "lost": 17,
+        "reoffers": 1248
+      }
+    },
+    {
+      "scenario": "stress",
+      "seed": 2,
+      "nearest": {
+        "mean": 153.73017723880596,
+        "p50": 107.0,
+        "p95": 473.0,
+        "served": 4288,
+        "lost": 18,
+        "reoffers": 3949
+      },
+      "orca_heuristic": {
+        "mean": 85.55725534308212,
+        "p50": 51.0,
+        "p95": 320.0,
+        "served": 4445,
+        "lost": 4,
+        "reoffers": 1149
+      },
+      "orca_learned": {
+        "mean": 86.8861587015329,
+        "p50": 51.0,
+        "p95": 329.5,
+        "served": 4436,
+        "lost": 4,
+        "reoffers": 1141
+      }
+    }
+  ]
+}

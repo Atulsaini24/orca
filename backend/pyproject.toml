@@ -1,0 +1,32 @@
+[project]
+name = "orca-dispatch"
+version = "0.3.0"
+description = "ORCA: real-time dispatch engine with learned ETA, acceptance and demand models"
+requires-python = ">=3.10"
+dependencies = [
+  "pyarrow>=14",
+  "starlette>=0.37",
+  "uvicorn>=0.29",
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "joblib>=1.3",
+  "threadpoolctl>=3.2",
+]
+
+[project.optional-dependencies]
+data = ["pyarrow>=14"]                 # read NYC TLC Parquet files
+dev = ["pytest>=8", "requests>=2.31", "matplotlib>=3.8"]
+video = ["playwright>=1.45", "imageio-ffmpeg>=0.5", "gTTS>=2.5"]   # tools/make_tour_video.py (edge-tts optional, for a neural voice)
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["orca*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
