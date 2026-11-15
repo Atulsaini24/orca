@@ -1,0 +1,514 @@
+{
+  "params": {
+    "REOFFER": 84.731,
+    "COVER": 0.987,
+    "ZONE_SLOPE": 9.063,
+    "ZONE_CAP": 137.217,
+    "URGENT_W": 0.341,
+    "WAIT_W": 0.202,
+    "K": 8
+  },
+  "objective": "mean wait over steady + stress runs, +900 s per rider lost",
+  "tuning_seeds": [
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109
+  ],
+  "defaults": {
+    "REOFFER": 45.0,
+    "COVER": 0.5,
+    "ZONE_SLOPE": 20.0,
+    "ZONE_CAP": 60.0,
+    "URGENT_W": 0.55,
+    "WAIT_W": 0.25,
+    "K": 10
+  },
+  "final_round": {
+    "best": {
+      "params": {
+        "REOFFER": 84.731,
+        "COVER": 0.987,
+        "ZONE_SLOPE": 9.063,
+        "ZONE_CAP": 137.217,
+        "URGENT_W": 0.341,
+        "WAIT_W": 0.202,
+        "K": 8
+      },
+      "score": 153.71786016071562
+    },
+    "defaults": {
+      "params": {
+        "REOFFER": 45.0,
+        "COVER": 0.5,
+        "ZONE_SLOPE": 20.0,
+        "ZONE_CAP": 60.0,
+        "URGENT_W": 0.55,
+        "WAIT_W": 0.25,
+        "K": 10
+      },
+      "score": 164.6663458777737
+    },
+    "improvement": 0.06648890918600192
+  },
+  "rounds": [
+    [
+      {
+        "params": {
+          "REOFFER": 19.424,
+          "COVER": 0.871,
+          "ZONE_SLOPE": 24.969,
+          "ZONE_CAP": 77.314,
+          "URGENT_W": 0.569,
+          "WAIT_W": 0.598,
+          "K": 16
+        },
+        "score": 129.48564560222889
+      },
+      {
+        "params": {
+          "REOFFER": 55.492,
+          "COVER": 1.127,
+          "ZONE_SLOPE": 14.935,
+          "ZONE_CAP": 162.907,
+          "URGENT_W": 0.65,
+          "WAIT_W": 0.255,
+          "K": 12
+        },
+        "score": 130.5366865917162
+      },
+      {
+        "params": {
+          "REOFFER": 118.783,
+          "COVER": 1.149,
+          "ZONE_SLOPE": 15.683,
+          "ZONE_CAP": 105.703,
+          "URGENT_W": 0.648,
+          "WAIT_W": 0.318,
+          "K": 14
+        },
+        "score": 131.81488931020564
+      },
+      {
+        "params": {
+          "REOFFER": 26.51,
+          "COVER": 0.903,
+          "ZONE_SLOPE": 52.18,
+          "ZONE_CAP": 26.427,
+          "URGENT_W": 0.905,
+          "WAIT_W": 0.036,
+          "K": 10
+        },
+        "score": 132.05623798911535
+      },
+      {
+        "params": {
+          "REOFFER": 84.731,
+          "COVER": 0.987,
+          "ZONE_SLOPE": 9.063,
+          "ZONE_CAP": 137.217,
+          "URGENT_W": 0.341,
+          "WAIT_W": 0.202,
+          "K": 8
+        },
+        "score": 132.4853312521627
+      },
+      {
+        "params": {
+          "REOFFER": 62.402,
+          "COVER": 0.85,
+          "ZONE_SLOPE": 27.665,
+          "ZONE_CAP": 47.006,
+          "URGENT_W": 0.395,
+          "WAIT_W": 0.433,
+          "K": 11
+        },
+        "score": 132.5206893002652
+      },
+      {
+        "params": {
+          "REOFFER": 38.264,
+          "COVER": 0.996,
+          "ZONE_SLOPE": 8.869,
+          "ZONE_CAP": 22.422,
+          "URGENT_W": 0.583,
+          "WAIT_W": 0.119,
+          "K": 7
+        },
+        "score": 132.6768046029399
+      },
+      {
+        "params": {
+          "REOFFER": 95.452,
+          "COVER": 1.022,
+          "ZONE_SLOPE": 16.48,
+          "ZONE_CAP": 33.325,
+          "URGENT_W": 0.861,
+          "WAIT_W": 0.554,
+          "K": 9
+        },
+        "score": 132.7183951823697
+      },
+      {
+        "params": {
+          "REOFFER": 47.331,
+          "COVER": 0.794,
+          "ZONE_SLOPE": 41.156,
+          "ZONE_CAP": 27.533,
+          "URGENT_W": 0.585,
+          "WAIT_W": 0.546,
+          "K": 6
+        },
+        "score": 133.002329656975
+      },
+      {
+        "params": {
+          "REOFFER": 35.527,
+          "COVER": 0.934,
+          "ZONE_SLOPE": 29.27,
+          "ZONE_CAP": 155.039,
+          "URGENT_W": 0.38,
+          "WAIT_W": 0.437,
+          "K": 15
+        },
+        "score": 133.2839685747911
+      },
+      {
+        "params": {
+          "REOFFER": 82.998,
+          "COVER": 0.615,
+          "ZONE_SLOPE": 39.308,
+          "ZONE_CAP": 20.442,
+          "URGENT_W": 0.556,
+          "WAIT_W": 0.047,
+          "K": 13
+        },
+        "score": 133.8276479368903
+      },
+      {
+        "params": {
+          "REOFFER": 17.231,
+          "COVER": 0.544,
+          "ZONE_SLOPE": 14.566,
+          "ZONE_CAP": 167.066,
+          "URGENT_W": 0.694,
+          "WAIT_W": 0.155,
+          "K": 8
+        },
+        "score": 134.1500185753931
+      },
+      {
+        "params": {
+          "REOFFER": 46.004,
+          "COVER": 0.643,
+          "ZONE_SLOPE": 50.548,
+          "ZONE_CAP": 21.862,
+          "URGENT_W": 0.812,
+          "WAIT_W": 0.369,
+          "K": 6
+        },
+        "score": 134.31135836851533
+      },
+      {
+        "params": {
+          "REOFFER": 28.594,
+          "COVER": 0.686,
+          "ZONE_SLOPE": 45.592,
+          "ZONE_CAP": 155.716,
+          "URGENT_W": 0.55,
+          "WAIT_W": 0.343,
+          "K": 9
+        },
+        "score": 134.80255893812193
+      },
+      {
+        "params": {
+          "REOFFER": 68.374,
+          "COVER": 0.744,
+          "ZONE_SLOPE": 51.06,
+          "ZONE_CAP": 120.103,
+          "URGENT_W": 0.302,
+          "WAIT_W": 0.514,
+          "K": 6
+        },
+        "score": 134.8802748639977
+      },
+      {
+        "params": {
+          "REOFFER": 50.14,
+          "COVER": 0.499,
+          "ZONE_SLOPE": 26.557,
+          "ZONE_CAP": 31.004,
+          "URGENT_W": 0.959,
+          "WAIT_W": 0.219,
+          "K": 7
+        },
+        "score": 134.980929310834
+      },
+      {
+        "params": {
+          "REOFFER": 48.112,
+          "COVER": 0.488,
+          "ZONE_SLOPE": 13.95,
+          "ZONE_CAP": 120.702,
+          "URGENT_W": 0.739,
+          "WAIT_W": 0.575,
+          "K": 10
+        },
+        "score": 135.3300515473016
+      },
+      {
+        "params": {
+          "REOFFER": 95.092,
+          "COVER": 0.426,
+          "ZONE_SLOPE": 6.814,
+          "ZONE_CAP": 37.685,
+          "URGENT_W": 0.71,
+          "WAIT_W": 0.332,
+          "K": 14
+        },
+        "score": 136.53200066957152
+      },
+      {
+        "params": {
+          "REOFFER": 51.618,
+          "COVER": 0.538,
+          "ZONE_SLOPE": 13.231,
+          "ZONE_CAP": 141.438,
+          "URGENT_W": 0.459,
+          "WAIT_W": 0.374,
+          "K": 7
+        },
+        "score": 137.16602668813596
+      },
+      {
+        "params": {
+          "REOFFER": 45.0,
+          "COVER": 0.5,
+          "ZONE_SLOPE": 20.0,
+          "ZONE_CAP": 60.0,
+          "URGENT_W": 0.55,
+          "WAIT_W": 0.25,
+          "K": 10
+        },
+        "score": 137.19330698711238
+      },
+      {
+        "params": {
+          "REOFFER": 66.929,
+          "COVER": 0.216,
+          "ZONE_SLOPE": 32.88,
+          "ZONE_CAP": 61.706,
+          "URGENT_W": 0.95,
+          "WAIT_W": 0.04,
+          "K": 14
+        },
+        "score": 137.54289877507458
+      },
+      {
+        "params": {
+          "REOFFER": 56.406,
+          "COVER": 0.47,
+          "ZONE_SLOPE": 5.536,
+          "ZONE_CAP": 20.74,
+          "URGENT_W": 0.869,
+          "WAIT_W": 0.548,
+          "K": 12
+        },
+        "score": 137.62062996613338
+      },
+      {
+        "params": {
+          "REOFFER": 112.258,
+          "COVER": 0.215,
+          "ZONE_SLOPE": 42.756,
+          "ZONE_CAP": 172.714,
+          "URGENT_W": 0.97,
+          "WAIT_W": 0.089,
+          "K": 16
+        },
+        "score": 140.1201385327338
+      },
+      {
+        "params": {
+          "REOFFER": 68.397,
+          "COVER": 0.376,
+          "ZONE_SLOPE": 42.707,
+          "ZONE_CAP": 65.723,
+          "URGENT_W": 0.51,
+          "WAIT_W": 0.254,
+          "K": 6
+        },
+        "score": 141.34869601646892
+      }
+    ],
+    [
+      {
+        "params": {
+          "REOFFER": 62.402,
+          "COVER": 0.85,
+          "ZONE_SLOPE": 27.665,
+          "ZONE_CAP": 47.006,
+          "URGENT_W": 0.395,
+          "WAIT_W": 0.433,
+          "K": 11
+        },
+        "score": 128.99182860036737
+      },
+      {
+        "params": {
+          "REOFFER": 95.452,
+          "COVER": 1.022,
+          "ZONE_SLOPE": 16.48,
+          "ZONE_CAP": 33.325,
+          "URGENT_W": 0.861,
+          "WAIT_W": 0.554,
+          "K": 9
+        },
+        "score": 129.63298131931322
+      },
+      {
+        "params": {
+          "REOFFER": 84.731,
+          "COVER": 0.987,
+          "ZONE_SLOPE": 9.063,
+          "ZONE_CAP": 137.217,
+          "URGENT_W": 0.341,
+          "WAIT_W": 0.202,
+          "K": 8
+        },
+        "score": 130.02926168280786
+      },
+      {
+        "params": {
+          "REOFFER": 45.0,
+          "COVER": 0.5,
+          "ZONE_SLOPE": 20.0,
+          "ZONE_CAP": 60.0,
+          "URGENT_W": 0.55,
+          "WAIT_W": 0.25,
+          "K": 10
+        },
+        "score": 131.15791442417677
+      },
+      {
+        "params": {
+          "REOFFER": 19.424,
+          "COVER": 0.871,
+          "ZONE_SLOPE": 24.969,
+          "ZONE_CAP": 77.314,
+          "URGENT_W": 0.569,
+          "WAIT_W": 0.598,
+          "K": 16
+        },
+        "score": 131.18997087484658
+      },
+      {
+        "params": {
+          "REOFFER": 55.492,
+          "COVER": 1.127,
+          "ZONE_SLOPE": 14.935,
+          "ZONE_CAP": 162.907,
+          "URGENT_W": 0.65,
+          "WAIT_W": 0.255,
+          "K": 12
+        },
+        "score": 131.19781424835762
+      },
+      {
+        "params": {
+          "REOFFER": 26.51,
+          "COVER": 0.903,
+          "ZONE_SLOPE": 52.18,
+          "ZONE_CAP": 26.427,
+          "URGENT_W": 0.905,
+          "WAIT_W": 0.036,
+          "K": 10
+        },
+        "score": 131.78297626869872
+      },
+      {
+        "params": {
+          "REOFFER": 118.783,
+          "COVER": 1.149,
+          "ZONE_SLOPE": 15.683,
+          "ZONE_CAP": 105.703,
+          "URGENT_W": 0.648,
+          "WAIT_W": 0.318,
+          "K": 14
+        },
+        "score": 131.85127516499986
+      },
+      {
+        "params": {
+          "REOFFER": 38.264,
+          "COVER": 0.996,
+          "ZONE_SLOPE": 8.869,
+          "ZONE_CAP": 22.422,
+          "URGENT_W": 0.583,
+          "WAIT_W": 0.119,
+          "K": 7
+        },
+        "score": 132.24306568705498
+      }
+    ],
+    [
+      {
+        "params": {
+          "REOFFER": 84.731,
+          "COVER": 0.987,
+          "ZONE_SLOPE": 9.063,
+          "ZONE_CAP": 137.217,
+          "URGENT_W": 0.341,
+          "WAIT_W": 0.202,
+          "K": 8
+        },
+        "score": 153.71786016071562
+      },
+      {
+        "params": {
+          "REOFFER": 95.452,
+          "COVER": 1.022,
+          "ZONE_SLOPE": 16.48,
+          "ZONE_CAP": 33.325,
+          "URGENT_W": 0.861,
+          "WAIT_W": 0.554,
+          "K": 9
+        },
+        "score": 154.25337873229128
+      },
+      {
+        "params": {
+          "REOFFER": 62.402,
+          "COVER": 0.85,
+          "ZONE_SLOPE": 27.665,
+          "ZONE_CAP": 47.006,
+          "URGENT_W": 0.395,
+          "WAIT_W": 0.433,
+          "K": 11
+        },
+        "score": 158.09049948681658
+      },
+      {
+        "params": {
+          "REOFFER": 45.0,
+          "COVER": 0.5,
+          "ZONE_SLOPE": 20.0,
+          "ZONE_CAP": 60.0,
+          "URGENT_W": 0.55,
+          "WAIT_W": 0.25,
+          "K": 10
+        },
+        "score": 164.6663458777737
+      }
+    ]
+  ],
+  "tuned_at": "2026-11-16 02:23",
+  "seconds": 863,
+  "city": "manhattan"
+}

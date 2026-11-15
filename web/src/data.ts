@@ -2,10 +2,12 @@
 // the benchmark (python -m orca.bench), the model metrics (python -m orca.train)
 // and the real-data profile (scripts/prepare_tlc.py). Nothing is typed in by hand.
 import benchmark from '../../docs/benchmark.json';
-import etaMetrics from '../../backend/artifacts/eta_metrics.json';
-import demandMetrics from '../../backend/artifacts/demand_tlc_metrics.json';
+import etaMetrics from '../../backend/artifacts/eta_metrics_manhattan.json';
+import demandMetrics from '../../backend/artifacts/demand_tlc_metrics_manhattan.json';
 import traffic from '../../backend/artifacts/nyc_traffic_profile.json';
 import etaReal from '../../backend/artifacts/eta_real_metrics.json';
+import cityMeta from '../../backend/artifacts/city_manhattan.json';
+import speedCal from '../../backend/artifacts/speed_calibration_manhattan.json';
 
 export type Policy = 'nearest' | 'orca_heuristic' | 'orca_learned' | 'orca_untuned';
 type Stats = { mean: number; p50: number; p95: number; served: number; lost: number; reoffers: number };
@@ -52,7 +54,8 @@ const pick = (rs: Metric[], needle: string) => rs.find((r) => r.model.toLowerCas
 const eta = etaMetrics as { results: Metric[]; n_train: number; n_test: number };
 const dem = demandMetrics as { results: Metric[]; n_train: number; n_test: number };
 export const models = {
-  eta: { n: eta.n_train + eta.n_test, base: pick(eta.results, 'free-flow'), heur: pick(eta.results, 'heuristic'), ours: pick(eta.results, 'gradient') },
+  // free-flow is omitted: the observed-speed heuristic is the meaningful baseline on real streets
+  eta: { n: eta.n_train + eta.n_test, base: undefined as Metric | undefined, heur: pick(eta.results, 'heuristic'), ours: pick(eta.results, 'gradient') },
   demand: { n: dem.n_train + dem.n_test, base: pick(dem.results, 'ewma'), naive: pick(dem.results, 'last minute'), ours: pick(dem.results, 'gradient') },
 };
 
@@ -67,3 +70,12 @@ export const realData = traffic as {
 
 export const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
 export const fmtM = (n: number) => `${(n / 1e6).toFixed(1)}M`;
+
+/** The real street network and skyline the simulation runs on (scripts/build_streets.py, build_buildings.py). */
+export const cityFacts = cityMeta as {
+  intersections: number; segments: number; zones: number; street_km: number; one_way_share: number;
+  width_km: number; length_km: number; buildings?: number; tallest_m?: number; median_height_m?: number; buildings_over_150m?: number;
+};
+/** Street speeds fitted to real trip times (python -m orca.calibrate). */
+export const calibration = speedCal as { speed_scale: number; trips: number; median_real_s: number; median_sim_s_after: number;
+  median_abs_err_s_after: number; corr: number };

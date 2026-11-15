@@ -2,7 +2,13 @@
 // ORCA control room: data sources, live drawing, input, console and guided tour.
 // Bundled after sim.js (engine), gl.js (renderer) and city.js (model).
 // =============================================================================
-const W = CFG.W, ZN = CFG.ZONES * CFG.ZONES, MAX_AGENTS = 4000, MAX_REQ = 5000;
+const CITY0 = city(), WX = CITY0.WX, WZ = CITY0.WZ, W = Math.max(WX, WZ), ZN = CITY0.N, MAX_AGENTS = 4000, MAX_REQ = 5000;
+const STREETS = CITY0.name === 'manhattan';
+// Camera targets at real places (by taxi zone) in Manhattan, or fractions of the grid city.
+const place = (name, fx, fz) => {
+  if (STREETS) { const i = CITY0.zones.findIndex((z) => z.name === name); if (i >= 0) { const [x, z] = CITY0.zoneCenter(i); return [x, 0, z]; } }
+  return [W * fx, 0, W * fz];
+};
 const $ = (s) => document.querySelector(s);
 const QS = new URLSearchParams(location.search);
 const CAPTURE = QS.has('capture');
@@ -32,7 +38,7 @@ class DemoSource extends Emitter {
     w.demandMult = this.demand;
     w.listeners.push((e) => { e.seq = ++this.seq; });
     w.log('sys', `Engine started in this browser with ${fmtInt(this.fleet)} cars per dispatcher.`);
-    if (REAL) w.log('data', `Replaying real NYC taxi demand: ${REAL.source}. Hourly rate and traffic speed are measured; ${fmtInt(REAL.n)} sampled trips give the pickup and dropoff spots.`);
+    if (REAL_ALL && REAL_ALL.city === CITY0.name) w.log('data', `Replaying real NYC taxi demand: ${REAL_ALL.source}. Hourly rate and traffic speed are measured; ${fmtInt(REAL_ALL.n)} sampled trips give the pickup and dropoff spots.`);
     for (let i = 0; i < 540; i++) this.sim.step(1);
   }
   start() { this.emit('status', 'demo'); this.emit('summary', this.summary()); }
@@ -47,7 +53,7 @@ class DemoSource extends Emitter {
     for (let i = 0; i < ag.length; i++) {
       const a = ag[i];
       b.x[i] = a.x; b.z[i] = a.z;
-      b.h[i] = a.hz > 0 ? 0 : a.hx > 0 ? 1 : a.hz < 0 ? 2 : 3;
+      b.h[i] = Math.round((Math.atan2(a.hx, a.hz) / (Math.PI * 2)) * 256) & 255;
       b.s[i] = a.offlineUntil >= t ? 5 : a.state === 'idle' ? (a.rebal ? 1 : 0) : a.state === 'offered' ? 2 : a.state === 'pickup' ? 3 : 4;
       if (a.rs && a.state !== 'idle') { const r = a.rs.r; b.tx[i] = a.state === 'trip' ? r.dx : r.x; b.tz[i] = a.state === 'trip' ? r.dz : r.z; }
       else { b.tx[i] = -1; b.tz[i] = -1; }
@@ -71,10 +77,10 @@ class DemoSource extends Emitter {
       zones: { smart: this.zoneMeans(sm), base: this.zoneMeans(s.base) }, hist: { smart: Array.from(sm.hist), base: Array.from(s.base.hist) },
       fx: { outages: w.outages.map((o) => [o.x, o.z, o.r, o.id]), accidents: w.blobs.filter((b) => b.accident).map((b) => [b.x, b.z, b.r]),
         spikes: w.hotspots.filter((h) => h.spike).map((h) => [h.x, h.z, h.s * 1.6]) },
-      heat: w.heat, heatScale: 1,
+      heat: w.heat, heatScale: 1, heat_w: w.HEAT_W, heat_h: w.HEAT_H,
       notable: rec ? { ...rec, zone_name: zoneName(rec.zone), timeline: this.timeline(rec.id) } : null,
       events: w.events.slice(-40).map((e) => ({ seq: e.seq || 0, clock: e.clock, type: e.type, msg: e.msg })),
-      engine: { speed: this.speed, paused: this.paused, fleet: sm.agents.length, demand: REAL ? 'real NYC TLC taxi trips' : 'synthetic city demand', eta_model: 'stand-in', forecaster: 'EWMA with trend', solver: 'greedy' },
+      engine: { speed: this.speed, paused: this.paused, fleet: sm.agents.length, demand: (REAL || (REAL_ALL && REAL_ALL.city === CITY0.name)) ? 'real NYC TLC taxi trips' : 'synthetic city demand', eta_model: 'stand-in', forecaster: 'EWMA with trend', solver: 'greedy' },
     };
   }
   async explain(id) {
@@ -143,7 +149,11 @@ async function pickSource() {
   try {
     const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 1500);
     const r = await fetch('/api/health', { signal: ctl.signal, cache: 'no-store' }); clearTimeout(to);
-    if (r.ok) { const h = await r.json(); if (h && h.mode === 'live') return new LiveSource(h); }
+    if (r.ok) {
+      const h = await r.json();
+      if (h && h.city && h.city !== CITY0.name && !QS.has('city')) { location.search = `?city=${h.city}`; return new Promise(() => {}); }
+      if (h && h.mode === 'live') return new LiveSource(h);
+    }
   } catch (e) { /* no server: run the demo */ }
   return new DemoSource();
 }
@@ -160,7 +170,7 @@ try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, pcf: 1 } : {}); } c
 const DPR = CAPTURE ? 1 : Math.min(devicePixelRatio || 1, 2);
 const sunDir = (() => { const v = [-0.62, 0.5, 0.48], l = Math.hypot(...v); return v.map((x) => x / l); })();
 R.light = { dir: sunDir, color: [2.9, 2.72, 2.45], sky: [0.44, 0.50, 0.60], ground: [0.32, 0.30, 0.29] };
-R.fog = [0.905, 0.922, 0.94]; R.skyTop = [0.80, 0.85, 0.91]; R.fogRange = [560, 1500]; R.exposure = 0.62; R.ao = 0.42;
+R.fog = [0.905, 0.922, 0.94]; R.skyTop = [0.80, 0.85, 0.91]; R.fogRange = STREETS ? [900, 2600] : [560, 1500]; R.exposure = 0.62; R.ao = 0.42;
 buildCity(R);
 
 const cars = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, cast: true, order: 4 });
@@ -172,20 +182,25 @@ const jobLines = R.lines(9000, { order: 1 });
 const fxLines = R.lines(6000, { order: 2, depth: false });
 const discs = R.mesh(new Geo().ring(0, 1, 72, [1, 1, 1]), 24, { dynamic: true, unlit: true, alpha: true, order: 5, depthWrite: false });
 const exLines = R.lines(64, { order: 3, depth: false });
-const HN = 54, heatPix = new Uint8Array(HN * HN * 4), heatTex = R.heatTexture(HN);
-R.planes.push({ tex: heatTex, rect: new Float32Array([0, 0, W, W]), y: 0.48, alpha: 0.9, visible: true });
+const HCELL = W / 54, HW = Math.ceil(WX / HCELL), HH = Math.ceil(WZ / HCELL);
+const heatPix = new Uint8Array(HW * HH * 4), heatTex = R.heatTexture(HW, HH);
+R.planes.push({ tex: heatTex, rect: new Float32Array([0, 0, HW * HCELL, HH * HCELL]), y: 0.48, alpha: 0.9, visible: true });
 
 const STATE_COLORS = ['#737B86', '#7FB0C8', '#FF7A00', '#FFC20A', '#2D5BE3', '#E5352B'].map(srgb);
 const C_WAIT0 = srgb('#15171A'), C_WAIT1 = srgb('#E5352B'), C_OFFER = srgb('#FF7A00'), C_ASSIGNED = srgb('#C79200'), C_P1 = srgb('#E5352B');
 const LINE_COL = { 2: [1.0, 0.48, 0.0, 0.9], 3: [0.69, 0.5, 0.0, 0.85], 4: [0.18, 0.36, 0.89, 0.28] };
-const HEAD_ANGLE = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+const headAngle = (h) => (h / 256) * Math.PI * 2;
+let CAR_K = 1.25;                                   // car and ring scale; adapts to zoom on the real map
 
 // ----------------------------------------------------------------------------- camera + resize
-const cam = new OrbitCam([W / 2, 0, W / 2 + 6], 0.62, 1.45, 520);
-cam.limits.cx = W / 2; cam.limits.cz = W / 2; cam.limits.bound = W / 2 + 60;
-cam.lightCenter = [W / 2, 0, W / 2]; cam.lightRadius = 200;
+const HOME_T = STREETS ? place('Midtown North') : [W / 2, 0, W / 2 + 6];
+const cam = new OrbitCam(HOME_T, 0.62, 1.45, STREETS ? 900 : 520);
+cam.limits.cx = WX / 2; cam.limits.cz = WZ / 2; cam.limits.bound = W / 2 + 60;
+cam.limits.boundX = WX / 2 + 60; cam.limits.boundZ = WZ / 2 + 60;
+if (STREETS) cam.limits.distMax = 1300;
+cam.lightCenter = [WX / 2, 0, WZ / 2]; cam.lightRadius = STREETS ? 260 : 200;
 const VIEWS = {
-  home: { t: [W / 2, 0, W / 2 + 6], yaw: 0.62, pitch: 0.72, dist: 340 },
+  home: { t: HOME_T, yaw: STREETS ? 0.55 : 0.62, pitch: STREETS ? 0.66 : 0.72, dist: STREETS ? 520 : 340 },
   top: { pitch: 1.5 },
 };
 let viewW = 1, viewH = 1;
@@ -223,6 +238,7 @@ function onFrame(f) {
 let clock = 0;
 function drawFrame(dt) {
   const f = curF; if (!f) return;
+  CAR_K = STREETS ? Math.max(0.32, Math.min(1.25, cam.dist / 380)) : 1.25;
   const A = f.agents, n = f.n, P = prevF ? prevF.agents : null;
   const alpha = P ? clamp01((clock - recvAt) / 0.105) : 1;
   const turn = 1 - Math.exp(-dt * 14);
@@ -230,14 +246,17 @@ function drawFrame(dt) {
   for (let i = 0; i < n; i++) {
     let x = A.x[i], z = A.z[i];
     if (P) { const px = P.x[i], pz = P.z[i]; if (Math.abs(x - px) + Math.abs(z - pz) < 8) { x = px + (x - px) * alpha; z = pz + (z - pz) * alpha; } }
-    const target = HEAD_ANGLE[A.h[i]] || 0;
+    const target = headAngle(A.h[i]);
     if (!angleInit) angle[i] = target;
     else { let d = target - angle[i]; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; angle[i] += d * turn; }
     const st = A.s[i], c = STATE_COLORS[st];
-    cars.set(i, x, 0, z, 1.25, 1.25, 1.25, angle[i], c[0], c[1], c[2], 1);
+    cars.set(i, x, 0, z, CAR_K, CAR_K, CAR_K, angle[i], c[0], c[1], c[2], 1);
     if ((st === 2 || st === 3 || st === 4) && A.tx[i] >= 0) {
       const lc = LINE_COL[st], y = st === 4 ? 0.9 : 1.3;
-      jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : 1.7);
+      // straight lines to far destinations would cross the whole island: on the real map show pickup legs only
+      if (!STREETS || (st !== 4 && Math.hypot(A.tx[i] - x, A.tz[i] - z) < 120)) {
+        jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : 1.7);
+      }
     }
   }
   angleInit = true;
@@ -249,7 +268,7 @@ function drawFrame(dt) {
     if (nr >= MAX_REQ) break;
     const [id, x, z, status, p1, age] = q, w = Math.min(1, age / 600);
     const b = born.get(id) ?? -10, grow = reduceMotion ? 1 : easeOutBack(clamp01((clock - b) / 0.45));
-    let s = (1 + w * 0.8) * grow * (reduceMotion ? 1 : 1 + 0.07 * Math.sin(clock * 4 + id));
+    let s = (1 + w * 0.8) * grow * (reduceMotion ? 1 : 1 + 0.07 * Math.sin(clock * 4 + id)) * (CAR_K / 1.25);
     let c;
     if (status === 2) { s *= 0.55; c = C_ASSIGNED; } else if (status === 1) c = C_OFFER; else if (p1) c = C_P1;
     else c = [C_WAIT0[0] + (C_WAIT1[0] - C_WAIT0[0]) * w, C_WAIT0[1] + (C_WAIT1[1] - C_WAIT0[1]) * w, C_WAIT0[2] + (C_WAIT1[2] - C_WAIT0[2]) * w];
@@ -279,7 +298,15 @@ function drawFx() {
   const disc = (x, z, r, col) => { if (nd < 24) discs.set(nd++, x, 0.7, z, r, 1, r, 0, col[0], col[1], col[2], 0.13 + 0.05 * pulse); };
   const pulse = 0.65 + 0.35 * Math.sin(clock * 3);
   if (view === 'smart') for (const zi of S.deficit) {
-    const zx = zi % CFG.ZONES, zz = Math.floor(zi / CFG.ZONES), Z = CFG.ZSIZE, p = 2.5, y = 1.2, c = [0.78, 0.57, 0.0, 0.75 * pulse];
+    const y = 1.2, c = [0.78, 0.57, 0.0, 0.75 * pulse];
+    if (STREETS) {
+      for (let r = CITY0.zoneRingOff[zi]; r < CITY0.zoneRingOff[zi + 1]; r++) {
+        const a0 = CITY0.ringOff[r], a1 = CITY0.ringOff[r + 1];
+        for (let k = a0; k < a1 - 1; k++) fxLines.seg(CITY0.rx[k], y, CITY0.rz[k], CITY0.rx[k + 1], y, CITY0.rz[k + 1], ...c, 2.2);
+      }
+      continue;
+    }
+    const zx = zi % CFG.ZONES, zz = Math.floor(zi / CFG.ZONES), Z = CFG.ZSIZE, p = 2.5;
     const x0 = zx * Z + p, x1 = (zx + 1) * Z - p, z0 = zz * Z + p, z1 = (zz + 1) * Z - p;
     for (const [a, b, cc, d] of [[x0, z0, x1, z0], [x1, z0, x1, z1], [x1, z1, x0, z1], [x0, z1, x0, z0]]) fxLines.seg(a, y, b, cc, y, d, ...c, 2.2);
   }
@@ -299,7 +326,8 @@ function drawFx() {
 function paintHeat(arr, scale) {
   let mx = 4; for (let i = 0; i < arr.length; i++) if (arr[i] * scale > mx) mx = arr[i] * scale;
   const ST = [[0, 255, 214, 60, 0], [0.35, 255, 200, 40, 60], [0.7, 255, 130, 20, 110], [1, 229, 53, 43, 140]];
-  for (let i = 0; i < HN * HN; i++) {
+  if (arr.length !== HW * HH) return;          // different city on the server: nothing sensible to paint
+  for (let i = 0; i < HW * HH; i++) {
     const v = Math.min(1, (arr[i] * scale) / mx), o = i * 4;
     let k = 1; while (k < ST.length - 1 && v > ST[k][0]) k++;
     const a = ST[k - 1], b = ST[k], f = clamp01((v - a[0]) / (b[0] - a[0]));
@@ -547,6 +575,19 @@ function renderForecast(S) {
       <span class="n">${Math.round(f.forecast)}</span><span class="n idle">${f.idle}</span></div>`).join('');
 }
 const ZCOL = [[244, 241, 230], [255, 216, 77], [255, 154, 46], [229, 53, 43]];
+function zoneSvg(id) {
+  const s = 1 / Math.max(WX, WZ) * 100, paths = [];
+  for (let zi = 0; zi < ZN; zi++) {
+    let d = '';
+    for (let r = CITY0.zoneRingOff[zi]; r < CITY0.zoneRingOff[zi + 1]; r++) {
+      const a0 = CITY0.ringOff[r], a1 = CITY0.ringOff[r + 1];
+      for (let k = a0; k < a1; k += Math.max(1, Math.floor((a1 - a0) / 60))) d += `${k === a0 ? 'M' : 'L'}${(CITY0.rx[k] * s).toFixed(1)} ${(CITY0.rz[k] * s).toFixed(1)}`;
+      d += 'Z';
+    }
+    paths.push(`<path data-z="${zi}" d="${d}"><title>${CITY0.zoneName(zi)}</title></path>`);
+  }
+  return `<svg class="zsvg" id="${id}" viewBox="0 0 ${(WX * s).toFixed(1)} ${(WZ * s).toFixed(1)}" role="img" aria-label="Map of Manhattan's taxi zones">${paths.join('')}</svg>`;
+}
 function zoneColor(v, mx) {
   if (v == null) return '#E9EBEE';
   const t = Math.min(1, v / mx) * 3, i = Math.min(2, Math.floor(t)), f = t - i, a = ZCOL[i], b = ZCOL[i + 1];
@@ -556,8 +597,8 @@ let zonesBuilt = false;
 function renderZones(S) {
   if (!S.zones) { $('#p-zn').innerHTML = '<p class="muted">Zone statistics will appear after the first pickups.</p>'; return; }
   if (!zonesBuilt) {
-    const cells = (id) => `<div class="zmap" id="${id}">${Array.from({ length: ZN }, (_, i) => `<span data-z="${i}"></span>`).join('')}</div>`;
-    $('#p-zn').innerHTML = `<p class="muted" style="margin:0 0 12px">Average wait in each of the 49 zones since the city started, on the same colour scale. North is at the top.</p>
+    const cells = (id) => STREETS ? zoneSvg(id) : `<div class="zmap" id="${id}">${Array.from({ length: ZN }, (_, i) => `<span data-z="${i}"></span>`).join('')}</div>`;
+    $('#p-zn').innerHTML = `<p class="muted" style="margin:0 0 12px">Average wait in each of the ${ZN} ${STREETS ? 'official TLC taxi zones of Manhattan' : 'zones'} since the city started, on the same colour scale. North is at the top.</p>
       <div class="zgrids"><div><h4>ORCA</h4>${cells('zm-a')}</div><div><h4>Nearest car</h4>${cells('zm-b')}</div></div>
       <div class="zscale"><span>0:00</span><i></i><span id="zmax">5:00</span></div>
       <div class="hist"><h4>How long riders waited</h4><div class="hrow" id="hrow"></div><div class="hax"><span>0 min</span><span>3 min</span><span>6+ min</span></div>
@@ -567,7 +608,7 @@ function renderZones(S) {
   const all = [...S.zones.smart, ...S.zones.base].filter((v) => v != null), mx = Math.max(120, ...all);
   $('#zmax').textContent = mmss(mx);
   for (const [id, arr, other, name] of [['#zm-a', S.zones.smart, S.zones.base, 'ORCA'], ['#zm-b', S.zones.base, S.zones.smart, 'Nearest']]) {
-    $(id).querySelectorAll('span').forEach((c, i) => { c.style.background = zoneColor(arr[i], mx); c.title = `${zoneName(i)}: ${arr[i] == null ? 'no pickups yet' : mmss(arr[i])} with ${name}`; });
+    $(id).querySelectorAll('[data-z]').forEach((c, i) => { c.style[STREETS ? 'fill' : 'background'] = zoneColor(arr[i], mx); if (!STREETS) c.title = `${zoneName(i)}: ${arr[i] == null ? 'no pickups yet' : mmss(arr[i])} with ${name}`; });
   }
   const ha = S.hist.smart, hb = S.hist.base, ta = ha.reduce((a, b) => a + b, 0) || 1, tb = hb.reduce((a, b) => a + b, 0) || 1;
   const mh = Math.max(...ha.map((v) => v / ta), ...hb.map((v) => v / tb), 0.01);
@@ -590,7 +631,7 @@ function renderEngine(S) {
   const e = S.engine;
   $('#engine').textContent = src.kind === 'live'
     ? `Connected to the ORCA server, ${fmtInt(e.fleet)} cars per dispatcher, demand from ${e.demand}. ETA model: ${e.eta_model}. Forecast: ${e.forecaster}. Matching: ${e.solver}${e.solve_ms != null ? `, ${e.solve_ms} ms per batch` : ''}.`
-    : `Running in this browser, ${fmtInt(e.fleet)} cars per dispatcher, demand from ${e.demand}${REAL ? ' (a 24,000-trip sample at the real hourly rate)' : ''}. Start the Python server for the trained ETA and demand models and the full 2-million-trip replay.`;
+    : `Running in this browser, ${fmtInt(e.fleet)} cars per dispatcher, demand from ${e.demand}${REAL_ALL && REAL_ALL.city === CITY0.name ? ' (a 24,000-trip sample at the real hourly rate)' : ''}. Start the Python server for the trained ETA and demand models and the full 2-million-trip replay.`;
 }
 function onSummary(S) {
   summary = S;
@@ -664,24 +705,24 @@ function setStatus(s) { $('#mode').classList.toggle('live', s === 'live'); $('#m
 // ----------------------------------------------------------------------------- guided tour (plays like a video)
 // Each chapter: duration, caption, camera move, and what the app does on entry.
 const TOUR = [
-  { dur: 8, t: 'This is ORCA', b: REAL ? 'A live city of 1,200 cars, with ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : 'A live city of 1,200 cars. Every few seconds someone asks for a ride, and a dispatcher has to decide which car goes. ORCA makes that decision.',
-    cam: { t: [W / 2, 0, W / 2 + 6], yaw: 0.35, pitch: 0.95, dist: 420 }, orbit: 0.035 },
+  { dur: 8, t: 'This is ORCA', b: STREETS ? 'Manhattan’s real streets, 1,200 cars, and ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : REAL_ALL ? 'A live city of 1,200 cars, with ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : 'A live city of 1,200 cars. Every few seconds someone asks for a ride, and a dispatcher has to decide which car goes. ORCA makes that decision.',
+    cam: { t: place('Midtown Center', 0.5, 0.52), yaw: 0.35, pitch: 0.95, dist: STREETS ? 560 : 420 }, orbit: 0.035 },
   { dur: 9, t: 'Two dispatchers, one city', b: 'Every request goes to two dispatchers at once. The usual rule sends the nearest car. ORCA decides differently. They share the same requests, traffic and drivers, so any difference comes from the decisions alone.',
-    cam: { t: [W / 2, 0, W / 2], yaw: 0.7, pitch: 0.78, dist: 330 }, spot: '#board', orbit: 0.02 },
+    cam: { t: place('Murray Hill', 0.5, 0.5), yaw: 0.7, pitch: 0.78, dist: STREETS ? 380 : 330 }, spot: '#board', orbit: 0.02 },
   { dur: 9, t: 'Reading the map', b: 'Yellow cars are on their way to a pickup. Blue cars have a rider on board. Grey cars are free. Rings are riders waiting, and red pins mark urgent requests.',
-    cam: { t: [W * 0.7, 0, W * 0.64], yaw: 0.95, pitch: 0.74, dist: 105 }, spot: '.key', orbit: 0.03 },
+    cam: { t: place('Times Sq/Theatre District', 0.7, 0.64), yaw: 0.95, pitch: 0.74, dist: STREETS ? 90 : 105 }, spot: '.key', orbit: 0.03 },
   { dur: 12, t: 'One decision, up close', b: 'ORCA just assigned this request. It scored ten nearby cars on drive time by road, the chance each driver accepts, how fresh its GPS is, and whether taking it leaves a busy zone short.',
     do: 'decision', spot: '#p-why' },
   { dur: 10, t: 'Why not the nearest car?', b: '', do: 'nearest', spot: '#p-why' },
   { dur: 9, t: 'Every 3 seconds, the best match for everyone', b: 'ORCA gathers requests for three seconds and solves them together with the Hungarian algorithm, so one rider\'s best car is not taken by someone who has other good options.',
-    cam: { t: [W / 2, 0, W / 2], yaw: 1.2, pitch: 0.9, dist: 300 }, orbit: 0.03 },
+    cam: { t: place('Union Sq', 0.5, 0.5), yaw: 1.2, pitch: 0.9, dist: STREETS ? 360 : 300 }, orbit: 0.03 },
   { dur: 12, t: 'Breaking the city', b: 'A network outage hits. Cars inside the red circle stop reporting GPS. The nearest-car rule keeps offering rides to cars that cannot answer. ORCA notices the silence and works around it.',
     do: 'outage' },
   { dur: 12, t: 'Seeing demand before it arrives', b: 'Now a demand spike begins. A gradient-boosted model forecasts rides per zone for the next five minutes, and ORCA moves spare cars into zones about to run short, outlined in yellow.',
     do: 'spike', spot: '#p-fc' },
-  { dur: 9, t: 'The result', b: '', do: 'result', spot: '#board', cam: { t: [W / 2, 0, W / 2], yaw: 0.6, pitch: 0.85, dist: 360 }, orbit: 0.02 },
+  { dur: 9, t: 'The result', b: '', do: 'result', spot: '#board', cam: { t: place('Midtown East', 0.5, 0.5), yaw: 0.6, pitch: 0.85, dist: STREETS ? 620 : 360 }, orbit: 0.02 },
   { dur: 10, t: 'How it is built', b: 'A Python engine with scikit-learn models and SciPy matching streams to this page over Server-Sent Events, and a hand-written WebGL2 renderer draws the city. Now try it: switch dispatchers, cause incidents, click any ring.',
-    cam: { t: [W / 2, 0, W / 2 + 6], yaw: 0.62, pitch: 0.72, dist: 340 }, orbit: 0.03 },
+    cam: { ...VIEWS.home }, orbit: 0.03 },
 ];
 const TOUR_TOTAL = TOUR.reduce((a, c) => a + c.dur, 0);
 let touring = false, tourT = 0, tourCh = -1, tourPlaying = false, voice = !CAPTURE, music = !CAPTURE, tourSaved = null;
@@ -792,12 +833,20 @@ function tourTick(dt) {
 }
 
 // ----------------------------------------------------------------------------- main loop (and a deterministic capture mode for recording video)
+function followShadows() {
+  const q = 30, rad = Math.max(140, Math.min(480, Math.round((cam.dist * 0.75) / q) * q));
+  const c = [Math.round(cam.t[0] / q) * q, 0, Math.round(cam.t[2] / q) * q];
+  if (c[0] !== cam.lightCenter[0] || c[2] !== cam.lightCenter[2] || rad !== cam.lightRadius) {
+    cam.lightCenter = c; cam.lightRadius = rad; R.staticDirty = true;
+  }
+}
 function step(dt, draw = true) {
   clock += dt;
   src.tick(dt);
   tourTick(dt);
   keyboardCam(dt);
   cam.update(dt);
+  if (STREETS) followShadows();
   drawFrame(dt); drawFx(); drawExplain();
   if (!touring) { /* gentle idle drift is off: the user owns the camera */ }
   tweenBoard(dt); updateCursor();

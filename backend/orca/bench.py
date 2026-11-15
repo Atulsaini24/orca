@@ -67,6 +67,8 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     a = ap.parse_args()
     t0 = time.time()
+    from . import city as G
+    city = G.use()
     tuned = bool(C.TUNED) and C.TUNED != C.DEFAULTS
     base = dict(minutes=a.minutes, fleet=a.fleet, demand=a.demand, data=a.data)
     specs: list[RunSpec] = []
@@ -110,7 +112,8 @@ def main():
                                         served=int(np.mean([r[k]["served"] for r in day_res])),
                                         lost=int(np.mean([r[k]["lost"] for r in day_res]))) for k in ("orca", "nearest")})
 
-    out = dict(config=dict(minutes=a.minutes, seeds=a.seeds, fleet=a.fleet, demand=a.demand, tuned_weights=tuned,
+    out = dict(config=dict(minutes=a.minutes, seeds=a.seeds, fleet=a.fleet, demand=a.demand, tuned_weights=tuned, city=city.name,
+                           city_label=city.label,
                            weights=dict(C.TUNED) if tuned else dict(C.DEFAULTS)),
                rows=rows_l, summary=summary, tests=tests, full_day=full_day, seconds=round(time.time() - t0))
     DOCS.mkdir(exist_ok=True)

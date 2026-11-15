@@ -63,7 +63,7 @@ class Hub:
 
     def _new_engine(self, opts):
         e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=opts["demand"], data=opts.get("data"),
-                   zones=opts.get("zones"), db=opts.get("db") or ":memory:")
+                   zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=opts.get("city"))
         e.warm_up(opts.get("warm", 540))
         e.speed = opts.get("speed", 20.0)
         return e
@@ -120,6 +120,7 @@ def build_app(opts: dict) -> Starlette:
     async def health(request):
         e = hub.engine
         return JSONResponse(dict(ok=True, mode="live", t=e.world.t, fleet=len(e.smart.agents), demand=e.demand_label(),
+                                 city=e.city.name, city_label=e.city.label,
                                  eta_model=e.smart.eta.kind, forecaster=e.smart.forecaster.kind, speed=e.speed))
 
     async def stream(request: Request):
@@ -238,6 +239,8 @@ def main():
     ap.add_argument("--demand", choices=["synthetic", "tlc"], default=os.environ.get("ORCA_DEMAND", "tlc"))
     ap.add_argument("--data", default=os.environ.get("ORCA_DATA") or str(REAL_DATA))
     ap.add_argument("--zones", default=None)
+    ap.add_argument("--city", choices=["manhattan", "grid"], default=os.environ.get("ORCA_CITY"),
+                    help="street network: Manhattan's real streets (default when built) or the synthetic grid")
     ap.add_argument("--db", default=os.environ.get("ORCA_DB"), help="SQLite file for the trip ledger (default: in memory)")
     a = ap.parse_args()
     if a.demand == "tlc" and not Path(a.data).exists():

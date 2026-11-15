@@ -50,18 +50,19 @@ def apply(params: dict) -> None:
         globals()[k] = round(v) if k == "K" else float(v)
 
 
-def _load_tuned() -> dict:
+def load_tuned(city: str = "grid") -> dict:
+    """Tuned weights for a city (python -m orca.tune), or {} if none; ORCA_PARAMS=default ignores them."""
     import json
     import os
     from pathlib import Path
     if os.environ.get("ORCA_PARAMS") == "default":
         return {}
-    p = Path(__file__).resolve().parents[1] / "artifacts" / "dispatch_params.json"
+    name = "dispatch_params.json" if city == "grid" else f"dispatch_params_{city}.json"
+    p = Path(__file__).resolve().parents[1] / "artifacts" / name
     try:
         return json.loads(p.read_text())["params"]
     except (OSError, ValueError, KeyError):
         return {}
 
 
-TUNED = _load_tuned()
-apply(TUNED)
+TUNED: dict = {}          # set by city.use() for the active city

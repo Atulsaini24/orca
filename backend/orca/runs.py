@@ -30,6 +30,7 @@ class RunSpec:
     fleet: int = 1200
     demand: str = "tlc"
     data: str = str(REAL_DATA)
+    city: str | None = None             # None = the default city (Manhattan's streets when built)
     params: dict | None = None          # scoring weights; None = whatever config loaded (tuned if available)
     start_hour: float | None = None     # simulated clock at the start; None = config.START_CLOCK
     warm: int = 300
@@ -45,13 +46,15 @@ def _stats(waits: list[float], served: int, lost: int, reoffers: int) -> dict:
 
 
 def run(spec: RunSpec) -> dict:
+    from . import city as G
     from . import config as C
+    G.use(spec.city)
     # Workers are reused across runs: always start from the loaded configuration, then override.
     C.apply({**C.DEFAULTS, **C.TUNED, **(spec.params or {})})
     C.START_CLOCK = spec.start_hour * 3600 - spec.warm if spec.start_hour is not None else C.START_DEFAULT
     from .engine import Engine
     e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand,
-               data=spec.data if spec.demand == "tlc" else None)
+               data=spec.data if spec.demand == "tlc" else None, city=spec.city)
     e.warm_up(spec.warm)
     for d in (e.smart, e.base):
         d.m["all"].clear()

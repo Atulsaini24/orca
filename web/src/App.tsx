@@ -5,7 +5,7 @@ import {
 import { useEffect, useState, type ReactNode } from 'react';
 import HeroMap from './components/HeroMap';
 import { BenchmarkChart, FullDayChart, HourlyChart, RealEtaCard } from './components/Charts';
-import { agg, benchConfig, benchTests, cut, cutCI, fmt, fmtM, models, realData } from './data';
+import { agg, benchConfig, benchTests, calibration, cityFacts, cut, cutCI, fmt, models, realData } from './data';
 
 const APP = '/app';
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -97,9 +97,9 @@ function Hero() {
           </Reveal>
           <Reveal delay={0.1}>
             <p className="mt-6 max-w-[34rem] text-[18px] leading-relaxed text-ink-2">
-              ORCA is a real-time dispatch engine for ride-hailing fleets. It scores every car for every rider on drive time,
-              acceptance, GPS health and upcoming demand, then solves the whole city at once. On real New York taxi demand it
-              cuts the average wait by <b className="text-ink">{pct(steady)}</b> against the standard nearest-car rule.
+              ORCA is a real-time dispatch engine for ride-hailing fleets. It scores every car for every rider on drive time by
+              road, acceptance, GPS health and upcoming demand, then solves the whole city at once. On Manhattan’s real streets and
+              real taxi demand it cuts the average wait by <b className="text-ink">{pct(steady)}</b> against the standard nearest-car rule.
             </p>
           </Reveal>
           <Reveal delay={0.15} className="mt-8 flex flex-wrap gap-3">
@@ -111,7 +111,7 @@ function Hero() {
               {[
                 [`${Math.round(agg('steady', 'orca_learned', 'mean'))} s`, 'mean wait with ORCA'],
                 [`${Math.round(agg('steady', 'nearest', 'mean'))} s`, 'with nearest car'],
-                [fmtM(realData.raw_trips), 'real NYC trips ingested'],
+                [fmt(cityFacts.intersections), 'real Manhattan intersections'],
               ].map(([v, l]) => (
                 <div key={l}><dt className="sr-only">{l}</dt><dd className="num wide text-[30px] font-extrabold leading-none">{v}</dd>
                   <p className="mt-2 text-[13px] leading-snug text-ink-3">{l}</p></div>
@@ -205,8 +205,8 @@ function Results() {
               <p className="mt-1 text-[13px] text-ink-3">{fmt(m.n)} examples, tested on data later in time than training · {m.what}</p>
               <table className="num mt-4 w-full text-[15px]">
                 <tbody>
-                  {m.rows.map(([label, v], k) => (
-                    <tr key={k} className={k === m.rows.length - 1 ? 'font-bold' : 'text-ink-2'}>
+                  {m.rows.filter(([label]) => label).map(([label, v], k, shown) => (
+                    <tr key={k} className={k === shown.length - 1 ? 'font-bold' : 'text-ink-2'}>
                       <td className="border-t border-line py-2.5 pr-3 first-letter:uppercase">{label}</td>
                       <td className="border-t border-line py-2.5 text-right">{v != null ? `${(v as number).toFixed(2)}${m.unit && ' ' + m.unit}` : '–'}</td>
                     </tr>
@@ -227,24 +227,27 @@ function RealData() {
       <div className="mx-auto grid max-w-page gap-12 px-5 py-24 md:grid-cols-[0.9fr_1.1fr] md:px-8">
         <Reveal>
           <p className="eyebrow">Real data</p>
-          <h2 className="wide mt-3 text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[44px]">Driven by real New York taxi trips.</h2>
+          <h2 className="wide mt-3 text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[44px]">Real streets, real buildings, real riders.</h2>
           <p className="mt-5 text-[17px] leading-relaxed text-ink-2">
-            Demand is replayed from the official NYC Taxi &amp; Limousine Commission trip records. Each trip is placed inside its real
-            pickup and drop-off taxi-zone polygons, and the city’s road speed follows the real median taxi speed for each hour.
+            Cars drive Manhattan’s actual street network from OpenStreetMap, one-way rules included, past {fmt(cityFacts.buildings ?? 0)} buildings
+            from NYC’s official footprints at their surveyed heights. Riders come from the NYC Taxi &amp; Limousine Commission trip records, and
+            street speeds are fitted to real trip times: the median simulated trip is within {Math.round(Math.abs(calibration.median_sim_s_after - calibration.median_real_s))} s
+            of the median real one.
           </p>
           <dl className="mt-8 grid grid-cols-2 gap-x-6 gap-y-7">
             {[
               [fmt(realData.raw_trips), 'trips in the January 2015 TLC file'],
-              [fmt(realData.kept_trips), 'Manhattan weekday trips kept'],
-              [String(realData.zones), 'official taxi-zone polygons'],
-              [String(realData.days), 'typical weekdays (holidays and the blizzard removed)'],
+              [fmt(realData.kept_trips), 'Manhattan weekday trips replayed'],
+              [`${fmt(cityFacts.street_km)} km`, `of drivable street, ${Math.round(cityFacts.one_way_share * 100)}% of it one-way`],
+              [String(realData.zones), 'official taxi zones, used for forecasting'],
             ].map(([v, l]) => (
               <div key={l}><dd className="num wide text-[28px] font-extrabold leading-none">{v}</dd><dt className="mt-2 text-[14px] leading-snug text-ink-3">{l}</dt></div>
             ))}
           </dl>
           <p className="mt-8 flex items-start gap-2 rounded-xl bg-sky/70 p-4 text-[14px] leading-relaxed text-ink-2">
             <Database size={18} className="mt-0.5 shrink-0" />
-            <span>What is still simulated: the street grid, individual car movement and driver behaviour. No public dataset has live taxi GPS traces.</span>
+            <span>What is still simulated: individual car movement along the streets and driver behaviour (acceptance, response time). No public
+              dataset has live taxi GPS traces. Trips are placed within their real taxi zone, because the TLC publishes zones rather than exact points.</span>
           </p>
         </Reveal>
         <div className="space-y-6"><Reveal delay={0.08}><HourlyChart /></Reveal><Reveal delay={0.1}><RealEtaCard /></Reveal></div>
@@ -279,7 +282,8 @@ function Stack() {
     ['Python 3.12 · Starlette · Uvicorn', 'async API, Server-Sent Events at 10 Hz, Prometheus metrics'],
     ['scikit-learn · SciPy · NumPy · pandas', 'gradient-boosted ETA and demand models, Hungarian matching'],
     ['Apache Arrow / Parquet', 'ingest of the 12.7M-row TLC trip file'],
-    ['Hand-written WebGL2', '3,400 instanced buildings, shadow-mapped sun, up to 4,000 cars'],
+    ['OpenStreetMap · NYC Open Data', `${fmt(cityFacts.intersections)} intersections, ${fmt(cityFacts.buildings ?? 0)} building footprints, own map projection`],
+    ['Hand-written WebGL2', `${fmt(cityFacts.buildings ?? 0)} instanced buildings, camera-following shadow map, up to 4,000 cars`],
     ['React · TypeScript · Vite · Tailwind', 'this home page'],
     ['Docker · SQLite trip ledger', 'one-command deploy, queryable trip history'],
   ];
@@ -303,7 +307,7 @@ function Stack() {
       </div>
       <footer className="mx-auto flex max-w-page flex-wrap items-center justify-between gap-4 border-t border-white/10 px-5 py-8 text-[13px] text-white/50 md:px-8">
         <span className="flex items-center gap-2"><Sparkles size={14} /> ORCA real-time dispatch engine</span>
-        <span>Trip data: NYC Taxi &amp; Limousine Commission. Sound: original score.</span>
+        <span>Streets © OpenStreetMap contributors. Buildings: NYC Open Data. Trips: NYC Taxi &amp; Limousine Commission. Sound: original score.</span>
       </footer>
     </section>
   );

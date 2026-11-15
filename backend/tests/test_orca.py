@@ -1,4 +1,5 @@
 """Correctness tests for routing, dispatch invariants, matching, data loading and the API."""
+import itertools
 import json
 import random
 import struct
@@ -10,28 +11,32 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from orca import city as G
 from orca import config as C
-from orca.city import CELL, is_arterial, on_road, route, snap
+from orca.city import GridCity, is_arterial
 from orca.dispatch import OrcaDispatcher
 from orca.engine import Engine
 
 ROOT = Path(__file__).resolve().parents[1]
+CITIES = ["grid", "manhattan"] if G.STREETS_FILE.exists() else ["grid"]
+
+
+class _Car:
+    def __init__(self, x, z, id_=0):
+        self.x, self.z, self.id, self.route, self.ri, self.node, self.prev_node = x, z, id_, [], 0, -1, -1
 
 
 # ---------------------------------------------------------------------------- routing
-def test_routes_stay_on_roads_and_reach_target():
-    rng = random.Random(0)
+def test_grid_routes_stay_on_roads_and_reach_target():
+    city, rng = GridCity(), random.Random(0)
     for _ in range(2000):
-        if rng.random() < 0.5:
-            x, z = rng.random() * C.W, float(rng.randrange(C.GRID) * CELL)
-        else:
-            x, z = float(rng.randrange(C.GRID) * CELL), rng.random() * C.W
-        tx, tz = snap(rng.random() * C.W), snap(rng.random() * C.W)
-        pts = route(x, z, tx, tz, rng.randrange(1000))
+        x, z = city.random_point(rng)
+        tx, tz = city.snap(rng.random() * city.WX, rng.random() * city.WZ)
+        pts = city.route(_Car(x, z, rng.randrange(1000)), tx, tz)
         px, pz = x, z
-        for wx, wz in pts:
+        for wx, wz, mult, _node in pts:
             assert (wx == px) or (wz == pz), "every leg moves along one axis"
-            assert on_road(wx, wz)
+            assert city.on_road(wx, wz) and mult >= 1.0
             px, pz = wx, wz
         assert (px, pz) == (tx, tz)
 
@@ -41,10 +46,51 @@ def test_arterials():
     assert not is_arterial(3) and not is_arterial(3.5)
 
 
+@pytest.mark.skipif("manhattan" not in CITIES, reason="street network not built (scripts/build_streets.py)")
+def test_street_routes_follow_one_way_streets_to_the_target():
+    city, rng = G.use("manhattan"), random.Random(1)
+    assert city.n > 4000 and city.N_ZONES == 63
+    for _ in range(300):
+        car = _Car(*city.random_point(rng))
+        car.node = city.nearest_node(car.x, car.z)
+        tx, tz = city.random_point(rng)
+        pts = city.route(car, tx, tz)
+        nodes = [car.node] + [n for *_, n in pts if n >= 0]
+        for u, v in itertools.pairwise(nodes):
+            assert (u, v) in city.edge_of, "every hop is a directed street segment (one-way rules respected)"
+        assert nodes[-1] == city.nearest_node(tx, tz)
+        # the route is the fastest one: its free-flow cost equals the shortest-path distance
+        cost = sum(city.length[city.edge_of[(u, v)]] / city.edge_mult[city.edge_of[(u, v)]] for u, v in itertools.pairwise(nodes))
+        assert cost == pytest.approx(city.tree_to(nodes[-1])[0][nodes[0]], rel=1e-6)
+
+
+@pytest.mark.skipif("manhattan" not in CITIES, reason="street network not built")
+def test_real_landmarks_land_in_the_right_taxi_zones():
+    from orca.demand import StreetProjector
+    from orca.geo import to_state_plane
+    city = G.use("manhattan")
+    proj = StreetProjector(city)
+    for lon, lat, zone in [(-73.985664, 40.748440, "Midtown South"), (-73.9654, 40.7829, "Central Park"),
+                           (-74.0134, 40.7127, "World Trade Center"), (-73.9442, 40.8116, "Central Harlem North")]:
+        x, z = proj(*to_state_plane(lon, lat))
+        assert city.zone_names[city.zone_of(float(x), float(z))] == zone
+
+
+@pytest.mark.skipif("manhattan" not in CITIES, reason="street network not built")
+def test_street_cruising_and_eta_tree():
+    city, rng = G.use("manhattan"), random.Random(2)
+    car = _Car(*city.random_point(rng))
+    pts = city.cruise(car, rng)
+    assert len([n for *_, n in pts if n >= 0]) == 3                    # three blocks of random turns
+    cars = [(*city.random_point(rng), city.nearest_node(*city.random_point(rng))) for _ in range(20)]
+    eta = city.eta_many(cars, *city.random_point(rng))
+    assert np.isfinite(eta).all() and (eta >= 0).all()
+
+
 # ---------------------------------------------------------------------------- engine invariants
-@pytest.fixture(scope="module")
-def engine():
-    e = Engine(seed=5, fleet=500, use_learned=False)
+@pytest.fixture(scope="module", params=CITIES)
+def engine(request):
+    e = Engine(seed=5, fleet=500, use_learned=False, city=request.param)
     for i in range(1200):
         e.step(1.0)
         if i == 400:
@@ -121,11 +167,11 @@ def test_timelines_are_ordered(engine):
             checked += 1
         for k in kinds:
             assert k in order
-    assert checked > 50
+    assert checked > (50 if engine.city.name == "grid" else 20)   # real-street trips are longer: fewer finish in 20 min
     s = engine.summary()
     if s["notable"]:
         assert s["notable"]["timeline"][0]["k"] == "request"
-    assert len(s["zones"]["smart"]) == C.ZONES * C.ZONES and len(s["hist"]["base"]) == 12
+    assert len(s["zones"]["smart"]) == engine.city.N_ZONES and len(s["hist"]["base"]) == 12
 
 
 # ---------------------------------------------------------------------------- matching
@@ -162,7 +208,8 @@ def test_hungarian_never_worse_than_greedy():
 
 
 # ---------------------------------------------------------------------------- real-data path
-def test_tlc_loader_and_replay(tmp_path):
+@pytest.mark.parametrize("city", CITIES)
+def test_tlc_loader_and_replay(tmp_path, city):
     p = tmp_path / "trips.csv"
     rng = random.Random(3)
     rows = ["tpep_pickup_datetime,tpep_dropoff_datetime,pickup_longitude,pickup_latitude,dropoff_longitude,dropoff_latitude"]
@@ -172,10 +219,10 @@ def test_tlc_loader_and_replay(tmp_path):
         rows.append(f"2015-01-13 {h:02d}:{m:02d}:00,2015-01-13 {h:02d}:{m:02d}:59,{plon},{plat},{plon + 0.005},{plat + 0.004}")
     rows.append("2015-01-13 10:00:00,2015-01-13 10:10:00,0,0,0,0")              # junk row is filtered
     p.write_text("\n".join(rows))
-    e = Engine(seed=1, fleet=300, demand="tlc", data=str(p), use_learned=False)
-    src = e.world.source
+    e = Engine(seed=1, fleet=300, demand="tlc", data=str(p), use_learned=False, city=city)
+    src, c = e.world.source, e.city
     assert src.n == 3000
-    assert src.px.min() >= 0 and src.px.max() <= C.W and src.pz.min() >= 0 and src.pz.max() <= C.W
+    assert src.px.min() >= 0 and src.px.max() <= c.WX and src.pz.min() >= 0 and src.pz.max() <= c.WZ
     got = 0
     for _ in range(600):
         e.step(1.0)
@@ -188,7 +235,7 @@ REAL = ROOT / "data" / "nyc_tlc_2015-01_manhattan.parquet"
 
 @pytest.mark.skipif(not REAL.exists(), reason="real data not prepared (make data)")
 def test_real_nyc_replay():
-    e = Engine(seed=1, fleet=600, demand="tlc", data=str(REAL), use_learned=False)
+    e = Engine(seed=1, fleet=600, demand="tlc", data=str(REAL), use_learned=False, city=CITIES[-1])
     src = e.world.source
     assert src.n > 1_000_000 and src.days >= 15
     assert e.demand_label() == "real NYC TLC taxi trips"
@@ -243,7 +290,8 @@ def test_zone_centroids_from_shapefile(tmp_path):
 def test_api_end_to_end():
     import requests
     port = 8877
-    proc = subprocess.Popen([sys.executable, "-m", "orca.server", "--port", str(port), "--fleet", "300", "--demand", "synthetic"],
+    proc = subprocess.Popen([sys.executable, "-m", "orca.server", "--port", str(port), "--fleet", "300", "--demand", "synthetic",
+                             "--city", "grid"],
                             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         base = f"http://127.0.0.1:{port}"
@@ -267,7 +315,7 @@ def test_api_end_to_end():
         assert "summary" in events and events.count("frame") >= 5
         assert "orca_requests_served_total" in requests.get(base + "/metrics").text
         an = requests.get(base + "/api/analytics").json()
-        assert set(an) == {"smart", "base"} and len(an["smart"]["zones"]) == 49
+        assert set(an) == {"smart", "base"} and len(an["smart"]["zones"]) == 49                  # grid city: 7 x 7 zones
         assert requests.get(base + "/api/analytics?since=abc").status_code == 400
         assert isinstance(requests.get(base + "/api/trips?limit=5").json(), list)
         m = requests.get(base + "/api/models").json()

@@ -1,8 +1,8 @@
 WEBVTT
 
 1
-00:00:00.450 --> 00:00:05.754
-This is ORCA: twelve hundred cars, driven by real New York taxi demand.
+00:00:00.450 --> 00:00:06.931
+This is ORCA: twelve hundred cars on Manhattan's real streets, with real New York taxi demand.
 
 2
 00:00:08.450 --> 00:00:15.556
@@ -17,8 +17,8 @@ Yellow cars head to pickups. Blue cars carry riders. Grey cars are free. Rings a
 ORCA just assigned this rider. It scored ten nearby cars on drive time, acceptance, GPS freshness, and the demand around them.
 
 5
-00:00:38.417 --> 00:00:45.332
-The nearest-car rule would send car 338. But it's one of the last idle cars in busy zone C6.
+00:00:38.417 --> 00:00:46.997
+The nearest-car rule would send car 972. Closer in a straight line, but 66s slower by road and traffic.
 
 6
 00:00:48.450 --> 00:00:54.822
@@ -33,9 +33,9 @@ Now a network outage. Cars in the red circle go silent. The nearest-car rule kee
 Then a demand spike. A learned forecast sees it coming, and ORCA moves spare cars in before they're needed.
 
 9
-00:01:21.450 --> 00:01:27.549
-The result: 22 percent shorter waits than nearest-car dispatch, on the very same requests.
+00:01:21.450 --> 00:01:27.584
+The result: 37 percent shorter waits than nearest-car dispatch, on the very same requests.
 
 10
-00:01:30.450 --> 00:01:36.473
-Python and scikit-learn behind, hand-written WebGL in front. Now it's your turn: open the control room.
+00:01:30.450 --> 00:01:37.794
+Real streets, real buildings, real riders, in hand-written WebGL. Now it's your turn: open the control room.

@@ -1,6 +1,7 @@
 """The engine: one world, two dispatchers on identical inputs, plus snapshots for clients."""
 from __future__ import annotations
 
+import math
 import time
 
 from . import config as C
@@ -14,8 +15,11 @@ REQ_CODE = {"waiting": 0, "offered": 1, "assigned": 2}
 
 class Engine:
     def __init__(self, seed: int = 7, fleet: int = 1200, demand: str = "synthetic", data: str | None = None,
-                 zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:"):
-        self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned)
+                 zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:",
+                 city: str | None = None):
+        from . import city as G
+        self.city = G.use(city)
+        self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned, city=self.city.name)
         tlc = None
         if demand == "tlc":
             from .demand import TLCReplay
@@ -30,7 +34,7 @@ class Engine:
         self.speed = 20.0
         self.paused = False
         self.step_ms = 0.0
-        self.world.log("sys", f"City online with {fleet:,} cars per dispatcher. Demand: {self.demand_label()}. "
+        self.world.log("sys", f"{self.city.label}: {fleet:,} cars per dispatcher. Demand: {self.demand_label()}. "
                               f"ETA model: {self.smart.eta.kind}. Forecast: {self.smart.forecaster.kind}.")
 
     def demand_label(self):
@@ -107,7 +111,7 @@ class Engine:
         xs, zs, hs, ss, tx, tz = [], [], [], [], [], []
         for a in d.agents:
             xs.append(round(a.x, 2)); zs.append(round(a.z, 2))
-            hs.append(0 if a.hz > 0 else 1 if a.hx > 0 else 2 if a.hz < 0 else 3)
+            hs.append(round(math.atan2(a.hx, a.hz) / math.tau * 256) & 255)   # heading, 0-255 = full turn
             if a.offline_until >= t:
                 code = 5
             elif a.state == IDLE:
@@ -140,13 +144,13 @@ class Engine:
                         base=[[p[0], p[1]] for p in self.base.m["series"]]),
             forecast=[dict(zone=i, name=zone_name(i), forecast=fc[i], need=fc[i] * C.COVER, idle=s.z_idle[i]) for i in top],
             deficit=s.deficit_zones, fx=fx,
-            heat=[min(255, int(v * 10)) for v in w.heat], heat_scale=10,
+            heat=[min(255, int(v * 10)) for v in w.heat], heat_scale=10, heat_w=w.HEAT_W, heat_h=w.HEAT_H,
             notable=(s.notable | {"timeline": s.timeline(s.notable["id"])}) if s.notable else None,
             zones=dict(smart=s.zone_means(), base=self.base.zone_means()), hist=dict(smart=s.hist, base=self.base.hist),
             events=[dict(seq=e.seq, clock=e.clock, type=e.type, msg=e.msg) for e in w.events[-40:]],
             engine=dict(speed=self.speed, paused=self.paused, step_ms=round(self.step_ms, 2), solver=s.solver_used,
                         solve_ms=round(s.solve_ms, 2), eta_model=s.eta.kind, forecaster=s.forecaster.kind,
-                        demand=self.demand_label(), fleet=len(s.agents)),
+                        demand=self.demand_label(), fleet=len(s.agents), city=self.city.name),
         )
 
     def explain(self, req_id: int) -> dict:
@@ -165,11 +169,11 @@ class Engine:
         import json
         from pathlib import Path
 
-        from .models import ARTIFACTS
+        from .models import artifact
         docs = Path(__file__).resolve().parents[2] / "docs"
         read = lambda p: json.loads(p.read_text()) if p.exists() else None
         src = "tlc" if self.world.source.name == "nyc-tlc" else "sim"
-        return dict(eta=read(ARTIFACTS / "eta_metrics.json"), demand=read(ARTIFACTS / f"demand_{src}_metrics.json"),
+        return dict(eta=read(artifact("eta_metrics", "json")), demand=read(artifact(f"demand_{src}_metrics", "json")),
                     benchmark=read(docs / "benchmark.json"), in_use=dict(eta=self.smart.eta.kind, demand=self.smart.forecaster.kind))
 
     def prometheus(self) -> str:

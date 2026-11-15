@@ -12,8 +12,9 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import city as G
 from . import config as C
-from .city import clamp, snap, zone_name, zone_of
+from .city import clamp, zone_name, zone_of
 
 TRAFFIC_PROFILE = Path(__file__).resolve().parents[1] / "artifacts" / "nyc_traffic_profile.json"
 
@@ -90,16 +91,16 @@ class SyntheticDemand:
     def __init__(self, world: World):
         self.world = world
         r = world.rng
+        city = world.city
         self.hotspots = [
-            Hotspot(C.W * (0.15 + 0.7 * r.random()), C.W * (0.15 + 0.7 * r.random()),
-                    (r.random() - 0.5) * 0.04, (r.random() - 0.5) * 0.04, 14 + r.random() * 16, 0.6 + r.random())
+            Hotspot(*world.inner_point(0.15), (r.random() - 0.5) * 0.04, (r.random() - 0.5) * 0.04, 14 + r.random() * 16, 0.6 + r.random())
             for _ in range(5)
         ]
-        self.hotspots.append(Hotspot(C.W * 0.5, C.W * 0.48, 0, 0, 30, 1.6))
+        self.hotspots.append(Hotspot(*city.snap(city.WX * 0.5, city.WZ * 0.48), 0, 0, 30, 1.6))
 
     def base_rate(self) -> float:
         w = self.world
-        return w.fleet * C.DEMAND_PER_UNIT * w.demand_mult * w.rush_factor()
+        return w.fleet * C.DEMAND_PER_UNIT * w.city.demand_scale * w.demand_mult * w.rush_factor()
 
     def step(self, dt: float) -> list[tuple[float, float, float, float]]:
         out = []
@@ -124,11 +125,17 @@ class World:
         self.event_seq = 0
         self.events: list[Event] = []
         self.listeners = []
-        self.HEAT = 54
-        self.heat = [0.0] * (self.HEAT * self.HEAT)
+        self.city = G.current()
+        WX, WZ = self.city.WX, self.city.WZ
+        self.heat_cell = max(WX, WZ) / 54                # demand heat map: square cells, as many as fit the city
+        self.HEAT_W, self.HEAT_H = math.ceil(WX / self.heat_cell), math.ceil(WZ / self.heat_cell)
+        self.HEAT = self.HEAT_W                          # kept for the grid city, where W == H
+        self.heat = [0.0] * (self.HEAT_W * self.HEAT_H)
         r = self.rng
-        self.blobs = [Blob(C.W * r.random(), C.W * r.random(), (r.random() - 0.5) * 0.05, (r.random() - 0.5) * 0.05,
+        self.blobs = [Blob(*self.city.random_point(r), (r.random() - 0.5) * 0.05, (r.random() - 0.5) * 0.05,
                            22 + r.random() * 20, 0.35 + r.random() * 0.25) for _ in range(4)]
+        if not self.city.ambient_congestion:
+            self.blobs = []                              # real hourly traffic replaces synthetic congestion
         self.spikes: list[Hotspot] = []
         self.outages: list[Outage] = []
         self.source = tlc if tlc is not None else SyntheticDemand(self)
@@ -179,9 +186,9 @@ class World:
     def move_bounce(self, h, dt):
         h.x += h.vx * dt
         h.z += h.vz * dt
-        if h.x < 10 or h.x > C.W - 10:
+        if h.x < 10 or h.x > self.city.WX - 10:
             h.vx *= -1
-        if h.z < 10 or h.z > C.W - 10:
+        if h.z < 10 or h.z > self.city.WZ - 10:
             h.vz *= -1
 
     def sample_from(self, spots, p_hot):
@@ -194,29 +201,35 @@ class World:
                 if pick <= 0:
                     hs = h
                     break
-            return clamp(hs.x + r.gauss(0, hs.s), 0, C.W), clamp(hs.z + r.gauss(0, hs.s), 0, C.W)
-        return r.random() * C.W, r.random() * C.W
+            return clamp(hs.x + r.gauss(0, hs.s), 0, self.city.WX), clamp(hs.z + r.gauss(0, hs.s), 0, self.city.WZ)
+        return self.city.random_point(r)
 
     def random_dropoff(self, x, z):
         r = self.rng
         d = 20 - math.log(1 - r.random()) * 45
         a = r.random() * math.tau
-        return clamp(x + math.cos(a) * d, 0, C.W), clamp(z + math.sin(a) * d, 0, C.W)
+        return clamp(x + math.cos(a) * d, 0, self.city.WX), clamp(z + math.sin(a) * d, 0, self.city.WZ)
+
+    def inner_point(self, margin: float) -> tuple[float, float]:
+        """A road point away from the city's edges (for hotspots and incidents)."""
+        r, c = self.rng, self.city
+        return c.snap(c.WX * (margin + (1 - 2 * margin) * r.random()), c.WZ * (margin + (1 - 2 * margin) * r.random()))
 
     def make_request(self, x, z, dx, dz) -> Request:
-        px, pz = snap(x), snap(z)
-        qx, qz = snap(dx), snap(dz)
+        c = self.city
+        px, pz = c.snap(x, z)
+        qx, qz = c.snap(dx, dz)
         if qx == px and qz == pz:
-            qx = px - C.CELL * 3 if px > C.W / 2 else px + C.CELL * 3
+            qx, qz = c.snap(px - 30 if px > c.WX / 2 else px + 30, pz)
         req = Request(self.next_req, self.t, px, pz, qx, qz, self.rng.random() < 0.08, zone_of(px, pz))
         self.next_req += 1
-        H = self.HEAT
-        hx, hz = round(px / C.W * (H - 1)), round(pz / C.W * (H - 1))
+        HW, HH = self.HEAT_W, self.HEAT_H
+        hx, hz = int(px / self.heat_cell), int(pz / self.heat_cell)
         for oz in range(-2, 3):
             for ox in range(-2, 3):
                 X, Z = hx + ox, hz + oz
-                if 0 <= X < H and 0 <= Z < H:
-                    self.heat[Z * H + X] += math.exp(-(ox * ox + oz * oz) / 2.2)
+                if 0 <= X < HW and 0 <= Z < HH:
+                    self.heat[Z * HW + X] += math.exp(-(ox * ox + oz * oz) / 2.2)
         return req
 
     # ---- step ----------------------------------------------------------------
@@ -252,8 +265,7 @@ class World:
         return e
 
     def _spot(self):
-        r = self.rng
-        return C.W * (0.2 + 0.6 * r.random()), C.W * (0.2 + 0.6 * r.random())
+        return self.inner_point(0.2)
 
     def trigger_spike(self):
         x, z = self._spot()

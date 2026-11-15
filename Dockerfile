@@ -5,7 +5,9 @@ COPY backend/requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 COPY backend/orca orca
 COPY backend/scripts scripts
-RUN mkdir -p artifacts data && python scripts/download_tlc.py --year 2015 --month 1 && python scripts/download_tlc.py --zones \
+# the street network (OpenStreetMap) is committed in artifacts/, so the trip replay is projected onto real streets
+COPY backend/artifacts artifacts
+RUN mkdir -p data && python scripts/download_tlc.py --year 2015 --month 1 && python scripts/download_tlc.py --zones \
  && python scripts/prepare_tlc.py && rm data/yellow_tripdata_2015-01.parquet
 
 # ---- 2. home page: React + TypeScript + Vite + Tailwind

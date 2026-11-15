@@ -21,13 +21,13 @@ import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 
+from . import city as G
 from . import config as C
 from .features import DEMAND_FEATURES, ETA_FEATURES, FeatureStore
-from .models import ARTIFACTS
+from .models import ARTIFACTS, artifact
 
 REAL_DATA = ARTIFACTS.parent / "data" / "nyc_tlc_2015-01_manhattan.parquet"
 
-N_ZONES = C.ZONES * C.ZONES
 
 
 def _report(name, y, pred):
@@ -96,7 +96,7 @@ def train_eta(args):
     Xtr, ytr, Xte, yte = tr[:, :-1], tr[:, -1], te[:, :-1], te[:, -1]
 
     manh = Xte[:, 0]
-    free_flow = manh / C.BASE_SPEED + 4
+    free_flow = manh / G.current().base_speed + 4               # the active city's free-flow speed
     obs = physics_eta(Xte)
     # Learn a multiplicative correction to the physics baseline rather than raw seconds: trees cannot
     # extrapolate, and real traffic in the test window (later in the morning) is slower than in training.
@@ -111,9 +111,9 @@ def train_eta(args):
     ARTIFACTS.mkdir(exist_ok=True)
     meta = dict(task="eta", target="log_ratio_to_physics", source=args.source, features=ETA_FEATURES, n_train=len(ytr), n_test=len(yte), results=rows,
                 hours=args.hours, seeds=seeds, start_hours=starts, incident_every=args.incident_every, fleet=args.fleet, trained_at=time.strftime("%Y-%m-%d %H:%M"))
-    joblib.dump(dict(model=model, meta=meta), ARTIFACTS / "eta.joblib")
-    (ARTIFACTS / "eta_metrics.json").write_text(json.dumps(meta, indent=2))
-    print(f"\nSaved artifacts/eta.joblib  ({time.time() - t0:.0f}s)")
+    joblib.dump(dict(model=model, meta=meta), artifact("eta"))
+    artifact("eta_metrics", "json").write_text(json.dumps(meta, indent=2))
+    print(f"\nSaved {artifact('eta').name}  ({time.time() - t0:.0f}s)")
 
 
 # ---------------------------------------------------------------------------- demand
@@ -125,7 +125,7 @@ def sim_counts(hours: float, seeds: list[int], fleet: int) -> list[tuple[np.ndar
         w = World(seed, fleet)
         rng = random.Random(seed + 99)
         minutes = int(hours * 60)
-        M = np.zeros((minutes, N_ZONES))
+        M = np.zeros((minutes, G.n_zones()))
         start_clock = w.clock()
         for m in range(minutes):
             for _ in range(60):
@@ -145,7 +145,7 @@ def tlc_counts(path, zones, fleet) -> list[tuple[np.ndarray, float]]:
     keep = rep.keep_for(fleet)
     out = []
     for _date, day in g.groupby("date"):
-        M = np.zeros((1440, N_ZONES))
+        M = np.zeros((1440, G.n_zones()))
         M[day.minute.values, day.zone.values] = day["count"].values
         out.append((M * keep, 0.0))         # same scaling the live replay applies
     print(f"  {len(out)} day(s) of real pickups, {int(sum(m.sum() for m, _ in out)):,} trips")
@@ -156,7 +156,8 @@ def demand_dataset(series: list[tuple[np.ndarray, float]], horizon: int = 5):
     X, y, ewma, naive = [], [], [], []
     for M, start_clock in series:
         fs = FeatureStore()
-        rate, prev, init = np.zeros(N_ZONES), np.zeros(N_ZONES), False
+        N = G.n_zones()
+        rate, prev, init = np.zeros(N), np.zeros(N), False
         for m in range(len(M) - horizon):
             fs.minute = list(M[m])
             fs.roll_minute()
@@ -167,7 +168,7 @@ def demand_dataset(series: list[tuple[np.ndarray, float]], horizon: int = 5):
             clock = start_clock + (m + 1) * 60
             target = M[m + 1:m + 1 + horizon].sum(axis=0)
             trend = np.clip(rate / (prev + 1e-3), 0.7, 1.5)
-            for z in range(N_ZONES):
+            for z in range(N):
                 X.append(fs.demand_features(z, clock))
                 y.append(target[z])
                 ewma.append(rate[z] * horizon * trend[z])
@@ -197,9 +198,9 @@ def train_demand(args):
     ARTIFACTS.mkdir(exist_ok=True)
     meta = dict(task="demand", source=args.source, features=DEMAND_FEATURES, n_train=int(cut), n_test=len(yt),
                 results=rows, trained_at=time.strftime("%Y-%m-%d %H:%M"))
-    joblib.dump(dict(model=model, meta=meta), ARTIFACTS / f"demand_{args.source}.joblib")
-    (ARTIFACTS / f"demand_{args.source}_metrics.json").write_text(json.dumps(meta, indent=2))
-    print(f"\nSaved artifacts/demand_{args.source}.joblib  ({time.time() - t0:.0f}s)")
+    joblib.dump(dict(model=model, meta=meta), artifact(f"demand_{args.source}"))
+    artifact(f"demand_{args.source}_metrics", "json").write_text(json.dumps(meta, indent=2))
+    print(f"\nSaved artifacts/{artifact(f'demand_{args.source}').name}  ({time.time() - t0:.0f}s)")
 
 
 def main():

@@ -53,6 +53,19 @@ def browser():
         b.close()
 
 
+def _until(fn, timeout=20.0, what="condition"):
+    """Poll from Python: the page's CSP (no 'unsafe-eval') blocks Playwright's in-page polling predicates."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if fn():
+                return
+        except Exception:  # element not attached yet
+            pass
+        time.sleep(0.2)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
 def _page(browser, errors):
     page = browser.new_page(viewport={"width": 1280, "height": 800})
     page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
@@ -73,6 +86,7 @@ def test_home_page(server, browser):
     assert page.locator("video source[src='/media/orca-tour.mp4']").count() == 1
     page.get_by_role("link", name="Launch the live control room").click()
     page.wait_for_url("**/app")
+    _until(lambda: page.inner_text("#modeTxt") == "Live server", what="control room after navigation")
     assert not [e for e in errors if "favicon" not in e], errors
 
 
@@ -80,13 +94,13 @@ def test_control_room_live(server, browser):
     errors: list[str] = []
     page = _page(browser, errors)
     page.goto(server + "/app")
-    page.wait_for_function("document.querySelector('#modeTxt').textContent === 'Live server'", timeout=20_000)
-    page.wait_for_function("document.querySelector('#w-orca').textContent.includes(':')", timeout=20_000)
+    _until(lambda: page.inner_text("#modeTxt") == "Live server", what="live server status")
+    _until(lambda: ":" in page.inner_text("#w-orca"), what="first wait figures")
     assert page.locator("canvas#gl").is_visible()
     page.locator("#w-ok").click()                                        # dismiss the welcome card
     page.get_by_role("button", name="Demand spike").click()
     page.locator("#tourBtn").click()
-    page.wait_for_function("document.querySelector('#capT').textContent.length > 0", timeout=10_000)
+    _until(lambda: len(page.inner_text("#capT")) > 0, what="tour caption")
     assert "tour" in page.locator("#tourBtn").inner_text().lower()
     assert not errors, errors
 
@@ -96,7 +110,7 @@ def test_control_room_offline_runs_real_data(browser):
     errors: list[str] = []
     page = _page(browser, errors)
     page.goto((REPO / "frontend" / "index.html").resolve().as_uri())
-    page.wait_for_function("document.querySelector('#modeTxt').textContent === 'In-browser engine'", timeout=20_000)
-    page.wait_for_function("document.querySelector('#engine').textContent.includes('real NYC')", timeout=20_000)
+    _until(lambda: page.inner_text("#modeTxt") == "In-browser engine", what="in-browser engine")
+    _until(lambda: "real NYC" in page.inner_text("#engine"), what="real-data engine label")
     real = [e for e in errors if "fonts.g" not in e and "ERR_FILE_NOT_FOUND" not in e]
     assert not real, real

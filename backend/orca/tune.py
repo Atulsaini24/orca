@@ -90,9 +90,13 @@ def main():
                final_round=dict(best=best, defaults=base, improvement=gain), rounds=history,
                tuned_at=time.strftime("%Y-%m-%d %H:%M"), seconds=round(time.time() - t0))
     ARTIFACTS.mkdir(exist_ok=True)
-    (ARTIFACTS / "dispatch_params.json").write_text(json.dumps(out, indent=2))
+    from . import city as G
+    from .models import artifact
+    G.use()
+    out["city"] = G.current().name
+    artifact("dispatch_params", "json").write_text(json.dumps(out, indent=2))
     print(f"\nFinal round: best {best['score']:.2f} vs defaults {base['score']:.2f} ({gain * 100:+.1f}%).")
-    print(f"Saved artifacts/dispatch_params.json with {'tuned' if chosen != defaults else 'default'} weights "
+    print(f"Saved {artifact('dispatch_params', 'json').name} with {'tuned' if chosen != defaults else 'default'} weights "
           f"({time.time() - t0:.0f}s)")
 
 

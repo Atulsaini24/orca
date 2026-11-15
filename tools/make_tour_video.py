@@ -76,7 +76,7 @@ def record(out: Path) -> list[dict]:
 
 # ----------------------------------------------------------------------------- 2. narrate
 SCRIPT = [   # one line per chapter; None = derived from what the caption shows (data-driven chapters)
-    "This is ORCA: twelve hundred cars, driven by real New York taxi demand.",
+    "This is ORCA: twelve hundred cars on Manhattan's real streets, with real New York taxi demand.",
     "Every request goes to two dispatchers: the nearest-car rule, and ORCA. Same riders, same traffic.",
     "Yellow cars head to pickups. Blue cars carry riders. Grey cars are free. Rings are waiting riders.",
     "ORCA just assigned this rider. It scored ten nearby cars on drive time, acceptance, GPS freshness, and the demand around them.",
@@ -85,7 +85,7 @@ SCRIPT = [   # one line per chapter; None = derived from what the caption shows 
     "Now a network outage. Cars in the red circle go silent. The nearest-car rule keeps offering them rides. ORCA works around them.",
     "Then a demand spike. A learned forecast sees it coming, and ORCA moves spare cars in before they're needed.",
     None,
-    "Python and scikit-learn behind, hand-written WebGL in front. Now it's your turn: open the control room.",
+    "Real streets, real buildings, real riders, in hand-written WebGL. Now it's your turn: open the control room.",
 ]
 
 
@@ -113,13 +113,24 @@ def line_for(i: int, cap: dict) -> str:
     return spoken(body)
 
 
-def tts(text: str, path: Path, engine: str):
-    if engine == "edge":
-        import edge_tts
-        asyncio.run(edge_tts.Communicate(text, "en-US-AndrewMultilingualNeural", rate="+4%").save(str(path)))
-    else:
-        from gtts import gTTS
-        gTTS(text, lang="en", tld="com").save(str(path))
+def tts(text: str, path: Path, engine: str, attempts: int = 5):
+    """Synthesise one line; online speech services fail transiently, so retry with exponential backoff."""
+    import time as _time
+    for k in range(attempts):
+        try:
+            if engine == "edge":
+                import edge_tts
+                asyncio.run(edge_tts.Communicate(text, "en-US-AndrewMultilingualNeural", rate="+4%").save(str(path)))
+            else:
+                from gtts import gTTS
+                gTTS(text, lang="en", tld="com").save(str(path))
+            if path.exists() and path.stat().st_size > 1000:
+                return
+        except Exception as exc:  # network or service error
+            if k == attempts - 1:
+                raise RuntimeError(f"speech synthesis failed after {attempts} attempts: {exc}") from exc
+        _time.sleep(2 ** k)
+    raise RuntimeError("speech synthesis returned no audio")
 
 
 def load_audio(path: Path, tempo: float = 1.0) -> np.ndarray:

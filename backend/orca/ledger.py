@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 
+from . import city as G
 from . import config as C
 
 SCHEMA = """
@@ -72,7 +73,7 @@ class Ledger:
                     f"WHERE {cond} AND policy = ? GROUP BY h ORDER BY h", (C.START_CLOCK, *args, pol))]
                 urgent = self.db.execute(f"SELECT AVG(wait) FROM trips WHERE {cond} AND policy = ? AND urgent = 1", (*args, pol)).fetchone()[0]
                 out[pol] = dict(trips=n, lost=lost, mean=sum(waits) / n if n else None, p50=pct(0.5), p90=pct(0.9), p95=pct(0.95),
-                                urgent_mean=urgent, zones=[(zones[z][0] if z in zones else None) for z in range(C.ZONES * C.ZONES)],
+                                urgent_mean=urgent, zones=[(zones[z][0] if z in zones else None) for z in range(G.n_zones())],
                                 hourly=hourly)
         return out
 

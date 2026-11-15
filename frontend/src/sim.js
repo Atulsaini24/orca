@@ -16,6 +16,10 @@ const CFG = {
   K: 10,               // candidates per request
   REOFFER: 45,         // expected cost (s) of a declined / expired offer
   COVER: 0.5,          // idle cars wanted per zone, as a share of its forecast 5-min demand
+  ZONE_SLOPE: 20,      // seconds of cost per unit of zone shortfall
+  ZONE_CAP: 60,        // maximum zone supply cost (s)
+  URGENT_W: 0.55,      // urgent requests' cost multiplier
+  WAIT_W: 0.25,        // cost credit per second already waited
   START_CLOCK: 7 * 3600 + 30 * 60,
 };
 CFG.W = (CFG.GRID - 1) * CFG.CELL;
@@ -37,16 +41,14 @@ function hash2(a, b) {
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const isArterial = (i) => i % 7 === 0 || i === CFG.GRID - 1;
 const snap = (v) => clamp(Math.round(v / CFG.CELL), 0, CFG.GRID - 1) * CFG.CELL;
-function zoneOf(x, z) {
+function zoneOfGrid(x, z) {
   const zx = clamp(Math.floor(x / CFG.ZSIZE), 0, CFG.ZONES - 1);
   const zz = clamp(Math.floor(z / CFG.ZSIZE), 0, CFG.ZONES - 1);
   return zz * CFG.ZONES + zx;
 }
-const zoneName = (i) => String.fromCharCode(65 + (i % CFG.ZONES)) + (1 + Math.floor(i / CFG.ZONES));
-function zoneDist(a, b) {
-  const Z = CFG.ZONES;
-  return Math.hypot((a % Z) - (b % Z), Math.floor(a / Z) - Math.floor(b / Z));
-}
+const zoneOf = (x, z) => city().zoneOf(x, z);
+const zoneName = (i) => city().zoneName(i);
+const zoneDist = (a, b) => city().zoneDist(a, b);
 function gauss(rng) {
   let u = 0; while (u === 0) u = rng();
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rng());
@@ -67,11 +69,13 @@ function decodeTLC(d) {
   const bin = typeof atob === 'function' ? atob(d.b64) : Buffer.from(d.b64, 'base64').toString('binary');
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const n = d.n, sec = new Uint32Array(bytes.buffer, 0, n), q = new Uint16Array(bytes.buffer, 4 * n, 4 * n);
+  const n = d.n, sec = new Uint32Array(bytes.buffer, 0, n), q = new Uint16Array(bytes.buffer, 4 * n, 4 * n), res = d.res || 100;
   const tph = d.trips_per_hour, peak = Math.max(...tph) / 3600;
-  return { n, sec, q, tph, peak, traffic: d.traffic.map((f) => clamp(f, 0.7, 1.6)), source: d.source, total: d.total, days: d.days };
+  return { n, sec, q, res, tph, peak, city: d.city || 'grid', traffic: d.traffic.map((f) => clamp(f, 0.7, 1.6)), source: d.source,
+    total: d.total, days: d.days, peakTrip: d.peak_trip_s || 630 };
 }
-const REAL = decodeTLC(typeof TLC_DATA !== 'undefined' ? TLC_DATA : null);
+const REAL_ALL = decodeTLC(typeof TLC_DATA !== 'undefined' ? TLC_DATA : null);
+let REAL = null;          // set by World: the real trips, if they were projected for the active city
 const hourly = (arr, sec) => { const h = (sec / 3600) % 24, i = Math.floor(h), f = h - i; return arr[i] * (1 - f) + arr[(i + 1) % 24] * f; };
 function lowerBound(a, v) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < v) lo = m + 1; else hi = m; } return lo; }
 
@@ -83,30 +87,36 @@ class World {
     this.seed = seed; this.rng = mulberry32(seed); this.fleet = fleet;
     this.t = 0; this.demandMult = 1; this.nextReqId = 1; this.outageSeq = 0;
     this.hotspots = []; this.blobs = []; this.outages = []; this.events = []; this.listeners = [];
-    this.HEAT = 54; this.heat = new Float32Array(this.HEAT * this.HEAT);
-    const W = CFG.W, r = this.rng;
+    const c = this.city = city(), r = this.rng;
+    REAL = REAL_ALL && REAL_ALL.city === c.name ? REAL_ALL : null;
+    this.heatCell = Math.max(c.WX, c.WZ) / 54;
+    this.HEAT_W = Math.ceil(c.WX / this.heatCell); this.HEAT_H = Math.ceil(c.WZ / this.heatCell); this.HEAT = this.HEAT_W;
+    this.heat = new Float32Array(this.HEAT_W * this.HEAT_H);
     for (let i = 0; i < 5; i++) {
-      this.hotspots.push({ x: W * (0.15 + 0.7 * r()), z: W * (0.15 + 0.7 * r()), vx: (r() - 0.5) * 0.04,
-        vz: (r() - 0.5) * 0.04, s: 14 + r() * 16, w: 0.6 + r(), until: Infinity });
+      const [x, z] = this.innerPoint(0.15);
+      this.hotspots.push({ x, z, vx: (r() - 0.5) * 0.04, vz: (r() - 0.5) * 0.04, s: 14 + r() * 16, w: 0.6 + r(), until: Infinity });
     }
-    this.hotspots.push({ x: W * 0.5, z: W * 0.48, vx: 0, vz: 0, s: 30, w: 1.6, until: Infinity, core: true });
-    for (let i = 0; i < 4; i++) {
-      this.blobs.push({ x: W * r(), z: W * r(), vx: (r() - 0.5) * 0.05, vz: (r() - 0.5) * 0.05,
-        r: 22 + r() * 20, s: 0.35 + r() * 0.25, until: Infinity });
+    const [cx, cz] = c.snap(c.WX * 0.5, c.WZ * 0.48);
+    this.hotspots.push({ x: cx, z: cz, vx: 0, vz: 0, s: 30, w: 1.6, until: Infinity, core: true });
+    if (c.ambientCongestion) for (let i = 0; i < 4; i++) {
+      const [x, z] = c.randomPoint(r);
+      this.blobs.push({ x, z, vx: (r() - 0.5) * 0.05, vz: (r() - 0.5) * 0.05, r: 22 + r() * 20, s: 0.35 + r() * 0.25, until: Infinity });
     }
     this.spikeBoost = 0;
   }
   clock() { return CFG.START_CLOCK + this.t; }
+  innerPoint(m) { const c = this.city, r = this.rng; return c.snap(c.WX * (m + (1 - 2 * m) * r()), c.WZ * (m + (1 - 2 * m) * r())); }
   rushFactor() {
     const h = (this.clock() / 3600) % 24;
     return 1 + 0.35 * Math.exp(-((h - 8.75) ** 2) / (2 * 0.8 ** 2)) + 0.12 * Math.sin(this.t / 900);
   }
   rate() {
     if (REAL) {   // real NYC rate for this hour, scaled so the busiest hour is 1.25x what the fleet is built for
-      const keep = (1.25 * this.fleet * 0.00118) / REAL.peak;
+      const peakRate = this.city.name === 'grid' ? 1.25 * this.fleet * 0.00118 : 0.8 * this.fleet / (REAL.peakTrip + 300);
+      const keep = peakRate / REAL.peak;
       return (keep * hourly(REAL.tph, this.clock()) / 3600) * this.demandMult * (1 + this.spikeBoost);
     }
-    return this.fleet * 0.00118 * this.demandMult * this.rushFactor() * (1 + this.spikeBoost);
+    return this.fleet * 0.00118 * this.city.demandScale * this.demandMult * this.rushFactor() * (1 + this.spikeBoost);
   }
   trafficFactor() { return REAL ? hourly(REAL.traffic, this.clock()) : 1.05 - 0.15 * (this.rushFactor() - 1); }
   realTrip() {   // a real trip that started within 15 minutes (time of day) of now
@@ -116,8 +126,8 @@ class World {
     if (s - 900 < 0) { const a = lowerBound(S, s - 900 + 86400); const span = (REAL.n - a) + hi; i = Math.floor(r() * span); i = i < REAL.n - a ? a + i : i - (REAL.n - a); }
     else if (s + 900 > 86400) { const b = lowerBound(S, s + 900 - 86400); const span = (REAL.n - lo) + b; i = Math.floor(r() * span); i = i < REAL.n - lo ? lo + i : i - (REAL.n - lo); }
     else i = hi > lo ? lo + Math.floor(r() * (hi - lo)) : Math.floor(r() * REAL.n);
-    const q = REAL.q, k = 4 * i;
-    return [q[k] / 100, q[k + 1] / 100, q[k + 2] / 100, q[k + 3] / 100];
+    const q = REAL.q, k = 4 * i, f = REAL.res;
+    return [q[k] / f, q[k + 1] / f, q[k + 2] / f, q[k + 3] / f];
   }
   congestion(x, z) {
     let m = 1;
@@ -129,12 +139,12 @@ class World {
   }
   step(dt) {
     this.t += dt;
-    const W = CFG.W;
+    const WX = this.city.WX, WZ = this.city.WZ;
     for (const arr of [this.hotspots, this.blobs]) {
       for (const h of arr) {
         h.x += h.vx * dt; h.z += h.vz * dt;
-        if (h.x < 10 || h.x > W - 10) h.vx *= -1;
-        if (h.z < 10 || h.z > W - 10) h.vz *= -1;
+        if (h.x < 10 || h.x > WX - 10) h.vx *= -1;
+        if (h.z < 10 || h.z > WZ - 10) h.vz *= -1;
       }
     }
     const t = this.t;
@@ -155,9 +165,9 @@ class World {
       let tot = 0; for (const h of this.hotspots) tot += h.w;
       let pick = r() * tot, hs = this.hotspots[0];
       for (const h of this.hotspots) { pick -= h.w; if (pick <= 0) { hs = h; break; } }
-      return [clamp(hs.x + gauss(r) * hs.s, 0, CFG.W), clamp(hs.z + gauss(r) * hs.s, 0, CFG.W)];
+      return [clamp(hs.x + gauss(r) * hs.s, 0, this.city.WX), clamp(hs.z + gauss(r) * hs.s, 0, this.city.WZ)];
     }
-    return [r() * CFG.W, r() * CFG.W];
+    return this.city.randomPoint(r);
   }
   makeRequest() {
     const r = this.rng;
@@ -165,26 +175,26 @@ class World {
     let x, z, dx, dz;
     if (REAL && !spike) { [x, z, dx, dz] = this.realTrip(); }
     else { [x, z] = spike ? this.sampleSpike() : this.sampleLoc(); }
-    const px = snap(x), pz = snap(z);
+    const c = this.city, [px, pz] = c.snap(x, z);
     if (dx === undefined) {
       const d = 20 - Math.log(1 - r()) * 45, a = r() * Math.PI * 2;
-      dx = clamp(px + Math.cos(a) * d, 0, CFG.W); dz = clamp(pz + Math.sin(a) * d, 0, CFG.W);
+      dx = clamp(px + Math.cos(a) * d, 0, c.WX); dz = clamp(pz + Math.sin(a) * d, 0, c.WZ);
     }
-    dx = snap(dx); dz = snap(dz);
-    if (dx === px && dz === pz) dx = px > CFG.W / 2 ? px - CFG.CELL * 3 : px + CFG.CELL * 3;
+    [dx, dz] = c.snap(dx, dz);
+    if (dx === px && dz === pz) [dx, dz] = c.snap(px > c.WX / 2 ? px - 30 : px + 30, pz);
     const req = { id: this.nextReqId++, t: this.t, x: px, z: pz, dx, dz, p1: r() < 0.08, zone: zoneOf(px, pz) };
-    const H = this.HEAT, hx = Math.round((px / CFG.W) * (H - 1)), hz = Math.round((pz / CFG.W) * (H - 1));
+    const HW = this.HEAT_W, HH = this.HEAT_H, hx = Math.floor(px / this.heatCell), hz = Math.floor(pz / this.heatCell);
     for (let oz = -2; oz <= 2; oz++) for (let ox = -2; ox <= 2; ox++) {
       const X = hx + ox, Z = hz + oz;
-      if (X < 0 || Z < 0 || X >= H || Z >= H) continue;
-      this.heat[Z * H + X] += Math.exp(-(ox * ox + oz * oz) / 2.2);
+      if (X < 0 || Z < 0 || X >= HW || Z >= HH) continue;
+      this.heat[Z * HW + X] += Math.exp(-(ox * ox + oz * oz) / 2.2);
     }
     return req;
   }
   sampleSpike() {
     const hs = this.hotspots.filter((h) => h.spike), r = this.rng;
     const h = hs[Math.floor(r() * hs.length)];
-    return [clamp(h.x + gauss(r) * h.s, 0, CFG.W), clamp(h.z + gauss(r) * h.s, 0, CFG.W)];
+    return [clamp(h.x + gauss(r) * h.s, 0, this.city.WX), clamp(h.z + gauss(r) * h.s, 0, this.city.WZ)];
   }
   log(type, msg) {
     const e = { t: this.t, clock: this.clock(), type, msg };
@@ -192,23 +202,23 @@ class World {
     for (const f of this.listeners) f(e);
   }
   triggerSpike() {
-    const W = CFG.W, r = this.rng;
-    const h = { x: W * (0.2 + 0.6 * r()), z: W * (0.2 + 0.6 * r()), vx: 0, vz: 0, s: 16, w: 3.2,
+    const [sx, sz] = this.innerPoint(0.2);
+    const h = { x: sx, z: sz, vx: 0, vz: 0, s: 16, w: 3.2,
       until: this.t + 600, spike: true, boost: 0.55 };
     this.hotspots.push(h);
     this.log('spike', `Demand spike near ${zoneName(zoneOf(h.x, h.z))}: +55% city demand for 10 min`);
     return h;
   }
   triggerOutage() {
-    const W = CFG.W, r = this.rng;
-    const o = { id: ++this.outageSeq, x: W * (0.2 + 0.6 * r()), z: W * (0.2 + 0.6 * r()), r: 55, until: this.t + 420 };
+    const [ox, oz] = this.innerPoint(0.2);
+    const o = { id: ++this.outageSeq, x: ox, z: oz, r: 55, until: this.t + 420 };
     this.outages.push(o);
     this.log('outage', `Network outage around ${zoneName(zoneOf(o.x, o.z))}: cars inside stop reporting GPS`);
     return o;
   }
   triggerAccident() {
-    const W = CFG.W, r = this.rng;
-    const b = { x: W * (0.2 + 0.6 * r()), z: W * (0.2 + 0.6 * r()), vx: 0, vz: 0, r: 20, s: 0.78,
+    const [bx, bz] = this.innerPoint(0.2);
+    const b = { x: bx, z: bz, vx: 0, vz: 0, r: 20, s: 0.78,
       until: this.t + 900, accident: true };
     this.blobs.push(b);
     this.log('accident', `Major accident near ${zoneName(zoneOf(b.x, b.z))}: road speed down ~75%`);
@@ -219,12 +229,10 @@ class World {
 function makeFleet(seed, n) {
   const r = mulberry32(seed * 7 + 1), out = [];
   for (let i = 0; i < n; i++) {
-    let x, z;
-    if (r() < 0.5) { z = Math.floor(r() * CFG.GRID) * CFG.CELL; x = r() * CFG.W; }
-    else { x = Math.floor(r() * CFG.GRID) * CFG.CELL; z = r() * CFG.W; }
+    const [x, z] = city().randomPoint(r);
     let acc = clamp(0.88 + gauss(r) * 0.07, 0.5, 0.99);
     if (r() < 0.12) acc = 0.3 + r() * 0.2; // picky drivers
-    out.push({ id: i, x, z, hx: 0, hz: 1, state: 'idle', acc, offlineUntil: -1, lastPing: 0,
+    out.push({ id: i, x, z, hx: 0, hz: 1, node: -1, prevNode: -1, state: 'idle', acc, offlineUntil: -1, lastPing: 0,
       nextPing: r() * 4, rx: x, rz: z });
   }
   return out;
@@ -245,7 +253,8 @@ class Dispatcher {
     this.m = { served: 0, lost: 0, reoffers: 0, timeouts: 0, declines: 0, waits: [], p1waits: [],
       intervalWaits: [], intervalLost: 0, series: [] };
     this.explain = new Map(); this.explainOrder = []; this.notable = null;
-    const N = CFG.ZONES * CFG.ZONES;
+    this.city = city();
+    const N = this.city.N;
     this.zArr = new Float32Array(N); this.zRate = new Float32Array(N); this.zPrev = new Float32Array(N);
     this.zIdle = new Int32Array(N); this.zForecast = new Float32Array(N); this.zLast = new Float32Array(N);
     this.zInit = false; this.deficitZones = [];
@@ -317,39 +326,21 @@ class Dispatcher {
   // ---- movement ------------------------------------------------------------
   move(a, dt) {
     if (a.ri >= a.route.length) return;
-    let rem = CFG.BASE_SPEED * this.world.congestion(a.x, a.z) * dt * (a.state === 'idle' && !a.rebal ? 0.55 : 1);
+    let rem = this.city.baseSpeed * this.world.congestion(a.x, a.z) * dt * (a.state === 'idle' && !a.rebal ? 0.55 : 1);
     let guard = 0;
-    while (rem > 0 && a.ri < a.route.length && guard++ < 8) {
-      const wx = a.route[a.ri], wz = a.route[a.ri + 1], dx = wx - a.x, dz = wz - a.z;
-      const line = dx !== 0 ? a.z / CFG.CELL : a.x / CFG.CELL;
-      const art = Number.isInteger(line) && isArterial(line) ? CFG.ART_MULT : 1;
-      const d = Math.abs(dx) + Math.abs(dz), step = rem * art;
-      if (dx !== 0) { a.hx = Math.sign(dx); a.hz = 0; } else if (dz !== 0) { a.hz = Math.sign(dz); a.hx = 0; }
-      if (d <= step) { a.x = wx; a.z = wz; rem -= d / art; a.ri += 2; }
-      else {
-        if (dx !== 0) a.x += Math.sign(dx) * step; else a.z += Math.sign(dz) * step;
-        rem = 0;
-      }
+    const R = a.route;
+    while (rem > 0 && a.ri < R.length && guard++ < 64) {
+      const wx = R[a.ri], wz = R[a.ri + 1], mult = R[a.ri + 2], node = R[a.ri + 3];
+      const dx = wx - a.x, dz = wz - a.z, d = Math.hypot(dx, dz), step = rem * mult;
+      if (d > 1e-9) { a.hx = dx / d; a.hz = dz / d; }
+      if (d <= step) {
+        a.x = wx; a.z = wz; rem -= d / mult; a.ri += 4;
+        if (node >= 0) { a.prevNode = a.node; a.node = node; }
+      } else { a.x += (dx / d) * step; a.z += (dz / d) * step; rem = 0; }
     }
   }
-  routeTo(a, tx, tz) {
-    const C = CFG.CELL, pts = [];
-    let x = a.x, z = a.z;
-    const onV = x % C === 0, onH = z % C === 0;
-    if (!(onV && onH)) {
-      if (onH) { const cx = tx > x ? Math.ceil(x / C) * C : Math.floor(x / C) * C; pts.push(cx, z); x = cx; }
-      else { const cz = tz > z ? Math.ceil(z / C) * C : Math.floor(z / C) * C; pts.push(x, cz); z = cz; }
-    }
-    const xFirst = isArterial(z / C) || (!isArterial(x / C) && (a.id + (tx + tz) / C) % 2 === 0);
-    if (xFirst) { if (x !== tx) pts.push(tx, z); if (z !== tz) pts.push(tx, tz); }
-    else { if (z !== tz) pts.push(x, tz); if (x !== tx) pts.push(tx, tz); }
-    a.route = pts; a.ri = 0;
-  }
-  cruise(a) {
-    const C = CFG.CELL, r = this.rng;
-    const tx = snap(a.x + Math.round((r() - 0.5) * 4) * C), tz = snap(a.z + Math.round((r() - 0.5) * 4) * C);
-    this.routeTo(a, tx, tz);
-  }
+  routeTo(a, tx, tz) { a.route = this.city.route(a, tx, tz); a.ri = 0; }
+  cruise(a) { a.route = this.city.cruise(a, this.rng); a.ri = 0; }
   arrive(a) {
     const t = this.world.t, rs = a.rs;
     if (a.state === 'pickup') {
@@ -380,9 +371,9 @@ class Dispatcher {
     rs.status = 'lost'; rs.agent = null; this.m.lost++; this.m.intervalLost++; rs.log.push({ t: this.world.t, k: 'cancel' });
   }
   etaHat(ax, az, bx, bz) {
-    const w = this.world, d = Math.abs(bx - ax) + Math.abs(bz - az);
+    const w = this.world, d = this.city.roadDist(ax, az, bx, bz);
     const c = (w.congestion(ax, az) + w.congestion(bx, az) + w.congestion(bx, bz)) / 3;
-    return d / (CFG.BASE_SPEED * c * 1.12) + 4;
+    return d / (this.city.baseSpeed * c * 1.12) + 4;
   }
   pTrue(a, eta, rs) {
     return clamp(a.acc - 0.03 * Math.max(0, eta / 60 - 4) + (rs.r.p1 ? 0.06 : 0), 0.03, 0.995);
@@ -417,7 +408,7 @@ class Dispatcher {
 
   // ---- spatial index ----------------------------------------------------------
   buildIndex(freshOnly) {
-    const t = this.world.t, B = 30, BN = Math.ceil(CFG.W / B) + 1;
+    const t = this.world.t, B = 30, BN = Math.ceil(Math.max(this.city.WX, this.city.WZ) / B) + 1;
     this.B = B; this.BN = BN;
     if (!this.buckets) this.buckets = Array.from({ length: BN * BN }, () => []);
     for (const b of this.buckets) b.length = 0;
@@ -464,7 +455,7 @@ class Dispatcher {
   // ---- ORCA: batched, cost-based matching ------------------------------------
   zoneCost(a) {
     const z = zoneOf(a.rx, a.rz), ratio = this.zForecast[z] * CFG.COVER / (this.zIdle[z] + 1);
-    return ratio > 1 ? Math.min(60, (ratio - 1) * 20) : 0;
+    return ratio > 1 ? Math.min(CFG.ZONE_CAP, (ratio - 1) * CFG.ZONE_SLOPE) : 0;
   }
   computeZoneIdle() {
     const t = this.world.t; this.zIdle.fill(0);
@@ -497,7 +488,7 @@ class Dispatcher {
         const eta = this.etaHat(a.rx, a.rz, rs.r.x, rs.r.z);
         const p = this.pHat(a, eta, rs), zc = this.zoneCost(a);
         const cost = eta + (1 - p) * CFG.REOFFER + zc;
-        const adj = cost * (rs.r.p1 ? 0.55 : 1) - Math.min(wait, 300) * 0.25;
+        const adj = cost * (rs.r.p1 ? CFG.URGENT_W : 1) - Math.min(wait, 300) * CFG.WAIT_W;
         const c = { a, eta, p, zc, cost, age: t - a.lastPing, rx: a.rx, rz: a.rz };
         rs._cands.push(c); pairs.push([adj, rs, c]);
       }
@@ -528,9 +519,9 @@ class Dispatcher {
       let reason;
       if (best === chosen.a) reason = 'Same unit. Both policies agree here.';
       else if (age > CFG.STALE_AFTER) reason = `GPS last seen ${Math.round(age)}s ago. The car is probably unreachable, so the offer would hang until it times out.`;
-      else if (p < chosen.p - 0.12) reason = `Learned acceptance is only ${Math.round(p * 100)}%. A decline costs about ${CFG.REOFFER}s of re-offer time.`;
+      else if (p < chosen.p - 0.12) reason = `Learned acceptance is only ${Math.round(p * 100)}%. A decline costs about ${Math.round(CFG.REOFFER)}s of re-offer time.`;
       else if (eta > chosen.eta + 8) reason = `Closer in a straight line, but ${Math.round(eta - chosen.eta)}s slower by road and traffic.`;
-      else if (zc > 5) reason = `It is one of the last idle cars in high-demand zone ${zoneName(zoneOf(best.rx, best.rz))}.`;
+      else if (zc > 5) reason = `It is one of the last idle cars in ${zoneName(zoneOf(best.rx, best.rz))}, where demand is about to rise.`;
       else reason = 'Nearest car, but a higher total expected cost.';
       base = { id: best.id, eta, p, zc, cost, age, rx: best.rx, rz: best.rz, reason, same: best === chosen.a };
     }
@@ -547,7 +538,7 @@ class Dispatcher {
     if (base && !base.same && (r.p1 || base.age > CFG.STALE_AFTER || this.rng() < 0.25)) this.notable = rec;
   }
   rebalance() {
-    const t = this.world.t, N = CFG.ZONES * CFG.ZONES;
+    const t = this.world.t, N = this.city.N;
     this.computeZoneIdle();
     const deficit = [], surplusLeft = new Map();
     for (let i = 0; i < N; i++) {
@@ -569,8 +560,7 @@ class Dispatcher {
         const pool = byZone[sz];
         while (want > 0 && surplusLeft.get(sz) > 0 && pool.length) {
           const a = pool.pop();
-          const zx = zi % CFG.ZONES, zz = Math.floor(zi / CFG.ZONES);
-          const tx = snap((zx + 0.2 + 0.6 * this.rng()) * CFG.ZSIZE), tz = snap((zz + 0.2 + 0.6 * this.rng()) * CFG.ZSIZE);
+          const [tx, tz] = this.city.pointInZone(zi, this.rng);
           this.routeTo(a, tx, tz); a.rebal = true; a.cruiseWait = 0;
           want--; budget--; moved++; surplusLeft.set(sz, surplusLeft.get(sz) - 1);
         }
@@ -612,5 +602,5 @@ class Simulation {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { CFG, Simulation, zoneName, zoneOf, isArterial, REAL };
+  module.exports = { CFG, Simulation, zoneName, zoneOf, isArterial, REAL_ALL };
 }

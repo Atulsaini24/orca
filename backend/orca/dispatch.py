@@ -17,8 +17,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from . import city as G
 from . import config as C
-from .city import clamp, route, snap, zone_dist, zone_name, zone_of
+from .city import clamp, zone_dist, zone_name, zone_of
 from .features import FeatureStore
 from .models import AcceptanceModel, DemandForecaster, EtaModel
 from .world import Request, World
@@ -48,11 +49,13 @@ class Agent:
         "last_ping",
         "leg",
         "next_ping",
+        "node",
         "offer_acc",
         "offer_at",
         "offer_deadline",
         "offers",
         "offline_until",
+        "prev_node",
         "rebal",
         "ri",
         "route",
@@ -66,7 +69,8 @@ class Agent:
 
     def __init__(self, id_, x, z, acc, next_ping):
         self.id, self.x, self.z = id_, x, z
-        self.hx, self.hz = 0, 1
+        self.hx, self.hz = 0.0, 1.0                 # unit heading vector
+        self.node, self.prev_node = -1, -1         # street city: last intersection reached, and the one before
         self.state = IDLE
         self.acc = acc
         self.offline_until = -1.0
@@ -89,12 +93,10 @@ class Agent:
 
 def make_fleet(seed: int, n: int) -> list[tuple]:
     r = random.Random(seed * 7 + 1)
+    city = G.current()
     out = []
     for i in range(n):
-        if r.random() < 0.5:
-            z, x = float(r.randrange(C.GRID) * C.CELL), r.random() * C.W
-        else:
-            x, z = float(r.randrange(C.GRID) * C.CELL), r.random() * C.W
+        x, z = city.random_point(r)
         acc = clamp(r.gauss(0.88, 0.07), 0.5, 0.99)
         if r.random() < 0.12:
             acc = 0.3 + r.random() * 0.2      # picky drivers
@@ -122,7 +124,8 @@ class Dispatcher:
     def __init__(self, world: World, fleet_spec: list[tuple], telemetry: list | None = None, ledger=None):
         self.world = world
         self.ledger = ledger
-        n_zones = C.ZONES * C.ZONES
+        n_zones = G.n_zones()
+        self.city = G.current()
         self.z_sum = [0.0] * n_zones
         self.z_n = [0] * n_zones
         self.hist = [0] * 12                       # 30-second wait bands, last one is 5:30+
@@ -143,7 +146,7 @@ class Dispatcher:
         self.m = dict(served=0, lost=0, reoffers=0, timeouts=0, declines=0, waits=[], p1waits=[],
                       interval=[], interval_lost=0, series=[], all=[])
         self.B = 30.0
-        self.BN = math.ceil(C.W / self.B) + 1
+        self.BN = math.ceil(max(self.city.WX, self.city.WZ) / self.B) + 1
         self.buckets = [[] for _ in range(self.BN * self.BN)]
 
     # ---- main step ---------------------------------------------------------------
@@ -235,38 +238,34 @@ class Dispatcher:
     def move(self, a: Agent, dt: float):
         if a.ri >= len(a.route):
             return
-        rem = C.BASE_SPEED * self.world.congestion(a.x, a.z) * dt * (C.IDLE_CRUISE if a.state == IDLE and not a.rebal else 1)
+        rem = self.city.base_speed * self.world.congestion(a.x, a.z) * dt * (C.IDLE_CRUISE if a.state == IDLE and not a.rebal else 1)
         guard = 0
-        while rem > 0 and a.ri < len(a.route) and guard < 8:
+        while rem > 0 and a.ri < len(a.route) and guard < 64:
             guard += 1
-            wx, wz = a.route[a.ri]
+            wx, wz, mult, node = a.route[a.ri]
             dx, dz = wx - a.x, wz - a.z
-            line = a.z / C.CELL if dx != 0 else a.x / C.CELL
-            art = C.ART_MULT if line == int(line) and (int(line) % 7 == 0 or int(line) == C.GRID - 1) else 1.0
-            d = abs(dx) + abs(dz)
-            step = rem * art
-            if dx != 0:
-                a.hx, a.hz = (1 if dx > 0 else -1), 0
-            elif dz != 0:
-                a.hx, a.hz = 0, (1 if dz > 0 else -1)
+            d = math.hypot(dx, dz)
+            step = rem * mult
+            if d > 1e-9:
+                a.hx, a.hz = dx / d, dz / d
             if d <= step:
                 a.x, a.z = wx, wz
-                rem -= d / art
+                rem -= d / mult
                 a.ri += 1
+                if node >= 0:
+                    a.prev_node, a.node = a.node, node
             else:
-                if dx != 0:
-                    a.x += math.copysign(step, dx)
-                else:
-                    a.z += math.copysign(step, dz)
+                a.x += dx / d * step
+                a.z += dz / d * step
                 rem = 0
 
     def route_to(self, a: Agent, tx: float, tz: float):
-        a.route = route(a.x, a.z, tx, tz, a.id)
+        a.route = self.city.route(a, tx, tz)
         a.ri = 0
 
     def cruise(self, a: Agent):
-        r = self.rng.random
-        self.route_to(a, snap(a.x + round((r() - 0.5) * 4) * C.CELL), snap(a.z + round((r() - 0.5) * 4) * C.CELL))
+        a.route = self.city.cruise(a, self.rng)
+        a.ri = 0
 
     def arrive(self, a: Agent):
         t, rs = self.world.t, a.rs
@@ -435,8 +434,7 @@ class OrcaDispatcher(Dispatcher):
         self.eta = EtaModel(self.fs, use_learned)
         self.accept = AcceptanceModel()
         self.forecaster = DemandForecaster(self.fs, use_learned, "tlc" if world.source.name == "nyc-tlc" else "sim")
-        n = C.ZONES * C.ZONES
-        self.z_idle = [0] * n
+        self.z_idle = [0] * G.n_zones()
         self.deficit_zones: list[int] = []
         self.batch_timer = 0.0
         self.rebal_timer = 0.0
@@ -590,7 +588,7 @@ class OrcaDispatcher(Dispatcher):
             self.notable = rec
 
     def rebalance(self):
-        t, N = self.world.t, C.ZONES * C.ZONES
+        t, N = self.world.t, G.n_zones()
         self.compute_zone_idle()
         fc = self.forecaster.forecast
         deficit, surplus = [], {}
@@ -613,9 +611,7 @@ class OrcaDispatcher(Dispatcher):
                 pool = by_zone[sz]
                 while want > 0 and surplus[sz] > 0 and pool:
                     a = pool.pop()
-                    zx, zz = zi % C.ZONES, zi // C.ZONES
-                    self.route_to(a, snap((zx + 0.2 + 0.6 * self.rng.random()) * C.ZSIZE),
-                                  snap((zz + 0.2 + 0.6 * self.rng.random()) * C.ZSIZE))
+                    self.route_to(a, *self.city.point_in_zone(zi, self.rng))
                     a.rebal, a.cruise_wait = True, 0.0
                     want -= 1; budget -= 1; moved += 1; surplus[sz] -= 1
                 if want <= 0:

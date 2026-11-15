@@ -15,14 +15,21 @@ from threadpoolctl import threadpool_limits
 
 threadpool_limits(1)   # belt and braces; see orca/__init__.py
 
-from .. import config as C  # noqa: E402  (thread limits must be set before numerical imports)
+
 from ..features import FeatureStore  # noqa: E402
 
 ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
 
 
+def artifact(stem: str, ext: str = "joblib") -> Path:
+    """Path of a model artifact for the active city: grid keeps plain names, others get a suffix."""
+    from .. import city as G
+    c = G.current().name
+    return ARTIFACTS / (f"{stem}.{ext}" if c == "grid" else f"{stem}_{c}.{ext}")
+
+
 def _load(name):
-    p = ARTIFACTS / name
+    p = artifact(name)
     if p.exists():
         try:
             return joblib.load(p)
@@ -40,7 +47,7 @@ class EtaModel:
 
     def __init__(self, fs: FeatureStore, use_learned: bool = True):
         self.fs = fs
-        bundle = _load("eta.joblib") if use_learned else None
+        bundle = _load("eta") if use_learned else None
         self.model = bundle["model"] if bundle else None
         self.residual = bool(bundle) and bundle.get("meta", {}).get("target") == "log_ratio_to_physics"
         self.kind = "learned (gradient boosting)" if self.model is not None else "observed-speed heuristic"
@@ -78,11 +85,10 @@ class DemandForecaster:
 
     def __init__(self, fs: FeatureStore, use_learned: bool = True, source: str = "sim"):
         self.fs = fs
-        bundle = _load(f"demand_{source}.joblib") if use_learned else None
+        bundle = _load(f"demand_{source}") if use_learned else None
         self.model = bundle["model"] if bundle else None
-        self.residual = bool(bundle) and bundle.get("meta", {}).get("target") == "log_ratio_to_physics"
         self.kind = "learned (gradient boosting)" if self.model is not None else "EWMA with trend"
-        n = C.ZONES * C.ZONES
+        n = fs.n_zones
         self.rate = [0.0] * n
         self.prev = [0.0] * n
         self.init = False

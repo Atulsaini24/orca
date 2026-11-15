@@ -225,7 +225,7 @@ const FS_HEAT = `#version 300 es
 precision mediump float; in vec2 vUV; uniform sampler2D uTex; uniform float uAlpha; out vec4 o;
 void main(){ vec4 t = texture(uTex, vUV); o = vec4(t.rgb, t.a * uAlpha); }`;
 const FS_WATER = `#version 300 es
-precision highp float; in vec2 vUV; in vec3 vW; uniform float uTime; uniform vec3 uCam, uFog, uDeep, uShallow, uSun; uniform vec2 uFogR, uCity; out vec4 o;
+precision highp float; in vec2 vUV; in vec3 vW; uniform float uTime; uniform vec3 uCam, uFog, uDeep, uShallow, uSun; uniform vec2 uFogR; uniform vec4 uCity; out vec4 o;
 float n2(vec2 p){ return sin(p.x) * cos(p.y); }
 void main(){
   vec2 p = vW.xz * 0.07;
@@ -233,7 +233,7 @@ void main(){
   vec3 nrm = normalize(vec3(w * 0.12, 1.0, w * 0.1));
   vec3 v = normalize(uCam - vW);
   float spec = pow(max(dot(reflect(-uSun, nrm), v), 0.0), 60.0);
-  float shore = smoothstep(26.0, 2.0, max(abs(vW.x - uCity.x) - uCity.y, abs(vW.z - uCity.x) - uCity.y));
+  float shore = smoothstep(26.0, 2.0, max(abs(vW.x - uCity.x) - uCity.z, abs(vW.z - uCity.y) - uCity.w));
   vec3 c = mix(uDeep, uShallow, shore * 0.8) + spec * 0.35 + w * 0.012;
   float d = distance(uCam, vW);
   o = vec4(mix(c, uFog, smoothstep(uFogR.x, uFogR.y, d)), 1.0);
@@ -358,13 +358,13 @@ class Renderer {
     this.lineLayers.push(L); this.lineLayers.sort((a, b) => a.order - b.order);
     return L;
   }
-  heatTexture(n) {
+  heatTexture(n, m = n) {
     const gl = this.gl, t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(n * n * 4));
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, m, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(n * m * 4));
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    return { tex: t, n, update: (data) => { gl.bindTexture(gl.TEXTURE_2D, t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, n, gl.RGBA, gl.UNSIGNED_BYTE, data); } };
+    return { tex: t, n, m, update: (data) => { gl.bindTexture(gl.TEXTURE_2D, t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, m, gl.RGBA, gl.UNSIGNED_BYTE, data); } };
   }
   resize(w, h, dpr) {
     this.canvas.width = Math.max(1, Math.round(w * dpr)); this.canvas.height = Math.max(1, Math.round(h * dpr));
@@ -421,7 +421,7 @@ class Renderer {
       const P = this.pWater, u = P.u; gl.useProgram(P.p);
       gl.uniformMatrix4fv(u.uVP, false, cam.vp); gl.uniform4fv(u.uRect, this.water.rect); gl.uniform1f(u.uY, this.water.y);
       gl.uniform1f(u.uTime, this.time); gl.uniform3fv(u.uCam, cam.eye); gl.uniform3fv(u.uFog, this.fog); gl.uniform2fv(u.uFogR, this.fogRange);
-      gl.uniform3fv(u.uDeep, this.water.deep); gl.uniform3fv(u.uShallow, this.water.shallow); gl.uniform3fv(u.uSun, L.dir); gl.uniform2fv(u.uCity, this.water.city);
+      gl.uniform3fv(u.uDeep, this.water.deep); gl.uniform3fv(u.uShallow, this.water.shallow); gl.uniform3fv(u.uSun, L.dir); gl.uniform4fv(u.uCity, this.water.city);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     // opaque meshes
@@ -467,7 +467,8 @@ class OrbitCam {
     const g = this.g, L = this.limits;
     g.pitch = Math.max(L.pitchMin, Math.min(L.pitchMax, g.pitch));
     g.dist = Math.max(L.distMin, Math.min(L.distMax, g.dist));
-    g.t[0] = Math.max(-L.bound + L.cx, Math.min(L.bound + L.cx, g.t[0])); g.t[2] = Math.max(-L.bound + L.cz, Math.min(L.bound + L.cz, g.t[2]));
+    const bx = L.boundX ?? L.bound, bz = L.boundZ ?? L.bound;
+    g.t[0] = Math.max(L.cx - bx, Math.min(L.cx + bx, g.t[0])); g.t[2] = Math.max(L.cz - bz, Math.min(L.cz + bz, g.t[2]));
   }
   rotate(dx, dy) { this.tween = null; this.g.yaw -= dx * 0.0055; this.g.pitch += dy * 0.0045; this.clampGoal(); }
   pan(dx, dy) {   // screen pixels → ground units, scaled by distance

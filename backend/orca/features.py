@@ -13,26 +13,30 @@ from __future__ import annotations
 import math
 from collections import deque
 
-from . import config as C
-from .city import arterial_fraction, manhattan, zone_of
+from . import city as G
+from .city import zone_of
 
-N_ZONES = C.ZONES * C.ZONES
 HISTORY = 30  # minutes of per-zone demand history
 
 
 class FeatureStore:
     def __init__(self):
-        self.speed = [C.BASE_SPEED * 1.1] * N_ZONES     # units / s, observed
-        self.speed_n = [0] * N_ZONES
-        self.minute = [0] * N_ZONES                       # pickups in the current minute
-        self.hist = deque(maxlen=HISTORY)                 # list of per-zone counts, oldest first
-        self.city_speed = C.BASE_SPEED * 1.1
+        city = G.current()
+        self.n_zones = city.N_ZONES
+        self.speed = [city.base_speed * 1.1] * self.n_zones     # units / s, observed
+        self.speed_n = [0] * self.n_zones
+        self.minute = [0] * self.n_zones                        # pickups in the current minute
+        self.hist = deque(maxlen=HISTORY)                       # list of per-zone counts, oldest first
+        self.city_speed = city.base_speed * 1.1
+        # zone position features: zone centre, scaled so the city's long side spans 0-10
+        s = 10 / max(city.WX, city.WZ)
+        self.zone_xy = [(cx * s, cz * s) for cx, cz in (city.zone_center(i) for i in range(self.n_zones))]
 
     # ---- telemetry -------------------------------------------------------------
     def observe_ping(self, x0, z0, x1, z1, dt):
         if dt <= 0.5:
             return
-        d = abs(x1 - x0) + abs(z1 - z0)
+        d = math.hypot(x1 - x0, z1 - z0)
         v = d / dt
         if v <= 0.02:      # stopped; not informative about road speed
             return
@@ -46,7 +50,7 @@ class FeatureStore:
 
     def roll_minute(self):
         self.hist.append(self.minute)
-        self.minute = [0] * N_ZONES
+        self.minute = [0] * self.n_zones
 
     # ---- features ----------------------------------------------------------------
     def zone_speed(self, x, z) -> float:
@@ -54,12 +58,12 @@ class FeatureStore:
         return self.speed[zi] if self.speed_n[zi] >= 3 else self.city_speed
 
     def eta_features(self, ax, az, bx, bz, clock) -> list[float]:
-        d = manhattan(ax, az, bx, bz)
+        d, major = G.road_metrics(ax, az, bx, bz)
         hour = (clock / 3600) % 24
         return [
             d,
             math.hypot(bx - ax, bz - az),
-            arterial_fraction(ax, az, bx, bz),
+            major,
             self.zone_speed(ax, az),
             self.zone_speed(bx, az),
             self.zone_speed(bx, bz),
@@ -77,10 +81,10 @@ class FeatureStore:
         minute = (clock / 60) % 1440
         return [lag(1), lag(2), lag(3), lag(4), lag(5), mean15, city1, city5,
                 math.sin(minute / 1440 * math.tau), math.cos(minute / 1440 * math.tau),
-                zone % C.ZONES, zone // C.ZONES]
+                *self.zone_xy[zone]]
 
 
-ETA_FEATURES = ["manhattan", "euclid", "arterial_frac", "speed_origin", "speed_corner", "speed_dest",
+ETA_FEATURES = ["road_dist", "euclid", "arterial_frac", "speed_origin", "speed_corner", "speed_dest",
                 "speed_city", "hour_sin", "hour_cos"]
 DEMAND_FEATURES = ["lag1", "lag2", "lag3", "lag4", "lag5", "mean15", "city_lag1", "city_mean5",
                    "minute_sin", "minute_cos", "zone_x", "zone_z"]
