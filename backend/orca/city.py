@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from .config import CELL, GRID, W, ZONES, ZSIZE
+from .config import CELL, GRID, ZONES, ZSIZE, W
 
 
 def is_arterial(i: float) -> bool:

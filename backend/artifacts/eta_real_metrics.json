@@ -1,0 +1,112 @@
+{
+  "task": "eta_real",
+  "source": "NYC TLC yellow taxi, January 2015, Manhattan weekdays",
+  "features": [
+    "pu_zone",
+    "do_zone",
+    "dist_line_m",
+    "dist_zones_m",
+    "same_zone",
+    "hour",
+    "minute_of_day_sin",
+    "minute_of_day_cos",
+    "weekday"
+  ],
+  "target": "log trip duration",
+  "n_train": 1518124,
+  "n_test": 481834,
+  "train_days": [
+    "2015-01-05",
+    "2015-01-22"
+  ],
+  "test_days": [
+    "2015-01-23",
+    "2015-01-30"
+  ],
+  "results": [
+    {
+      "model": "distance / citywide median speed",
+      "mae": 279.6757859147653,
+      "median_abs_err": 191.55889892578125,
+      "p90_abs_err": 616.3678649902344,
+      "mape": 0.43788438655801903
+    },
+    {
+      "model": "distance / real median speed for the hour",
+      "mae": 252.5879013373969,
+      "median_abs_err": 175.76129316792873,
+      "p90_abs_err": 547.3152111761781,
+      "mape": 0.3978795361457948
+    },
+    {
+      "model": "historical median for zone pair and hour",
+      "mae": 190.99567129396692,
+      "median_abs_err": 129.0,
+      "p90_abs_err": 420.5,
+      "mape": 0.2999550863024628
+    },
+    {
+      "model": "gradient boosting (ORCA)",
+      "mae": 182.3133559060029,
+      "median_abs_err": 124.54514993298739,
+      "p90_abs_err": 396.07277169449696,
+      "mape": 0.2944987942662469
+    }
+  ],
+  "mae_by_hour": {
+    "orca": [
+      129.4,
+      118.5,
+      114.1,
+      111.6,
+      111.9,
+      99.6,
+      101.2,
+      154.9,
+      200.0,
+      209.9,
+      223.4,
+      234.1,
+      230.2,
+      220.2,
+      225.0,
+      221.2,
+      197.7,
+      198.7,
+      182.5,
+      164.1,
+      152.1,
+      148.7,
+      152.2,
+      148.0
+    ],
+    "pair_hour": [
+      141.8,
+      134.4,
+      134.1,
+      138.8,
+      142.8,
+      118.5,
+      105.5,
+      162.0,
+      207.7,
+      213.8,
+      227.3,
+      238.5,
+      234.9,
+      227.1,
+      231.9,
+      226.8,
+      204.2,
+      204.9,
+      190.0,
+      174.1,
+      165.1,
+      161.4,
+      165.6,
+      162.0
+    ]
+  },
+  "note": "Positions inside a zone are reconstructed (the TLC publishes zone IDs), so features use zone-level geometry.",
+  "trained_at": "2026-11-16 00:28"
+}

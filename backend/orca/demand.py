@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -102,7 +103,7 @@ class Projector:
 class TLCReplay:
     name = "nyc-tlc"
 
-    _cache: dict = {}
+    _cache: ClassVar[dict] = {}
 
     def __init__(self, path, zones=None, nrows=None):
         key = (str(Path(path).resolve()), str(zones), nrows)

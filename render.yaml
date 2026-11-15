@@ -1,0 +1,17 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+# New > Blueprint > pick this repository. The image build downloads and prepares the real NYC data.
+services:
+  - type: web
+    name: orca
+    runtime: docker
+    plan: standard            # 2 GB RAM: the 2M-trip replay and two 1,200-car fleets need ~1 GB
+    healthCheckPath: /api/health
+    envVars:
+      - key: ORCA_ADMIN_TOKEN # operator controls (speed, pause, demand, fleet): open /app?token=<value> once
+        generateValue: true
+      - key: ORCA_TRUST_PROXY
+        value: "1"
+    disk:
+      name: ledger
+      mountPath: /app/backend/ledger
+      sizeGB: 1

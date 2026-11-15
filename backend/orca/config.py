@@ -27,4 +27,41 @@ HUNGARIAN_MAX = 150       # above this many waiting requests, fall back to greed
 COVER = 0.5               # idle cars wanted per zone, as a share of its forecast 5-min demand
 
 START_CLOCK = 7 * 3600 + 30 * 60   # simulation starts at 07:30
+START_DEFAULT = START_CLOCK
 DEMAND_PER_UNIT = 0.00118          # requests / s per fleet unit at 1.0x demand
+
+# Scoring weights (see docs/ARCHITECTURE.md, "Score"). Hand-set defaults; `python -m orca.tune`
+# searches them on seeds disjoint from the benchmark's and writes artifacts/dispatch_params.json,
+# which overrides these values when present.
+ZONE_SLOPE = 20.0         # seconds of cost per unit of zone shortfall ratio
+ZONE_CAP = 60.0           # maximum zone supply cost (s)
+URGENT_W = 0.55           # urgent requests' cost multiplier
+WAIT_W = 0.25             # cost credit per second a request has already waited
+WAIT_CAP = 300.0          # ... up to this many seconds
+TUNABLE = ("REOFFER", "COVER", "ZONE_SLOPE", "ZONE_CAP", "URGENT_W", "WAIT_W", "K")
+DEFAULTS = {k: globals()[k] for k in TUNABLE}
+
+
+def apply(params: dict) -> None:
+    """Override tunable weights in this process (used by tuning workers and at start-up)."""
+    for k, v in params.items():
+        if k not in TUNABLE:
+            raise KeyError(f"{k} is not a tunable dispatch parameter")
+        globals()[k] = round(v) if k == "K" else float(v)
+
+
+def _load_tuned() -> dict:
+    import json
+    import os
+    from pathlib import Path
+    if os.environ.get("ORCA_PARAMS") == "default":
+        return {}
+    p = Path(__file__).resolve().parents[1] / "artifacts" / "dispatch_params.json"
+    try:
+        return json.loads(p.read_text())["params"]
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+TUNED = _load_tuned()
+apply(TUNED)

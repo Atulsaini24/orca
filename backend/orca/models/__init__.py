@@ -15,8 +15,8 @@ from threadpoolctl import threadpool_limits
 
 threadpool_limits(1)   # belt and braces; see orca/__init__.py
 
-from .. import config as C
-from ..features import FeatureStore
+from .. import config as C  # noqa: E402  (thread limits must be set before numerical imports)
+from ..features import FeatureStore  # noqa: E402
 
 ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
 

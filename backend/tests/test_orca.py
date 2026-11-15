@@ -4,7 +4,6 @@ import random
 import struct
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -143,7 +142,7 @@ class _RS:
 def test_hungarian_never_worse_than_greedy():
     rng = np.random.default_rng(1)
     d = OrcaDispatcher.__new__(OrcaDispatcher)
-    for trial in range(50):
+    for _trial in range(50):
         nq, nu = rng.integers(2, 12), rng.integers(2, 12)
         units = [_A(i) for i in range(nu)]
         q = []
@@ -167,7 +166,7 @@ def test_tlc_loader_and_replay(tmp_path):
     p = tmp_path / "trips.csv"
     rng = random.Random(3)
     rows = ["tpep_pickup_datetime,tpep_dropoff_datetime,pickup_longitude,pickup_latitude,dropoff_longitude,dropoff_latitude"]
-    for i in range(3000):
+    for _i in range(3000):
         h, m = rng.randrange(24), rng.randrange(60)
         plat, plon = 40.72 + rng.random() * 0.07, -73.99 + rng.random() * 0.03
         rows.append(f"2015-01-13 {h:02d}:{m:02d}:00,2015-01-13 {h:02d}:{m:02d}:59,{plon},{plat},{plon + 0.005},{plat + 0.004}")
@@ -176,7 +175,7 @@ def test_tlc_loader_and_replay(tmp_path):
     e = Engine(seed=1, fleet=300, demand="tlc", data=str(p), use_learned=False)
     src = e.world.source
     assert src.n == 3000
-    assert 0 <= src.px.min() and src.px.max() <= C.W and 0 <= src.pz.min() and src.pz.max() <= C.W
+    assert src.px.min() >= 0 and src.px.max() <= C.W and src.pz.min() >= 0 and src.pz.max() <= C.W
     got = 0
     for _ in range(600):
         e.step(1.0)
@@ -203,6 +202,7 @@ def test_real_nyc_replay():
 
 def test_prepared_schema_loader(tmp_path):
     import pandas as pd
+
     from orca.demand import load_trips
     n = 500
     rng = np.random.default_rng(0)

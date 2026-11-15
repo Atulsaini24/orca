@@ -1,41 +1,41 @@
 WEBVTT
 
 1
-00:00:00.450 --> 00:00:05.966
+00:00:00.450 --> 00:00:05.754
 This is ORCA: twelve hundred cars, driven by real New York taxi demand.
 
 2
-00:00:08.450 --> 00:00:16.323
+00:00:08.450 --> 00:00:15.556
 Every request goes to two dispatchers: the nearest-car rule, and ORCA. Same riders, same traffic.
 
 3
-00:00:17.417 --> 00:00:25.242
+00:00:17.417 --> 00:00:23.651
 Yellow cars head to pickups. Blue cars carry riders. Grey cars are free. Rings are waiting riders.
 
 4
-00:00:26.417 --> 00:00:37.076
+00:00:26.417 --> 00:00:34.808
 ORCA just assigned this rider. It scored ten nearby cars on drive time, acceptance, GPS freshness, and the demand around them.
 
 5
-00:00:38.417 --> 00:00:46.851
+00:00:38.417 --> 00:00:45.332
 The nearest-car rule would send car 338. But it's one of the last idle cars in busy zone C6.
 
 6
-00:00:48.450 --> 00:00:54.967
+00:00:48.450 --> 00:00:54.822
 Every three seconds, ORCA solves all waiting requests together, as one optimal match.
 
 7
-00:00:57.450 --> 00:01:07.305
+00:00:57.450 --> 00:01:05.925
 Now a network outage. Cars in the red circle go silent. The nearest-car rule keeps offering them rides. ORCA works around them.
 
 8
-00:01:09.450 --> 00:01:17.247
+00:01:09.450 --> 00:01:15.608
 Then a demand spike. A learned forecast sees it coming, and ORCA moves spare cars in before they're needed.
 
 9
-00:01:21.450 --> 00:01:28.409
+00:01:21.450 --> 00:01:27.549
 The result: 22 percent shorter waits than nearest-car dispatch, on the very same requests.
 
 10
-00:01:30.450 --> 00:01:38.833
+00:01:30.450 --> 00:01:36.473
 Python and scikit-learn behind, hand-written WebGL in front. Now it's your turn: open the control room.

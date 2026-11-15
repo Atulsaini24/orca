@@ -5,6 +5,10 @@ services:
     environment:
       ORCA_DEMAND: ${ORCA_DEMAND:-tlc}            # real NYC TLC trips, prepared during the image build
       ORCA_DB: /app/backend/ledger/orca.db        # keep trip history across restarts
+      # Local use: anyone at this machine may use speed / pause / demand / fleet controls.
+      # Public deployment: remove this line and set ORCA_ADMIN_TOKEN instead (open /app?token=... once).
+      ORCA_OPEN_CONTROLS: ${ORCA_OPEN_CONTROLS:-1}
+      ORCA_ADMIN_TOKEN: ${ORCA_ADMIN_TOKEN:-}
     volumes:
       - orca-ledger:/app/backend/ledger
     restart: unless-stopped

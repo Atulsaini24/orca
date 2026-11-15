@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import config as C
@@ -87,7 +87,7 @@ class SyntheticDemand:
 
     name = "synthetic"
 
-    def __init__(self, world: "World"):
+    def __init__(self, world: World):
         self.world = world
         r = world.rng
         self.hotspots = [

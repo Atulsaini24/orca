@@ -111,12 +111,32 @@ class LiveSource extends Emitter {
   }
   tick() {}
   setView(v) { this.view = v; this.connect(); }
-  async post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return r.json(); }
+  async post(url, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (OPERATOR_TOKEN) headers.Authorization = `Bearer ${OPERATOR_TOKEN}`;
+    let res;
+    try {
+      const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      res = await r.json().catch(() => ({ ok: r.ok }));
+      if (!r.ok && !res.error) res.error = r.status === 429 ? 'Too many requests, slow down.' : `The server refused (${r.status}).`;
+    } catch (e) { res = { ok: false, error: 'The server is unreachable.' }; }
+    if (!res.ok && res.error) toast(res.error);
+    return res;
+  }
   command(c) { if (c.cmd === 'speed') this.speed = c.value; if (c.cmd === 'pause') this.paused = c.value; return this.post('/api/command', c); }
   async explain(id) { return (await fetch(`/api/explain/${id}`)).json(); }
   reset(fleet) { return this.post('/api/reset', { fleet }); }
   async models() { try { return await (await fetch('/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
 }
+
+// Operator token for servers in protected mode: open /app?token=... once; kept for this browser tab only.
+const OPERATOR_TOKEN = (() => {
+  try {
+    const t = QS.get('token');
+    if (t) { sessionStorage.setItem('orca-token', t); history.replaceState(null, '', location.pathname); }
+    return sessionStorage.getItem('orca-token');
+  } catch (e) { return null; }
+})();
 
 async function pickSource() {
   if (CAPTURE || location.hash === '#demo' || !/^https?:$/.test(location.protocol)) return new DemoSource();

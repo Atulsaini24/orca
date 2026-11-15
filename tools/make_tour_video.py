@@ -57,7 +57,7 @@ def record(out: Path) -> list[dict]:
         pg.wait_for_function("document.title === 'capture-ready'", timeout=180_000)
         total = pg.evaluate("__orca.total")
         pg.evaluate("__orca.startTour()")
-        n = int(round(total * FPS))
+        n = round(total * FPS)
         for i in range(n):
             pg.evaluate("__orca.step(1/30)")
             cap = pg.evaluate("[document.querySelector('#capCh').textContent, document.querySelector('#capT').textContent, document.querySelector('#capB').textContent]")
@@ -129,7 +129,7 @@ def load_audio(path: Path, tempo: float = 1.0) -> np.ndarray:
         af.append(f"atempo={tempo:.3f}")
     af.append("highpass=f=70,acompressor=threshold=-20dB:ratio=3:attack=5:release=80")
     subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(path), "-af", ",".join(af), "-ar", str(SR), "-ac", "1", str(wav)], check=True)
-    sr, x = wavfile.read(wav)
+    _sr, x = wavfile.read(wav)
     x = x.astype(np.float32) / 32768.0
     return x / max(1e-6, np.abs(x).max()) * 0.89
 
@@ -195,7 +195,7 @@ def score(total: float, marks: list[float], seed: int = 7) -> np.ndarray:
         d = 2 * bar + 1.2
         tt = np.arange(int(d * SR)) / SR
         env = np.minimum(1, tt / 1.1) * np.minimum(1, (d - tt) / 1.4)
-        for ni, nn in enumerate(ch[1:]):
+        for _ni, nn in enumerate(ch[1:]):
             f = note(nn)
             for det, pan in ((-0.004, -0.6), (0.004, 0.6)):
                 w = sum(np.sin(2 * np.pi * f * (1 + det) * h * tt + rng.random() * 6.28) / h ** 1.6 for h in range(1, 6))
@@ -307,18 +307,32 @@ def main():
     wavfile.write(WORK / "mix.wav", SR, (out * 32767).astype(np.int16))
     wavfile.write(WORK / "score.wav", SR, (music * 32767).astype(np.int16))
     DOCS.mkdir(exist_ok=True)
-    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(silent), "-i", str(WORK / "mix.wav"),
-                    "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "slow", "-crf", "23", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "192k",
-                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", str(SR), "-shortest", "-movflags", "+faststart",
-                    str(DOCS / "orca-tour.mp4")], check=True)
+    # Loudness-normalise once, then encode two deliverables from the same master audio.
+    master = WORK / "mix-norm.wav"
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(WORK / "mix.wav"), "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                    "-ar", str(SR), str(master)], check=True)
+    # H.264 + AAC: plays everywhere (Safari, iOS, old browsers).
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(silent), "-i", str(master),
+                    "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "veryslow", "-crf", "27", "-tune", "film",
+                    "-profile:v", "high", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+                    "-shortest", "-movflags", "+faststart", str(DOCS / "orca-tour.mp4")], check=True)
+    # VP9 + Opus in WebM: roughly half the size at the same quality, used by Chrome, Edge and Firefox.
+    webm = DOCS / "orca-tour.webm"
+    vp9 = ["-c:v", "libvpx-vp9", "-b:v", "1500k", "-maxrate", "2400k", "-bufsize", "3000k", "-row-mt", "1", "-tile-columns", "2", "-deadline", "good",
+           "-cpu-used", "2", "-pix_fmt", "yuv420p"]
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(silent), *vp9, "-pass", "1", "-an", "-passlogfile",
+                    str(WORK / "vp9"), "-f", "null", "-"], check=True)
+    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(silent), "-i", str(master), "-map", "0:v", "-map", "1:a", *vp9,
+                    "-pass", "2", "-passlogfile", str(WORK / "vp9"), "-c:a", "libopus", "-b:a", "128k", "-shortest",
+                    str(webm)], check=True)
     subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(WORK / "score.wav"), "-af", "loudnorm=I=-20:TP=-2",
                     "-c:a", "libmp3lame", "-b:a", "160k", str(DOCS / "orca-tour-score.mp3")], check=True)
     subprocess.run([ffmpeg(), "-v", "error", "-y", "-ss", "5", "-i", str(silent), "-frames:v", "1", "-q:v", "3",
                     str(DOCS / "orca-tour-poster.jpg")], check=True)
     vtt(cues, DOCS / "orca-tour.vtt")
-    print(f"Wrote docs/orca-tour.mp4 ({(DOCS / 'orca-tour.mp4').stat().st_size / 1e6:.1f} MB), orca-tour.vtt, "
-          "orca-tour-poster.jpg, orca-tour-score.mp3")
+    mb = lambda f: (DOCS / f).stat().st_size / 1e6
+    print(f"Wrote docs/orca-tour.mp4 ({mb('orca-tour.mp4'):.1f} MB), orca-tour.webm ({mb('orca-tour.webm'):.1f} MB), "
+          "orca-tour.vtt, orca-tour-poster.jpg, orca-tour-score.mp3")
 
 
 if __name__ == "__main__":

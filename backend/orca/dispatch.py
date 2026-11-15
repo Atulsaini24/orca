@@ -38,9 +38,31 @@ def hash2(a: int, b: int) -> float:
 
 
 class Agent:
-    __slots__ = ("id", "x", "z", "hx", "hz", "state", "acc", "offline_until", "last_ping", "next_ping", "rx", "rz",
-                 "route", "ri", "rs", "rebal", "offers", "accepts", "cruise_wait", "offer_at", "offer_deadline",
-                 "offer_acc", "leg")
+    __slots__ = (
+        "acc",
+        "accepts",
+        "cruise_wait",
+        "hx",
+        "hz",
+        "id",
+        "last_ping",
+        "leg",
+        "next_ping",
+        "offer_acc",
+        "offer_at",
+        "offer_deadline",
+        "offers",
+        "offline_until",
+        "rebal",
+        "ri",
+        "route",
+        "rs",
+        "rx",
+        "rz",
+        "state",
+        "x",
+        "z",
+    )
 
     def __init__(self, id_, x, z, acc, next_ping):
         self.id, self.x, self.z = id_, x, z
@@ -121,7 +143,7 @@ class Dispatcher:
         self.m = dict(served=0, lost=0, reoffers=0, timeouts=0, declines=0, waits=[], p1waits=[],
                       interval=[], interval_lost=0, series=[], all=[])
         self.B = 30.0
-        self.BN = int(math.ceil(C.W / self.B)) + 1
+        self.BN = math.ceil(C.W / self.B) + 1
         self.buckets = [[] for _ in range(self.BN * self.BN)]
 
     # ---- main step ---------------------------------------------------------------
@@ -448,7 +470,7 @@ class OrcaDispatcher(Dispatcher):
     def zone_cost(self, x, z) -> float:
         zi = zone_of(x, z)
         ratio = self.forecaster.forecast[zi] * C.COVER / (self.z_idle[zi] + 1)
-        return min(60.0, (ratio - 1) * 20) if ratio > 1 else 0.0
+        return min(C.ZONE_CAP, (ratio - 1) * C.ZONE_SLOPE) if ratio > 1 else 0.0
 
     def match(self):
         import time as _time
@@ -474,7 +496,7 @@ class OrcaDispatcher(Dispatcher):
                 p = self.accept.p(a, eta, rs.r.p1)
                 zc = self.zone_cost(a.rx, a.rz)
                 cost = eta + (1 - p) * C.REOFFER + zc
-                adj = cost * (0.55 if rs.r.p1 else 1.0) - min(wait, 300) * 0.25
+                adj = cost * (C.URGENT_W if rs.r.p1 else 1.0) - min(wait, C.WAIT_CAP) * C.WAIT_W
                 rs.cands.append(dict(a=a, eta=eta, p=p, zc=zc, cost=cost, adj=adj, age=t - a.last_ping, rx=a.rx, rz=a.rz))
 
         assignments = self.solve(q)

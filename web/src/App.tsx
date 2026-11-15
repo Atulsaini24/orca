@@ -4,11 +4,13 @@ import {
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import HeroMap from './components/HeroMap';
-import { BenchmarkChart, HourlyChart } from './components/Charts';
-import { agg, benchConfig, cut, fmt, fmtM, models, realData } from './data';
+import { BenchmarkChart, FullDayChart, HourlyChart, RealEtaCard } from './components/Charts';
+import { agg, benchConfig, benchTests, cut, cutCI, fmt, fmtM, models, realData } from './data';
 
 const APP = '/app';
 const pct = (v: number) => `${Math.round(v * 100)}%`;
+const pctRange = (ci?: [number, number]) => (ci ? `${Math.round(ci[0] * 100)}–${Math.round(ci[1] * 100)}%` : '');
+const pFmt = (p: number) => (p < 0.001 ? '< 0.001' : `= ${p.toFixed(3)}`);
 
 type Health = { mode: string; fleet: number; demand: string; eta_model: string; forecaster: string } | null;
 function useHealth(): Health | 'offline' | 'loading' {
@@ -64,7 +66,8 @@ function Nav() {
 
 function LiveBadge() {
   const h = useHealth();
-  const live = h !== 'loading' && h !== 'offline' && h?.mode === 'live';
+  const engine = h !== 'loading' && h !== 'offline' && h?.mode === 'live' ? h : null;
+  const live = engine !== null;
   return (
     <span className="inline-flex items-center gap-2 rounded-full bg-white px-3.5 py-1.5 text-[13px] font-medium text-ink-2 shadow-[0_0_0_1px_#DADDE1]">
       <span className="relative flex h-2 w-2">
@@ -72,7 +75,7 @@ function LiveBadge() {
         <span className={`relative inline-flex h-2 w-2 rounded-full ${live ? 'bg-emerald-500' : 'bg-slate'}`} />
       </span>
       {h === 'loading' ? 'Checking engine…'
-        : live ? `Engine live · ${fmt(h!.fleet)} cars · ${h!.demand}`
+        : engine ? `Engine live · ${fmt(engine.fleet)} cars · ${engine.demand}`
           : 'Runs in your browser on real NYC taxi demand'}
     </span>
   );
@@ -178,10 +181,20 @@ function Results() {
           <h2 className="wide mt-3 max-w-3xl text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[48px]">
             {pct(cut('steady'))} shorter waits on an ordinary day. {pct(cut('stress'))} when the city breaks.</h2>
           <p className="mt-5 max-w-2xl text-[17px] leading-relaxed text-ink-2">
-            {benchConfig.minutes} simulated minutes per run, {fmt(benchConfig.fleet)} cars per dispatcher, seeds {benchConfig.seeds.join(' and ')}.
-            The stress run injects a demand spike and a GPS outage at minute 20 and a major accident at minute 40.
-          </p></Reveal>
+            {benchConfig.minutes} simulated minutes per run, {fmt(benchConfig.fleet)} cars per dispatcher, {benchConfig.seeds.length} independent
+            seeds, both dispatchers on identical riders, traffic and drivers. The stress run injects a demand spike and a GPS outage at minute 20 and
+            a major accident at minute 40.{benchConfig.tuned_weights ? ' ORCA’s scoring weights were tuned on separate seeds the benchmark never uses.' : ''}
+          </p>
+          {cutCI('steady') && (
+            <p className="mt-3 text-[14px] text-ink-3">
+              95% confidence intervals over seeds: {pctRange(cutCI('steady'))} shorter waits on a steady day, {pctRange(cutCI('stress'))} under stress
+              {benchTests?.steady?.learned_vs_nearest != null &&
+                ` (paired Wilcoxon test, p ${pFmt(Math.max(benchTests.steady.learned_vs_nearest, benchTests.stress?.learned_vs_nearest ?? 0))})`}.
+              The dark mark on each bar is the interval of the mean.
+            </p>
+          )}</Reveal>
         <Reveal delay={0.05} className="mt-12"><BenchmarkChart /></Reveal>
+        <Reveal delay={0.05} className="mt-6"><FullDayChart /></Reveal>
         <div className="mt-6 grid gap-6 md:grid-cols-2">
           {[
             { icon: Gauge, t: 'Pickup ETA', n: e.n, rows: [[e.base?.model, e.base?.mae], [e.heur?.model, e.heur?.mae], ['Gradient boosting (ORCA)', e.ours?.mae]], unit: 's', what: 'mean absolute error, seconds' },
@@ -234,7 +247,7 @@ function RealData() {
             <span>What is still simulated: the street grid, individual car movement and driver behaviour. No public dataset has live taxi GPS traces.</span>
           </p>
         </Reveal>
-        <Reveal delay={0.08}><HourlyChart /></Reveal>
+        <div className="space-y-6"><Reveal delay={0.08}><HourlyChart /></Reveal><Reveal delay={0.1}><RealEtaCard /></Reveal></div>
       </div>
     </section>
   );
@@ -251,6 +264,7 @@ function Tour() {
         </Reveal>
         <Reveal delay={0.05} className="mt-10 overflow-hidden rounded-[24px] bg-ink shadow-[0_40px_80px_-40px_rgba(20,30,45,.6)]">
           <video className="aspect-video w-full" controls preload="metadata" playsInline poster="/media/orca-tour-poster.jpg">
+            <source src="/media/orca-tour.webm" type='video/webm; codecs="vp9, opus"' />
             <source src="/media/orca-tour.mp4" type="video/mp4" />
             <track kind="captions" src="/media/orca-tour.vtt" srcLang="en" label="English" default />
           </video>

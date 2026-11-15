@@ -63,14 +63,30 @@ class Engine:
 
     # ---- commands ----------------------------------------------------------------
     def command(self, cmd: dict) -> dict:
+        if not isinstance(cmd, dict):
+            return {"ok": False, "error": "Send a JSON object like {\"cmd\": \"spike\"}"}
         c = cmd.get("cmd")
         w = self.world
-        if c == "speed":
-            self.speed = float(max(1, min(120, cmd.get("value", 20))))
-        elif c == "pause":
-            self.paused = bool(cmd.get("value", not self.paused))
-        elif c == "demand":
-            w.demand_mult = float(max(0.3, min(2.0, cmd.get("value", 1))))
+
+        def number(default, lo, hi):
+            v = cmd.get("value", default)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                raise ValueError
+            return float(max(lo, min(hi, v)))
+        try:
+            if c == "speed":
+                self.speed = number(20, 1, 120)
+                return {"ok": True}
+            if c == "demand":
+                w.demand_mult = number(1, 0.3, 2.0)
+                return {"ok": True}
+        except ValueError:
+            return {"ok": False, "error": f"'{c}' needs a numeric value"}
+        if c == "pause":
+            v = cmd.get("value", not self.paused)
+            if not isinstance(v, bool):
+                return {"ok": False, "error": "'pause' needs true or false"}
+            self.paused = v
         elif c == "spike":
             w.trigger_spike()
         elif c == "outage":
@@ -148,6 +164,7 @@ class Engine:
         """Training metrics of the models in use, plus the latest benchmark, for the model report."""
         import json
         from pathlib import Path
+
         from .models import ARTIFACTS
         docs = Path(__file__).resolve().parents[2] / "docs"
         read = lambda p: json.loads(p.read_text()) if p.exists() else None

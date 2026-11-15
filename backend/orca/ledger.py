@@ -63,7 +63,7 @@ class Ledger:
             for pol in ("smart", "base"):
                 waits = [w for (w,) in self.db.execute(f"SELECT wait FROM trips WHERE {cond} AND policy = ? ORDER BY wait", (*args, pol))]
                 n = len(waits)
-                pct = lambda q: waits[min(n - 1, int(q * n))] if n else None
+                pct = lambda q, waits=waits, n=n: waits[min(n - 1, int(q * n))] if n else None
                 lost = self.db.execute("SELECT COUNT(*) FROM lost WHERE run = ? AND policy = ?", (self.run, pol)).fetchone()[0]
                 zones = {z: (m, c) for z, m, c in self.db.execute(
                     f"SELECT zone, AVG(wait), COUNT(*) FROM trips WHERE {cond} AND policy = ? GROUP BY zone", (*args, pol))}

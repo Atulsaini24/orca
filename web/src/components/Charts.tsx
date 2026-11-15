@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { agg, policies, realData, scenarios } from '../data';
+import { agg, ciOf, fullDay, policies, realData, realEta, scenarios } from '../data';
 
 /** Mean and p95 wait for each dispatcher, per scenario, from docs/benchmark.json. */
 export function BenchmarkChart() {
@@ -15,11 +15,13 @@ export function BenchmarkChart() {
           <div className="space-y-5">
             {policies.map((p, i) => {
               const mean = agg(s.key, p.key, 'mean'), p95 = agg(s.key, p.key, 'p95');
+              const ci = ciOf(s.key, p.key, 'mean')?.ci;
               return (
                 <div key={p.key}>
                   <div className="mb-1.5 flex items-baseline justify-between text-[14px]">
                     <span className={p.key === 'orca_learned' ? 'font-bold' : 'text-ink-2'}>{p.label}</span>
-                    <span className="num"><b className="text-[17px]">{Math.round(mean)} s</b>
+                    <span className="num" title={ci ? `95% confidence interval over seeds: ${Math.round(ci[0])}–${Math.round(ci[1])} s` : undefined}>
+                      <b className="text-[17px]">{Math.round(mean)} s</b>{ci && <span className="text-ink-3"> ±{Math.round((ci[1] - ci[0]) / 2)}</span>}
                       <span className="text-ink-3"> mean · {Math.round(p95)} s p95</span></span>
                   </div>
                   <div className="relative h-3 overflow-hidden rounded-full bg-sky">
@@ -29,6 +31,8 @@ export function BenchmarkChart() {
                     <motion.div className="absolute inset-y-0 left-0 rounded-full" style={{ background: p.tone, boxShadow: p.key === 'orca_learned' ? 'inset 0 0 0 1.5px #0B0C0E' : undefined }}
                       initial={{ width: 0 }} whileInView={{ width: `${(mean / max) * 100}%` }} viewport={{ once: true }}
                       transition={{ duration: 1, delay: 0.15 + i * 0.1, ease: [0.2, 0.8, 0.2, 1] }} />
+                    {ci && <span className="absolute rounded-full bg-ink/70" aria-hidden
+                      style={{ left: `${(ci[0] / max) * 100}%`, width: `max(2px, ${((ci[1] - ci[0]) / max) * 100}%)`, top: '40%', bottom: '40%' }} />}
                   </div>
                 </div>
               );
@@ -85,6 +89,79 @@ export function HourlyChart() {
         </svg>
       </div>
       <p className="mt-3 text-[13px] text-ink-3">Source: {realData.source}. Speed is trip distance over trip duration.</p>
+    </figure>
+  );
+}
+
+/** Mean wait by hour over a simulated 24-hour day on the real demand and traffic profile. */
+export function FullDayChart() {
+  if (!fullDay) return null;
+  const W = 720, H = 230, pad = { l: 44, r: 16, t: 14, b: 30 };
+  const vals = [...fullDay.orca, ...fullDay.nearest].filter((v): v is number => v != null);
+  const max = Math.ceil(Math.max(...vals) / 30) * 30;
+  const x = (h: number) => pad.l + (h / 23) * (W - pad.l - pad.r);
+  const y = (v: number) => H - pad.b - (v / max) * (H - pad.t - pad.b);
+  const path = (arr: (number | null)[]) =>
+    arr.map((v, h) => (v == null ? '' : `${h && arr[h - 1] != null ? 'L' : 'M'}${x(h).toFixed(1)} ${y(v).toFixed(1)}`)).join(' ');
+  const t = fullDay.totals;
+  return (
+    <figure className="card p-6">
+      <figcaption className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
+        <span className="text-[17px] font-bold">A full day on real demand: mean wait by hour</span>
+        <span className="flex gap-4 text-[13px] text-ink-2">
+          <span className="flex items-center gap-1.5"><i className="inline-block h-0.5 w-4 bg-slate" />Nearest car</span>
+          <span className="flex items-center gap-1.5"><i className="inline-block h-1 w-4 rounded bg-ink" />ORCA</span>
+        </span>
+      </figcaption>
+      <div className="overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} className="min-w-[560px]" role="img"
+          aria-label={`Line chart of mean wait by hour over 24 hours: ORCA averages ${Math.round(t.orca.mean)} seconds against ${Math.round(t.nearest.mean)} for nearest-car dispatch.`}>
+          {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={pad.l} x2={W - pad.r} y1={y(max * f)} y2={y(max * f)} stroke="#DADDE1" strokeDasharray="3 4" />)}
+          <motion.path d={path(fullDay.nearest)} fill="none" stroke="#8B929B" strokeWidth={2.5}
+            initial={{ pathLength: 0 }} whileInView={{ pathLength: 1 }} viewport={{ once: true }} transition={{ duration: 1.4 }} />
+          <motion.path d={path(fullDay.orca)} fill="none" stroke="#0B0C0E" strokeWidth={2.5}
+            initial={{ pathLength: 0 }} whileInView={{ pathLength: 1 }} viewport={{ once: true }} transition={{ duration: 1.4, delay: 0.2 }} />
+          {[0, 6, 12, 18, 23].map((h) => <text key={h} x={x(h)} y={H - 10} textAnchor="middle" fontSize={11} fill="#71767E">{`${String(h).padStart(2, '0')}:00`}</text>)}
+          <text x={pad.l - 8} y={y(max) + 4} textAnchor="end" fontSize={11} fill="#71767E">{max}s</text>
+          <text x={pad.l - 8} y={y(0) + 4} textAnchor="end" fontSize={11} fill="#71767E">0</text>
+        </svg>
+      </div>
+      <p className="mt-3 text-[13px] text-ink-3">
+        24 simulated hours from midnight: {Math.round(t.orca.mean)} s mean wait with ORCA against {Math.round(t.nearest.mean)} s with
+        nearest car, over {t.orca.served.toLocaleString()} rides.
+      </p>
+    </figure>
+  );
+}
+
+/** Trip-duration model trained on earlier real trips and tested on later ones. */
+export function RealEtaCard() {
+  const rows = [...realEta.baselines, realEta.ours];
+  const best = realEta.baselines.reduce((a, b) => (a.mae < b.mae ? a : b));
+  return (
+    <figure className="card p-6">
+      <figcaption className="text-[17px] font-bold">Validated on real NYC trips</figcaption>
+      <p className="mt-1 text-[13px] text-ink-3">
+        Trip duration, trained on {realEta.train_days.join(' to ')} and tested on {realEta.n_test.toLocaleString()} later trips
+        ({realEta.test_days.join(' to ')}) it never saw.
+      </p>
+      <table className="num mt-4 w-full text-[14px]">
+        <thead><tr className="text-left text-[12px] uppercase tracking-wide text-ink-3"><th className="pb-2 font-semibold">Model</th>
+          <th className="pb-2 text-right font-semibold">Mean error</th><th className="pb-2 text-right font-semibold">% error</th></tr></thead>
+        <tbody>
+          {rows.map((r, k) => (
+            <tr key={r.model} className={k === rows.length - 1 ? 'font-bold' : 'text-ink-2'}>
+              <td className="border-t border-line py-2 pr-3 first-letter:uppercase">{r.model}</td>
+              <td className="border-t border-line py-2 text-right">{Math.round(r.mae)} s</td>
+              <td className="border-t border-line py-2 text-right">{(r.mape * 100).toFixed(1)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-3 text-[13px] text-ink-3">
+        {Math.round((1 - realEta.ours.mae / best.mae) * 100)}% lower error than the strongest baseline, the historical median for the same
+        zone pair and hour. The TLC publishes taxi zones rather than exact points, which limits how precise any model can be.
+      </p>
     </figure>
   );
 }

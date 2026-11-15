@@ -42,7 +42,7 @@ FRONTEND = Path(os.environ.get("ORCA_FRONTEND", Path(__file__).resolve().parents
 ROOT = Path(__file__).resolve().parents[2]
 HOME = Path(os.environ.get("ORCA_HOME_DIST", ROOT / "web" / "dist"))
 MEDIA = ROOT / "docs"
-MEDIA_FILES = {"orca-tour.mp4", "orca-tour.vtt", "orca-tour-poster.jpg", "orca-tour-score.mp3", "benchmark.png"}
+MEDIA_FILES = {"orca-tour.mp4", "orca-tour.webm", "orca-tour.vtt", "orca-tour-poster.jpg", "orca-tour-score.mp3", "benchmark.png"}
 FRAME_HZ, SUMMARY_EVERY = 10, 10   # summary every 10th frame
 
 
@@ -192,7 +192,12 @@ def build_app(opts: dict) -> Starlette:
         return JSONResponse(hub.engine.models())
 
     async def metrics(request):
-        return PlainTextResponse(hub.engine.prometheus(), media_type="text/plain; version=0.0.4")
+        lines = [hub.engine.prometheus().rstrip("\n"),
+                 "# HELP orca_http_requests_total HTTP requests by method, route and status class.",
+                 "# TYPE orca_http_requests_total counter"]
+        for (m, route, cls), n in sorted(request.app.state.http_metrics.items()):
+            lines.append(f'orca_http_requests_total{{method="{m}",route="{route}",status="{cls}xx"}} {n}')
+        return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     routes = [
         Route("/", home), Route("/app", index), Route("/app/", index), Route("/media/{name}", media),
@@ -211,8 +216,15 @@ def build_app(opts: dict) -> Starlette:
         from starlette.routing import Mount
         from starlette.staticfiles import StaticFiles
         routes.append(Mount("/stub", StaticFiles(directory=os.environ["ORCA_DEV_STATIC"])))
-    app = Starlette(routes=routes, lifespan=lifespan)
+    from collections import defaultdict
+
+    from starlette.middleware import Middleware
+
+    from .security import HardeningMiddleware
+    http_metrics: dict = defaultdict(int)
+    app = Starlette(routes=routes, lifespan=lifespan, middleware=[Middleware(HardeningMiddleware, metrics=http_metrics)])
     app.state.hub = hub
+    app.state.http_metrics = http_metrics
     return app
 
 

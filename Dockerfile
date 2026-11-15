@@ -1,7 +1,8 @@
 # ---- 1. real data: download the NYC TLC trip file and zone shapefile, prepare the replay
 FROM python:3.12-slim AS data
 WORKDIR /app/backend
-RUN pip install --no-cache-dir "numpy>=1.26" "pandas>=2.1" "pyarrow>=14" "scipy>=1.11" "scikit-learn>=1.4"
+COPY backend/requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 COPY backend/orca orca
 COPY backend/scripts scripts
 RUN mkdir -p artifacts data && python scripts/download_tlc.py --year 2015 --month 1 && python scripts/download_tlc.py --zones \
@@ -28,10 +29,12 @@ COPY backend backend
 COPY --from=data /app/backend/data/nyc_tlc_2015-01_manhattan.parquet backend/data/
 COPY --from=data /app/backend/artifacts/nyc_traffic_profile.json backend/artifacts/
 COPY frontend/index.html frontend/index.html
-COPY docs/orca-tour.mp4 docs/orca-tour.vtt docs/orca-tour-poster.jpg docs/orca-tour-score.mp3 docs/benchmark.json docs/
+COPY docs/orca-tour.mp4 docs/orca-tour.webm docs/orca-tour.vtt docs/orca-tour-poster.jpg docs/orca-tour-score.mp3 docs/benchmark.json docs/
 COPY --from=web /app/web/dist web/dist
 WORKDIR /app/backend
-ENV ORCA_HOST=0.0.0.0 ORCA_PORT=8000
+RUN mkdir -p /app/backend/ledger && chown -R orca /app/backend/ledger
+USER orca
+ENV ORCA_HOST=0.0.0.0 ORCA_PORT=8000 PYTHONUNBUFFERED=1
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=60s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
 CMD ["python", "-m", "orca.server"]
