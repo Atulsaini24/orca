@@ -7,8 +7,9 @@
   the absolute speed comes from the city's trip records (artifacts/traffic_<city>.json): per zone and
   per hour, so Midtown at 6 pm is slower than Harlem at 6 pm.
 * Shortest paths by free-flow travel time. Every request gets one reverse shortest-path tree
-  (Dijkstra on the transposed graph, ~1 ms): it gives the road travel time from *every*
-  candidate car to the rider and, followed forwards, each car's actual route. Trees are cached.
+  (Dijkstra on the transposed graph, ~0.4 ms): it gives the road travel time from *every*
+  candidate car to the rider and, followed forwards, each car's actual route. Trees are cached
+  (LRU, float32). Walking a tree (routes, road distance) runs in compiled kernels (orca/kernels.py).
 * Zones are the 63 official TLC taxi zones; ``zone_of`` uses a rasterised lookup (2-unit cells),
   with cells over water assigned to the nearest zone.
 """
@@ -25,7 +26,11 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
 
+from . import kernels as K
+
 UNREACHABLE = 1e9
+TREE_CACHE = 1024
+NO_POINTS = np.zeros((0, 4))
 
 
 class StreetCity:
@@ -69,6 +74,18 @@ class StreetCity:
         self.out_edges: list[list[int]] = [[] for _ in range(self.n)]
         for i, u in enumerate(self.src):
             self.out_edges[int(u)].append(i)
+        # the fastest edge for each (u, v), as CSR arrays the kernels can walk
+        order = best[np.lexsort((self.dst[best], self.src[best]))]
+        self.adj_ptr = np.cumsum(np.r_[0, np.bincount(self.src[order], minlength=self.n)]).astype(np.int64)
+        self.adj_dst = self.dst[order].astype(np.int64)
+        self.adj_edge = order.astype(np.int64)
+        self.geo_off64 = np.asarray(self.geo_off, dtype=np.int64)
+        self.dst_f = self.dst.astype(float)
+        self.edge_major_f = self.edge_major.astype(float)
+        out_order = np.argsort(self.src, kind="stable")             # every edge (parallel ones too), for cruising
+        self.out_ptr = np.cumsum(np.r_[0, np.bincount(self.src, minlength=self.n)]).astype(np.int64)
+        self.out_edge = out_order.astype(np.int64)
+        self.dst64 = self.dst.astype(np.int64)
         self.kd = cKDTree(np.c_[self.nx, self.nz])
         # Riders are picked up on ordinary streets, never on an expressway: only intersections touching at
         # least one non-motorway street are valid pickup / drop-off points (cars still drive everything).
@@ -190,6 +207,9 @@ class StreetCity:
     def nearest_node(self, x: float, z: float) -> int:
         return int(self.kd.query((x, z))[1])
 
+    def nearest_nodes(self, x, z) -> np.ndarray:
+        return self.kd.query(np.c_[np.asarray(x, dtype=float), np.asarray(z, dtype=float)])[1].astype(np.int64)
+
     def nearest_pickup(self, x: float, z: float) -> int:
         return int(self.pick_nodes[self.kd_pick.query((x, z))[1]])
 
@@ -219,15 +239,16 @@ class StreetCity:
 
     # ---- shortest paths --------------------------------------------------------------------------
     def tree_to(self, target: int) -> tuple[np.ndarray, np.ndarray]:
-        """Free-flow time from every node to `target`, and each node's next hop toward it."""
+        """Free-flow time (at unit speed) from every node to `target`, and each node's next hop toward it."""
         t = self._trees.get(target)
         if t is not None:
             self._trees.move_to_end(target)
             return t
         dist, pred = dijkstra(self.GT, indices=target, return_predecessors=True)
-        t = (dist, pred)                      # on the transposed graph, pred[v] = next node from v toward target
+        # on the transposed graph, pred[v] = next node from v toward target (negative when none)
+        t = (dist.astype(np.float32), pred.astype(np.int64))
         self._trees[target] = t
-        if len(self._trees) > 512:
+        if len(self._trees) > TREE_CACHE:
             self._trees.popitem(last=False)
         return t
 
@@ -237,18 +258,22 @@ class StreetCity:
         end = int(self.dst[e])
         return [(float(self.geo_x[k]), float(self.geo_z[k]), m, end if k == b - 1 else -1) for k in range(a + 1, b)]
 
-    def _lead(self, agent) -> tuple[list[tuple], int]:
+    def _lead(self, agent) -> tuple[np.ndarray, int]:
         """Waypoints from the car's position to the next intersection, and that intersection."""
-        route, ri = getattr(agent, "route", None) or [], getattr(agent, "ri", 0)
-        for k in range(ri, len(route)):
-            if route[k][3] >= 0:
-                return list(route[ri:k + 1]), int(route[k][3])
+        route = getattr(agent, "route", None)
+        ri = getattr(agent, "ri", 0)
+        if route is not None and len(route) > ri:
+            r = np.asarray(route, dtype=float).reshape(-1, 4)
+            hit = np.flatnonzero(r[ri:, 3] >= 0)
+            if len(hit):
+                k = ri + int(hit[0])
+                return r[ri:k + 1], int(r[k, 3])
         node = getattr(agent, "node", -1)
         if node is None or node < 0:
             node = self.nearest_node(agent.x, agent.z)
         nx, nz = float(self.nx[node]), float(self.nz[node])
-        lead = [] if (abs(nx - agent.x) < 1e-6 and abs(nz - agent.z) < 1e-6) else [(nx, nz, 1.0, node)]
-        return lead, node
+        lead = NO_POINTS if (abs(nx - agent.x) < 1e-6 and abs(nz - agent.z) < 1e-6) else np.array([[nx, nz, 1.0, node]])
+        return lead, int(node)
 
     def path_nodes(self, u: int, v: int) -> list[int]:
         if u == v:
@@ -261,25 +286,26 @@ class StreetCity:
             out.append(int(nxt[out[-1]]))
         return out
 
-    def route(self, agent, tx: float, tz: float) -> list[tuple]:
+    def route(self, agent, tx: float, tz: float) -> np.ndarray:
+        """Waypoints (x, z, speed multiplier, node or -1) from the car along the fastest path to (tx, tz)."""
         lead, start = self._lead(agent)
         target = self.nearest_node(tx, tz)
-        out = lead
-        nodes = self.path_nodes(start, target)
-        for u, v in itertools.pairwise(nodes):
-            out += self._edge_points(self.edge_of[(u, v)])
-        return out
+        if start == target:
+            return lead
+        _, nxt = self.tree_to(target)
+        path = K.build_route(start, target, nxt, self.adj_ptr, self.adj_dst, self.adj_edge, self.geo_off64,
+                             self.geo_x, self.geo_z, self.edge_mult, self.dst_f)
+        return np.concatenate([lead, path]) if len(lead) else path
 
-    def cruise(self, agent, rng) -> list[tuple]:
+    def cruise(self, agent, rng) -> np.ndarray:
         """Idle cruising: drive a few blocks, turning at random onto outgoing streets (no U-turns if avoidable)."""
         lead, node = self._lead(agent)
-        out, prev = lead, getattr(agent, "prev_node", -1)
-        for _ in range(3):
-            opts = [e for e in self.out_edges[node] if int(self.dst[e]) != prev] or self.out_edges[node]
-            e = opts[rng.randrange(len(opts))]
-            out += self._edge_points(e)
-            prev, node = node, int(self.dst[e])
-        return out
+        # no U-turn at the next intersection: mid-street, we came from the last node passed
+        prev = getattr(agent, "node", -1) if len(lead) else getattr(agent, "prev_node", -1)
+        u = np.array([rng.random(), rng.random(), rng.random()])
+        path = K.cruise_route(node, prev, u, self.out_ptr, self.out_edge, self.dst64, self.geo_off64, self.geo_x,
+                              self.geo_z, self.edge_mult)
+        return np.concatenate([lead, path]) if len(lead) else path
 
     def road_metrics(self, ax, az, bx, bz) -> tuple[float, float]:
         """(road distance along the fastest path, share of it on major roads) from point a to point b."""
@@ -294,6 +320,45 @@ class StreetCity:
             major += self.length[e] * self.edge_major[e]
         lead = math.hypot(self.nx[u] - ax, self.nz[u] - az)
         return d + lead, (major / d if d > 0 else 0.0)
+
+    def road_metrics_many(self, ax, az, bx, bz) -> tuple[np.ndarray, np.ndarray]:
+        """road_metrics for many pairs at once: one tree per distinct destination, walked in a kernel."""
+        ax, az, bx, bz = (np.asarray(v, dtype=float) for v in (ax, az, bx, bz))
+        u, v = self.nearest_nodes(ax, az), self.nearest_nodes(bx, bz)
+        d, major = np.empty(len(ax)), np.empty(len(ax))
+        for tgt in np.unique(v):
+            sel = np.flatnonzero(v == tgt)
+            _, nxt = self.tree_to(int(tgt))
+            dd, mm = np.empty(len(sel)), np.empty(len(sel))
+            K.path_metrics(u[sel], int(tgt), nxt, self.adj_ptr, self.adj_dst, self.adj_edge, self.length,
+                           self.edge_major_f, dd, mm)
+            d[sel], major[sel] = dd, mm
+        same = u == v
+        share = np.divide(major, d, out=np.zeros_like(d), where=d > 0)
+        lead = np.hypot(self.nx[u] - ax, self.nz[u] - az)
+        return np.where(same, np.hypot(bx - ax, bz - az), d + lead), np.where(same, 0.0, share)
+
+    def ff_matrix(self, fx, fz, tx, tz) -> np.ndarray:
+        """Free-flow driving time at unit speed from each point in f to each point in t (one tree per t)."""
+        fu, tv = self.nearest_nodes(fx, fz), self.nearest_nodes(tx, tz)
+        M = np.empty((len(fu), len(tv)))
+        for j, v in enumerate(tv.tolist()):
+            M[:, j] = self.tree_to(v)[0][fu]
+        return M
+
+    def city_factor(self, clock: float) -> float:
+        """Citywide speed multiplier for the hour (real median trip speed relative to the daytime mean)."""
+        h = (clock / 3600) % 24
+        i, f = int(h), h - int(h)
+        return float(self.hour_factor[i] * (1 - f) + self.hour_factor[(i + 1) % 24] * f)
+
+    def zone_factors(self, clock: float) -> np.ndarray:
+        """Local speed multiplier of every zone at this time of day (real zone x hour speeds)."""
+        h = (clock / 3600) % 24
+        i, f = int(h), h - int(h)
+        if self.zone_hour is not None:
+            return self.zone_hour[:, i] * (1 - f) + self.zone_hour[:, (i + 1) % 24] * f
+        return np.full(self.N_ZONES, self.city_factor(clock))
 
     def eta_many(self, cars: list[tuple[float, float, int]], bx: float, bz: float) -> np.ndarray:
         """Free-flow road time (in units / base speed) from each car (x, z, next node) to point b: one tree."""

@@ -4,38 +4,45 @@ from __future__ import annotations
 import math
 import time
 
+import numpy as np
+
 from . import config as C
 from .city import zone_name
 from .dispatch import IDLE, NearestDispatcher, OrcaDispatcher, make_fleet
 from .world import World
 
-STATE_CODE = {"idle": 0, "offered": 2, "pickup": 3, "trip": 4}
+# client car codes: 0 idle, 1 repositioning, 2 offer sent, 3 to pickup, 4 rider on board, 5 no GPS,
+# 6 driving to a charger, 7 charging; indexed here by fleet state (idle, offered, pickup, trip, charge, plugged)
+STATE_CODE = np.array([0, 2, 3, 4, 6, 7])
 REQ_CODE = {"waiting": 0, "offered": 1, "assigned": 2}
 
 
 class Engine:
     def __init__(self, seed: int = 7, fleet: int = 1200, demand: str = "synthetic", data: str | None = None,
                  zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:",
-                 city: str | None = None):
+                 city: str | None = None, pool: bool = False, demand_fleet: int | None = None):
         from . import city as G
         self.city = G.use(city)
-        self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned, city=self.city.name)
+        self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned,
+                           city=self.city.name, pool=pool)
         tlc = None
         if demand == "tlc":
             from .demand import TLCReplay
             tlc = TLCReplay(data, zones)
-        self.world = World(seed, fleet, demand, tlc)
+        self.world = World(seed, fleet, demand, tlc, demand_fleet=demand_fleet)
         spec = make_fleet(seed, fleet)
         self.telemetry = [] if telemetry else None
         from .ledger import Ledger
         self.ledger = Ledger(db, run=f"seed{seed}-fleet{fleet}-{int(time.time())}")
-        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger)
+        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool)
         self.base = NearestDispatcher(self.world, spec, ledger=self.ledger)
         self.speed = 20.0
         self.paused = False
         self.step_ms = 0.0
         self.world.log("sys", f"{self.city.label}: {fleet:,} cars per dispatcher. Demand: {self.demand_label()}. "
-                              f"ETA model: {self.smart.eta.kind}. Forecast: {self.smart.forecaster.kind}.")
+                              f"ETA model: {self.smart.eta.kind}. Forecast: {self.smart.forecaster.kind}."
+                              + (f" Shared rides on: {C.POOL_OPT_IN:.0%} of riders accept sharing, up to {C.POOL_CAP} per car."
+                                 if pool else ""))
 
     def demand_label(self):
         src = self.world.source
@@ -110,26 +117,18 @@ class Engine:
     def frame(self, view: str) -> dict:
         """Fast-changing state, sent about 10 times a second."""
         d, t = self.disp(view), self.world.t
-        xs, zs, hs, ss, tx, tz = [], [], [], [], [], []
-        for a in d.agents:
-            xs.append(round(a.x, 2)); zs.append(round(a.z, 2))
-            hs.append(round(math.atan2(a.hx, a.hz) / math.tau * 256) & 255)   # heading, 0-255 = full turn
-            if a.offline_until >= t:
-                code = 5
-            elif a.state == IDLE:
-                code = 1 if a.rebal else 0
-            else:
-                code = STATE_CODE[a.state]
-            ss.append(code)
-            if a.rs is not None and a.state != IDLE:
-                r = a.rs.r
-                tx.append(r.dx if a.state == "trip" else r.x); tz.append(r.dz if a.state == "trip" else r.z)
-            else:
-                tx.append(-1); tz.append(-1)
+        f = d.f
+        code = STATE_CODE[f.state]
+        code[(f.state == IDLE) & f.rebal] = 1
+        code[f.offline_until >= t] = 5
+        heading = np.rint(np.arctan2(f.hx, f.hz) / math.tau * 256).astype(np.int64) & 255   # 0-255 = full turn
+        agents = dict(x=np.round(f.x, 2).tolist(), z=np.round(f.z, 2).tolist(), h=heading.tolist(), s=code.tolist(),
+                      tx=np.round(f.tgt_x, 2).tolist(), tz=np.round(f.tgt_z, 2).tolist())
+        if d.pool:
+            agents["o"] = f.load.tolist()                  # riders on board
         reqs = [[rs.r.id, rs.r.x, rs.r.z, REQ_CODE.get(rs.status, 0), 1 if rs.r.p1 else 0, round(t - rs.r.t, 1)]
                 for rs in d.active]
-        return dict(type="frame", t=round(t, 2), clock=self.world.clock(), view=view,
-                    agents=dict(x=xs, z=zs, h=hs, s=ss, tx=tx, tz=tz), reqs=reqs)
+        return dict(type="frame", t=round(t, 2), clock=self.world.clock(), view=view, agents=agents, reqs=reqs)
 
     def summary(self) -> dict:
         """Slow-changing state, sent about once a second."""
@@ -144,7 +143,8 @@ class Engine:
             stats=dict(smart=self.smart.stats(), base=self.base.stats()),
             series=dict(smart=[[p[0], p[1]] for p in self.smart.m["series"]],
                         base=[[p[0], p[1]] for p in self.base.m["series"]]),
-            forecast=[dict(zone=i, name=zone_name(i), forecast=fc[i], need=fc[i] * C.COVER, idle=s.z_idle[i]) for i in top],
+            forecast=[dict(zone=i, name=zone_name(i), forecast=float(fc[i]), need=float(fc[i]) * C.COVER, idle=int(s.z_idle[i]))
+                      for i in top],
             deficit=s.deficit_zones, fx=fx,
             heat=[min(255, int(v * 10)) for v in w.heat], heat_scale=10, heat_w=w.HEAT_W, heat_h=w.HEAT_H,
             notable=(s.notable | {"timeline": s.timeline(s.notable["id"])}) if s.notable else None,
@@ -152,7 +152,7 @@ class Engine:
             events=[dict(seq=e.seq, clock=e.clock, type=e.type, msg=e.msg) for e in w.events[-40:]],
             engine=dict(speed=self.speed, paused=self.paused, step_ms=round(self.step_ms, 2), solver=s.solver_used,
                         solve_ms=round(s.solve_ms, 2), eta_model=s.eta.kind, forecaster=s.forecaster.kind,
-                        demand=self.demand_label(), fleet=len(s.agents), city=self.city.name),
+                        demand=self.demand_label(), fleet=s.n, city=self.city.name, pool=s.pool),
         )
 
     def explain(self, req_id: int) -> dict:

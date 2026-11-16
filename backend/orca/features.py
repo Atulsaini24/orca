@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 from collections import deque
 
+import numpy as np
+
 from . import city as G
 from .city import zone_of
 
@@ -22,29 +24,23 @@ HISTORY = 30  # minutes of per-zone demand history
 class FeatureStore:
     def __init__(self):
         city = G.current()
+        self.city_obj = city
         self.n_zones = city.N_ZONES
-        self.speed = [city.base_speed * 1.1] * self.n_zones     # units / s, observed
-        self.speed_n = [0] * self.n_zones
+        # observed speeds live in arrays the fleet kernel updates in place (orca/kernels.py, step_fleet)
+        self.speed = np.full(self.n_zones, city.base_speed * 1.1)     # units / s, observed
+        self.speed_n = np.zeros(self.n_zones, dtype=np.int64)
+        self.city = np.array([city.base_speed * 1.1])
         self.minute = [0] * self.n_zones                        # pickups in the current minute
         self.hist = deque(maxlen=HISTORY)                       # list of per-zone counts, oldest first
-        self.city_speed = city.base_speed * 1.1
         # zone position features: zone centre, scaled so the city's long side spans 0-10
         s = 10 / max(city.WX, city.WZ)
         self.zone_xy = [(cx * s, cz * s) for cx, cz in (city.zone_center(i) for i in range(self.n_zones))]
 
-    # ---- telemetry -------------------------------------------------------------
-    def observe_ping(self, x0, z0, x1, z1, dt):
-        if dt <= 0.5:
-            return
-        d = math.hypot(x1 - x0, z1 - z0)
-        v = d / dt
-        if v <= 0.02:      # stopped; not informative about road speed
-            return
-        zi = zone_of((x0 + x1) / 2, (z0 + z1) / 2)
-        self.speed[zi] = 0.9 * self.speed[zi] + 0.1 * v
-        self.speed_n[zi] += 1
-        self.city_speed = 0.995 * self.city_speed + 0.005 * v
+    @property
+    def city_speed(self) -> float:
+        return float(self.city[0])
 
+    # ---- telemetry -------------------------------------------------------------
     def observe_request(self, zone: int):
         self.minute[zone] += 1
 
@@ -55,7 +51,21 @@ class FeatureStore:
     # ---- features ----------------------------------------------------------------
     def zone_speed(self, x, z) -> float:
         zi = zone_of(x, z)
-        return self.speed[zi] if self.speed_n[zi] >= 3 else self.city_speed
+        return float(self.speed[zi]) if self.speed_n[zi] >= 3 else self.city_speed
+
+    def zone_speed_many(self, x, z) -> np.ndarray:
+        zi = self.city_obj.zone_of_many(x, z)
+        return np.where(self.speed_n[zi] >= 3, self.speed[zi], self.city[0])
+
+    def eta_features_many(self, ax, az, bx, bz, clock) -> np.ndarray:
+        """eta_features for many pairs at once (same columns, ETA_FEATURES)."""
+        d, major = self.city_obj.road_metrics_many(ax, az, bx, bz)
+        hour = (clock / 3600) % 24
+        n = len(d)
+        return np.column_stack([d, np.hypot(np.subtract(bx, ax), np.subtract(bz, az)), major,
+                                self.zone_speed_many(ax, az), self.zone_speed_many(bx, az), self.zone_speed_many(bx, bz),
+                                np.full(n, self.city[0]), np.full(n, math.sin(hour / 24 * math.tau)),
+                                np.full(n, math.cos(hour / 24 * math.tau))])
 
     def eta_features(self, ax, az, bx, bz, clock) -> list[float]:
         d, major = G.road_metrics(ax, az, bx, bz)

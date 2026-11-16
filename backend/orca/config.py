@@ -23,8 +23,19 @@ BATCH = 3.0               # ORCA matches in 3 s batches
 REBAL = 20.0              # rebalancing cadence
 K = 10                    # candidate units per request
 REOFFER = 45.0            # expected cost of a declined / expired offer (s)
-HUNGARIAN_MAX = 150       # above this many waiting requests, fall back to greedy
+HUNGARIAN_MAX = 150       # above this many waiting requests, solve the assignment as a sparse problem
 COVER = 0.5               # idle cars wanted per zone, as a share of its forecast 5-min demand
+
+# Shared rides (OrcaDispatcher(pool=True)). A rider who opts in may share the car with up to CAP - 1
+# others; the plan keeps every pickup before the rider gives up and every ride within DETOUR x the
+# direct drive plus SLACK seconds. DELAY_W prices one second of delay to riders already in the plan
+# against one second of the new rider's wait.
+POOL_OPT_IN = 0.5         # share of riders who accept a shared ride (decided per rider, the same for both policies)
+POOL_CAP = 3              # riders per car
+POOL_DETOUR = 0.5         # a shared ride may take up to 50% longer than driving direct ...
+POOL_SLACK = 120.0        # ... plus two minutes
+POOL_DELAY_W = 0.3
+POOL_K = 8                # busy cars considered per request
 
 START_CLOCK = 7 * 3600 + 30 * 60   # simulation starts at 07:30
 START_DEFAULT = START_CLOCK
@@ -42,14 +53,17 @@ DEADLINE_W = 1.0          # weight of the give-up penalty: riders cancel after A
 DEADLINE_COST = 600.0     # cost (s) of a pairing that would arrive after the rider has given up
 TUNABLE = ("REOFFER", "COVER", "ZONE_SLOPE", "ZONE_CAP", "URGENT_W", "WAIT_W", "DEADLINE_W", "K")
 DEFAULTS = {k: globals()[k] for k in TUNABLE}
+SETTABLE = (*TUNABLE, "POOL_OPT_IN", "POOL_CAP", "POOL_DETOUR", "POOL_SLACK", "POOL_DELAY_W", "POOL_K")
+INTS = ("K", "POOL_CAP", "POOL_K")
+POOL_DEFAULTS = {k: globals()[k] for k in SETTABLE if k.startswith("POOL_")}
 
 
 def apply(params: dict) -> None:
-    """Override tunable weights in this process (used by tuning workers and at start-up)."""
+    """Override dispatch parameters in this process (used by tuning and benchmark workers and at start-up)."""
     for k, v in params.items():
-        if k not in TUNABLE:
-            raise KeyError(f"{k} is not a tunable dispatch parameter")
-        globals()[k] = round(v) if k == "K" else float(v)
+        if k not in SETTABLE:
+            raise KeyError(f"{k} is not a dispatch parameter")
+        globals()[k] = round(v) if k in INTS else float(v)
 
 
 def load_tuned(city: str = "grid") -> dict:

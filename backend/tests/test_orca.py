@@ -15,7 +15,7 @@ from orca import city as G
 from orca import cityspec
 from orca import config as C
 from orca.city import GridCity, is_arterial
-from orca.dispatch import OrcaDispatcher
+from orca.dispatch import DROP, IDLE, OFFERED, PICK, TRIP, OrcaDispatcher
 from orca.engine import Engine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,13 +56,13 @@ def test_street_routes_follow_one_way_streets_to_the_target():
         car.node = city.nearest_node(car.x, car.z)
         tx, tz = city.random_point(rng)
         pts = city.route(car, tx, tz)
-        nodes = [car.node] + [n for *_, n in pts if n >= 0]
+        nodes = [car.node] + [int(n) for *_, n in pts if n >= 0]
         for u, v in itertools.pairwise(nodes):
             assert (u, v) in city.edge_of, "every hop is a directed street segment (one-way rules respected)"
         assert nodes[-1] == city.nearest_node(tx, tz)
         # the route is the fastest one: its free-flow cost equals the shortest-path distance
         cost = sum(city.length[city.edge_of[(u, v)]] / city.edge_mult[city.edge_of[(u, v)]] for u, v in itertools.pairwise(nodes))
-        assert cost == pytest.approx(city.tree_to(nodes[-1])[0][nodes[0]], rel=1e-6)
+        assert cost == pytest.approx(city.tree_to(nodes[-1])[0][nodes[0]], rel=1e-5)     # trees are float32
 
 
 @pytest.mark.skipif("manhattan" not in CITIES, reason="street network not built")
@@ -136,25 +136,40 @@ def engine(request):
     return e
 
 
+def check_plans(d):
+    """Every request is held by at most one car; each car's plan, load and state agree."""
+    f, seen = d.f, {}
+    for i in range(d.n):
+        held = {s.rs.r.id for s in f.stops[i]} | ({f.offer_rs[i].r.id} if f.offer_rs[i] is not None else set())
+        for rid in held:
+            assert rid not in seen, f"request {rid} held by cars {seen[rid]} and {i}"
+            seen[rid] = i
+        for s in f.stops[i]:
+            assert s.rs.agent == i
+            if s.kind == PICK:
+                assert any(t.kind == DROP and t.rs is s.rs for t in f.stops[i]), "every pickup has its drop-off"
+        if f.offer_rs[i] is not None:
+            assert f.state[i] == OFFERED and f.offer_rs[i].agent == i
+        if f.state[i] == IDLE:
+            assert not f.stops[i] and f.offer_rs[i] is None
+        onboard = sum(1 for s in f.stops[i] if s.kind == DROP and s.rs.status == "ontrip")
+        assert f.load[i] == onboard <= (C.POOL_CAP if d.pool else 1)
+        picks = [k for k, s in enumerate(f.stops[i]) if s.kind == PICK]
+        drops = {s.rs.r.id: k for k, s in enumerate(f.stops[i]) if s.kind == DROP}
+        for k in picks:
+            assert k < drops[f.stops[i][k].rs.r.id], "a rider is picked up before being dropped off"
+
+
 @pytest.mark.parametrize("which", ["smart", "base"])
 def test_no_double_assignment(engine, which):
-    d = engine.smart if which == "smart" else engine.base
-    seen = {}
-    for a in d.agents:
-        if a.rs is not None:
-            assert a.rs.r.id not in seen, f"request {a.rs.r.id} held by two cars"
-            seen[a.rs.r.id] = a.id
-            if a.state in ("offered", "pickup"):
-                assert a.rs.agent is a
-        if a.state == "idle":
-            assert a.rs is None
+    check_plans(engine.smart if which == "smart" else engine.base)
 
 
 def test_both_policies_see_identical_demand(engine):
     a, b = engine.smart, engine.base
     total = engine.world.next_req - 1
     for d in (a, b):
-        in_flight = sum(1 for ag in d.agents if ag.state == "trip")
+        in_flight = int(np.count_nonzero(d.f.state == TRIP))
         assert d.m["served"] + d.m["lost"] + len(d.active) <= total
         assert d.m["served"] >= in_flight
 
@@ -222,36 +237,95 @@ def test_timelines_are_ordered(engine):
 
 
 # ---------------------------------------------------------------------------- matching
-class _A:
-    def __init__(self, i):
-        self.id = i
-
-
-class _RS:
-    def __init__(self, cands):
-        self.cands = cands
-
-
-def test_hungarian_never_worse_than_greedy():
+def test_dense_and_sparse_assignment_agree(monkeypatch):
     rng = np.random.default_rng(1)
     d = OrcaDispatcher.__new__(OrcaDispatcher)
     for _trial in range(50):
-        nq, nu = rng.integers(2, 12), rng.integers(2, 12)
-        units = [_A(i) for i in range(nu)]
-        q = []
-        for _ in range(nq):
-            pick = rng.choice(nu, size=min(nu, 4), replace=False)
-            q.append(_RS([dict(a=units[j], adj=float(rng.uniform(5, 200))) for j in pick]))
-        C.HUNGARIAN_MAX = 10_000
-        hung = d.solve(q)
-        C.HUNGARIAN_MAX = -1
-        greedy = d.solve(q)
-        C.HUNGARIAN_MAX = 150
-        cost = lambda m: (len(m), -sum(c["adj"] for _, c in m))
-        # Hungarian assigns at least as many requests, and at no higher cost for the same count.
-        assert cost(hung) >= cost(greedy) or len(hung) > len(greedy)
-        used = [c["a"].id for _, c in hung]
-        assert len(used) == len(set(used))
+        nq, nu = int(rng.integers(2, 12)), int(rng.integers(2, 12))
+        qi, ci = [], []
+        for q in range(nq):
+            for j in rng.choice(nu, size=min(nu, 4), replace=False):
+                qi.append(q)
+                ci.append(int(j))
+        qi, ci = np.array(qi), np.array(ci)
+        adj = rng.uniform(5, 200, len(qi))
+        monkeypatch.setattr(C, "HUNGARIAN_MAX", 10_000)
+        dense = d.solve(qi, ci, adj, nq)
+        monkeypatch.setattr(C, "HUNGARIAN_MAX", -1)
+        sparse = d.solve(qi, ci, adj, nq)
+        # both are exact: as many requests served, at the same total cost
+        assert len(dense) == len(sparse)
+        assert adj[dense].sum() == pytest.approx(adj[sparse].sum())
+        for m in (dense, sparse):
+            assert len(set(ci[m])) == len(m) and len(set(qi[m])) == len(m)
+        # and no greedy pass beats them
+        taken, done, greedy = set(), set(), []
+        for k in np.argsort(adj):
+            if qi[k] not in done and ci[k] not in taken:
+                taken.add(ci[k])
+                done.add(qi[k])
+                greedy.append(k)
+        assert len(dense) >= len(greedy)
+        if len(dense) == len(greedy):
+            assert adj[dense].sum() <= adj[greedy].sum() + 1e-9
+
+
+# ---------------------------------------------------------------------------- shared rides
+def _line_times(xs):
+    """Driving times between points on a straight road at 1 unit per second."""
+    xs = np.asarray(xs, dtype=float)
+    return np.abs(xs[:, None] - xs[None, :])
+
+
+def test_insertion_puts_a_rider_on_the_way_and_respects_limits():
+    from orca.kernels import best_insertion
+    # car at 0 carrying rider A to 100; new rider B from 20 to 80 lies on the way
+    T = _line_times([0, 100, 20, 80])
+    cost, i, j, eta = best_insertion(T, 0.0, 0.0, np.array([-1]), np.array([1e9]), 1, 3, 1e9, 1e9, 60.0, 0.5)
+    assert (i, j) == (0, 0) and eta == 20.0 and cost == 20.0      # pick B, drop B, then drop A: nobody delayed
+    # with one seat, B can only be fetched after A is home
+    cost, i, j, eta = best_insertion(T, 0.0, 0.0, np.array([-1]), np.array([1e9]), 1, 1, 1e9, 1e9, 60.0, 0.5)
+    assert (i, j) == (1, 1) and eta == 180.0
+    # ... unless B would give up first
+    assert not np.isfinite(best_insertion(T, 0.0, 0.0, np.array([-1]), np.array([1e9]), 1, 1, 150.0, 1e9, 60.0, 0.5)[0])
+    # A must be home by t=90: impossible whatever the order, since even direct takes 100
+    assert not np.isfinite(best_insertion(T, 0.0, 0.0, np.array([-1]), np.array([90.0]), 1, 3, 1e9, 1e9, 60.0, 0.5)[0])
+    # B going backwards (from 20 to 5): with A's deadline loose, drop A first would delay B too much
+    T = _line_times([0, 100, 20, 5])
+    cost, i, j, _ = best_insertion(T, 0.0, 0.0, np.array([-1]), np.array([1e9]), 1, 3, 1e9, 40.0, 15.0, 0.5)
+    assert (i, j) == (0, 0) and cost == pytest.approx(20 + 0.5 * 30)   # A arrives 30 s later; B rides direct
+
+
+def test_route_arena_compaction_keeps_every_route():
+    from orca.dispatch import Fleet
+    f = Fleet([(i, 0.0, 0.0, 0.9, 0.0) for i in range(50)])
+    rng, want = np.random.default_rng(0), {}
+    for step in range(4000):
+        i = int(rng.integers(50))
+        m = int(rng.integers(1, 40))
+        wp = np.c_[rng.random((m, 3)), np.full(m, float(step))]
+        f.set_route(i, wp)
+        want[i] = wp
+        if step % 7 == 0:                                      # a car drives part of its route
+            f.r_pos[i] += min(3, f.r_end[i] - f.r_pos[i])
+            want[i] = want[i][min(3, len(want[i])):]
+    for i, wp in want.items():
+        assert np.array_equal(f.remaining(i), wp)
+    assert len(f.arena) >= f.top
+
+
+@pytest.mark.parametrize("city", CITIES)
+def test_shared_rides_keep_their_promises(city):
+    e = Engine(seed=4, fleet=300, use_learned=False, city=city, pool=True, demand_fleet=420)
+    for _ in range(1500):
+        e.step(1.0)
+    check_plans(e.smart)                                         # capacity, order of stops, one car per rider
+    s = e.smart.stats()
+    assert s["shared"] > 0.02, "short of cars, riders who accept sharing do share"
+    assert 1.0 <= s["detour"] <= 1 + C.POOL_DETOUR + 0.25        # shared rides stay close to the direct drive
+    assert e.base.stats()["shared"] == 0
+    f = json.loads(json.dumps(e.frame("smart")))
+    assert max(f["agents"]["o"]) <= C.POOL_CAP
 
 
 # ---------------------------------------------------------------------------- real-data path

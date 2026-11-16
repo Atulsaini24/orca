@@ -146,7 +146,7 @@ def build_app(opts: dict) -> Starlette:
 
     async def health(request):
         e = hub.engine
-        return JSONResponse(dict(ok=True, mode="live", t=e.world.t, fleet=len(e.smart.agents), demand=e.demand_label(),
+        return JSONResponse(dict(ok=True, mode="live", t=e.world.t, fleet=e.smart.n, demand=e.demand_label(), pool=e.smart.pool,
                                  city=e.city.name, city_label=e.city.label,
                                  eta_model=e.smart.eta.kind, forecaster=e.smart.forecaster.kind, speed=e.speed))
 

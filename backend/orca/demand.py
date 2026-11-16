@@ -155,10 +155,10 @@ class TLCReplay:
     def attach(self, world):
         self.world = world
         # Size the replay so the busiest hour of the data is about 1.25x what the fleet is built for.
-        self.keep = self.keep_for(world.fleet)
+        self.keep = self.keep_for(world.demand_fleet)
         scale = f"sampled at {self.keep * 100:.1f}%" if self.keep < 1 else f"scaled up {self.keep:.1f}x"
         world.log("data", f"Replaying {self.n:,} trips from {self.label} over {self.days} day(s), {scale} "
-                          f"so the {self.peak_hour}:00 peak brings {self.peak_rate(world.fleet) * 3600:,.0f} requests an hour "
+                          f"so the {self.peak_hour}:00 peak brings {self.peak_rate(world.demand_fleet) * 3600:,.0f} requests an hour "
                           f"(real mean trip then: {self.peak_trip_s / 60:.1f} min)")
 
     def keep_for(self, fleet: int) -> float:

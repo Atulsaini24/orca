@@ -17,6 +17,8 @@ import math
 import os
 from pathlib import Path
 
+import numpy as np
+
 from . import config as C
 from .config import CELL, GRID, ZONES, ZSIZE
 
@@ -43,6 +45,7 @@ class GridCity:
 
     name = "grid"
     label = "synthetic 28 x 28 grid"
+    RASTER = ZSIZE / 8                             # zone lookup cells line up exactly with zone edges
 
     def __init__(self):
         self.WX = self.WZ = float(C.W)
@@ -51,6 +54,8 @@ class GridCity:
         self.ambient_congestion = True             # drifting congestion blobs stand in for traffic
         self.demand_scale = 1.0                    # synthetic demand per car (tests): calibrated for this city
         self.zone_names = [chr(65 + i % ZONES) + str(1 + i // ZONES) for i in range(self.N_ZONES)]
+        cells = np.arange(ZONES * 8) // 8
+        self.zone_lut = (cells[:, None] * ZONES + cells[None, :]).astype(np.int16)
 
     # ---- geometry
     def snap(self, x: float, z: float) -> tuple[float, float]:
@@ -75,6 +80,11 @@ class GridCity:
         zz = clamp(int(z // ZSIZE), 0, ZONES - 1)
         return zz * ZONES + zx
 
+    def zone_of_many(self, x, z) -> np.ndarray:
+        zx = np.clip((np.asarray(x) // ZSIZE).astype(int), 0, ZONES - 1)
+        zz = np.clip((np.asarray(z) // ZSIZE).astype(int), 0, ZONES - 1)
+        return zz * ZONES + zx
+
     def zone_center(self, i: int) -> tuple[float, float]:
         return ((i % ZONES + 0.5) * ZSIZE, (i // ZONES + 0.5) * ZSIZE)
 
@@ -82,7 +92,7 @@ class GridCity:
         return math.hypot(a % ZONES - b % ZONES, a // ZONES - b // ZONES)
 
     # ---- routing: waypoints (x, z, speed multiplier for the leg ending there, node id or -1)
-    def route(self, agent, tx: float, tz: float) -> list[tuple]:
+    def route(self, agent, tx: float, tz: float) -> np.ndarray:
         x, z = agent.x, agent.z
         pts: list[tuple[float, float]] = []
         on_v, on_h = x % CELL == 0, z % CELL == 0
@@ -106,9 +116,9 @@ class GridCity:
             mult = C.ART_MULT if line == int(line) and is_arterial(line) else 1.0
             out.append((wx, wz, mult, -1))
             px, pz = wx, wz
-        return out
+        return np.array(out, dtype=float).reshape(-1, 4)
 
-    def cruise(self, agent, rng) -> list[tuple]:
+    def cruise(self, agent, rng) -> np.ndarray:
         r = rng.random
         tx, tz = self.snap(agent.x + round((r() - 0.5) * 4) * CELL, agent.z + round((r() - 0.5) * 4) * CELL)
         return self.route(agent, tx, tz)
@@ -124,6 +134,18 @@ class GridCity:
         if is_arterial(round(ax / CELL)) or is_arterial(round(bx / CELL)):
             art += abs(bz - az)
         return d, min(1.0, art / d)
+
+    def road_metrics_many(self, ax, az, bx, bz) -> tuple[np.ndarray, np.ndarray]:
+        out = np.array([self.road_metrics(*q) for q in zip(ax, az, bx, bz)], dtype=float).reshape(-1, 2)
+        return out[:, 0], out[:, 1]
+
+    def ff_matrix(self, fx, fz, tx, tz) -> np.ndarray:
+        """Free-flow driving time at unit speed between point sets (blocks; arterials ignored)."""
+        fx, fz, tx, tz = (np.asarray(v, dtype=float) for v in (fx, fz, tx, tz))
+        return np.abs(fx[:, None] - tx[None, :]) + np.abs(fz[:, None] - tz[None, :])
+
+    def city_factor(self, clock: float) -> float:
+        return 1.0
 
     def street_name(self, x, z) -> str:
         return ""

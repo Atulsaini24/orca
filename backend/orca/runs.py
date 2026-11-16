@@ -31,6 +31,8 @@ class RunSpec:
     data: str | None = None             # None = the city's own prepared trips
     city: str | None = None             # None = the default city (Manhattan's streets when built)
     params: dict | None = None          # scoring weights; None = whatever config loaded (tuned if available)
+    pool: bool = False                  # ORCA offers shared rides
+    demand_fleet: int | None = None     # size demand for this many cars (None = fleet): fleet sweeps keep riders fixed
     start_hour: float | None = None     # simulated clock at the start; None = config.START_CLOCK
     warm: int = 300
     hourly: bool = False                # also return mean wait per clock hour
@@ -38,10 +40,13 @@ class RunSpec:
     events: tuple = field(default=())
 
 
-def _stats(waits: list[float], served: int, lost: int, reoffers: int) -> dict:
-    w = np.asarray(waits) if waits else np.zeros(1)
+def _stats(d) -> dict:
+    """Wait statistics since the warm-up, plus distance and sharing for the whole run."""
+    w = np.asarray(d.m["all"]) if d.m["all"] else np.zeros(1)
+    s = d.stats()
     return dict(mean=float(w.mean()), p50=float(np.percentile(w, 50)), p95=float(np.percentile(w, 95)),
-                served=int(served), lost=int(lost), reoffers=int(reoffers))
+                served=int(d.m["served"]), lost=int(d.m["lost"]), reoffers=int(d.m["reoffers"]),
+                **{k: float(s[k]) for k in ("veh_km", "km_per_rider", "svc_km_per_rider", "occupancy", "shared", "detour")})
 
 
 def run(spec: RunSpec) -> dict:
@@ -49,17 +54,19 @@ def run(spec: RunSpec) -> dict:
     from . import config as C
     G.use(spec.city)
     # Workers are reused across runs: always start from the loaded configuration, then override.
-    C.apply({**C.DEFAULTS, **C.TUNED, **(spec.params or {})})
+    C.apply({**C.DEFAULTS, **C.POOL_DEFAULTS, **C.TUNED, **(spec.params or {})})
     C.START_CLOCK = spec.start_hour * 3600 - spec.warm if spec.start_hour is not None else C.START_DEFAULT
     from . import cityspec
     from .engine import Engine
     data = spec.data or (str(cityspec.trips_file(G.current().name)) if cityspec.trips_file(G.current().name) else None)
     e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand if data else "synthetic",
-               data=data if spec.demand == "tlc" else None, city=spec.city)
+               data=data if spec.demand == "tlc" else None, city=spec.city, pool=spec.pool, demand_fleet=spec.demand_fleet)
     e.warm_up(spec.warm)
     for d in (e.smart, e.base):
         d.m["all"].clear()
-        d.m["served"] = d.m["lost"] = d.m["reoffers"] = 0
+        d.m["detour"].clear()
+        d.m["served"] = d.m["lost"] = d.m["reoffers"] = d.m["dropped"] = d.m["shared"] = 0
+        d.f.odo[:] = 0.0
     todo = sorted(spec.events or SCENARIOS[spec.scenario])
     hourly = {"orca": {}, "nearest": {}}
     seen = {"orca": 0, "nearest": 0}
@@ -74,9 +81,10 @@ def run(spec: RunSpec) -> dict:
                 seen[name] = len(d.m["all"])
                 hourly[name].setdefault(h, []).extend(new)
     out = dict(spec=dict(seed=spec.seed, minutes=spec.minutes, scenario=spec.scenario, use_learned=spec.use_learned, city=G.current().name,
-                         params=spec.params, tag=spec.tag, start_hour=spec.start_hour))
+                         params=spec.params, tag=spec.tag, start_hour=spec.start_hour, pool=spec.pool, fleet=spec.fleet,
+                         demand_fleet=spec.demand_fleet))
     for name, d in (("orca", e.smart), ("nearest", e.base)):
-        out[name] = _stats(d.m["all"], d.m["served"], d.m["lost"], d.m["reoffers"])
+        out[name] = _stats(d)
     if spec.hourly:
         out["hourly"] = {name: {h: dict(mean=float(np.mean(v)), n=len(v)) for h, v in sorted(hh.items()) if v}
                          for name, hh in hourly.items()}

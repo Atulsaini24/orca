@@ -12,6 +12,8 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from . import city as G
 from . import config as C
 from .city import clamp, zone_name, zone_of
@@ -27,6 +29,17 @@ def load_traffic() -> list[float] | None:
         return None
 
 
+def hash2(a: int, b: int) -> float:
+    """Deterministic uniform [0, 1) from two ints, so both policies see identical rider and driver decisions."""
+    h = (a * 0x9E3779B1 ^ (b + 0x632BE59B) * 0x85EBCA6B) & 0xFFFFFFFF
+    h ^= h >> 16
+    h = (h * 0x7FEB352D) & 0xFFFFFFFF
+    h ^= h >> 15
+    h = (h * 0x846CA68B) & 0xFFFFFFFF
+    h ^= h >> 16
+    return h / 4294967296
+
+
 @dataclass(slots=True)
 class Request:
     id: int
@@ -37,6 +50,7 @@ class Request:
     dz: float
     p1: bool
     zone: int
+    share: bool = False          # the rider accepts a shared ride (used only by a pooling dispatcher)
 
 
 @dataclass(slots=True)
@@ -100,7 +114,7 @@ class SyntheticDemand:
 
     def base_rate(self) -> float:
         w = self.world
-        return w.fleet * C.DEMAND_PER_UNIT * w.city.demand_scale * w.demand_mult * w.rush_factor()
+        return w.demand_fleet * C.DEMAND_PER_UNIT * w.city.demand_scale * w.demand_mult * w.rush_factor()
 
     def step(self, dt: float) -> list[tuple[float, float, float, float]]:
         out = []
@@ -115,8 +129,9 @@ class SyntheticDemand:
 
 
 class World:
-    def __init__(self, seed: int, fleet: int, demand: str = "synthetic", tlc=None):
+    def __init__(self, seed: int, fleet: int, demand: str = "synthetic", tlc=None, demand_fleet: int | None = None):
         self.seed, self.fleet = seed, fleet
+        self.demand_fleet = demand_fleet or fleet          # demand is sized for this many cars
         self.rng = random.Random(seed)
         self.t = 0.0
         self.demand_mult = 1.0
@@ -161,6 +176,21 @@ class World:
             m *= 1 - b.s * math.exp(-(dx * dx + dz * dz) / (2 * b.r * b.r))
         local = self.city.traffic(x, z, self.clock()) if self.city_traffic else self.traffic_factor()
         return max(0.22, m * local)
+
+    def zone_factor_array(self) -> np.ndarray:
+        """Local speed multiplier of every zone right now, for the fleet kernel."""
+        if self.city_traffic:
+            return np.asarray(self.city.zone_factors(self.clock()), dtype=float)
+        return np.full(self.city.N_ZONES, self.traffic_factor())
+
+    def blob_array(self) -> np.ndarray:
+        """Slow-traffic patches and accidents as rows (x, z, radius, strength)."""
+        return np.array([(b.x, b.z, b.r, b.s) for b in self.blobs], dtype=float).reshape(-1, 4)
+
+    def speed_now(self) -> float:
+        """Typical driving speed across the city right now (units / s): for planning shared-ride stops."""
+        f = self.city.city_factor(self.clock()) if self.city_traffic else self.traffic_factor()
+        return self.city.base_speed * f
 
     def traffic_factor(self) -> float:
         """Citywide speed multiplier for the hour: measured from real NYC trips when available."""
@@ -224,7 +254,9 @@ class World:
         qx, qz = c.snap(dx, dz)
         if qx == px and qz == pz:
             qx, qz = c.snap(px - 30 if px > c.WX / 2 else px + 30, pz)
-        req = Request(self.next_req, self.t, px, pz, qx, qz, self.rng.random() < 0.08, zone_of(px, pz))
+        rid = self.next_req
+        req = Request(rid, self.t, px, pz, qx, qz, self.rng.random() < 0.08, zone_of(px, pz),
+                      hash2(rid * 977 + 13, self.seed) < C.POOL_OPT_IN)
         self.next_req += 1
         HW, HH = self.HEAT_W, self.HEAT_H
         hx, hz = int(px / self.heat_cell), int(pz / self.heat_cell)
