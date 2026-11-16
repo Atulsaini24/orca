@@ -213,8 +213,9 @@ performance.mark('orca-city-start');
 buildCity(R);
 performance.measure('orca-city-build', 'orca-city-start');
 
-const carsNear = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, order: 4 });
-const carsFar = R.mesh(carGeometryFar(), MAX_AGENTS, { dynamic: true, order: 4 });
+const carsNear = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, order: 4, self: 0.45 });
+const carsFar = R.mesh(carGeometryFar(), MAX_AGENTS, { dynamic: true, order: 4, self: 0.6 });
+const beams = R.mesh(new Geo().ring(0, 1, 14, [1, 1, 1]), MAX_AGENTS, { dynamic: true, unlit: true, alpha: true, soft: true, order: 5, depthWrite: false });
 const CAR_FAR = 240;                                // beyond this camera distance cars use the simple model
 const pins = R.mesh(pinGeometry(), 1500, { dynamic: true, order: 4 });
 const rings = R.mesh(new Geo().ring(1.25, 1.95, 40, [1, 1, 1]), MAX_REQ, { dynamic: true, unlit: true, alpha: true, order: 6, depthWrite: false });
@@ -240,7 +241,7 @@ const HOME_T = STREETS ? place('Midtown North') : [W / 2, 0, W / 2 + 6];
 const cam = new OrbitCam(HOME_T, 0.62, 1.45, STREETS ? 900 : 520);
 cam.limits.cx = WX / 2; cam.limits.cz = WZ / 2; cam.limits.bound = W / 2 + 60;
 cam.limits.boundX = WX / 2 + 60; cam.limits.boundZ = WZ / 2 + 60;
-if (STREETS) cam.limits.distMax = 1300;
+if (STREETS) { cam.limits.distMax = 1300; cam.limits.distMin = 14; }   // close enough to see a car's lamps
 cam.lightCenter = [WX / 2, 0, WZ / 2]; cam.lightRadius = STREETS ? 260 : 200;
 const VIEWS = {
   home: { t: HOME_T, yaw: STREETS ? 0.55 : 0.62, pitch: STREETS ? 0.66 : 0.72, dist: STREETS ? 520 : 340 },
@@ -265,7 +266,7 @@ function adaptResolution(dt) {
 
 // ----------------------------------------------------------------------------- live frame state + drawing
 let src, curF = null, prevF = null, recvAt = 0, summary = null, view = 'smart';
-let renderReqs = [];
+let renderReqs = [], frameGap = 0.1;          // seconds between frames from the server, smoothed
 const angle = new Float32Array(MAX_AGENTS); let angleInit = false;
 const born = new Map(), lastStatus = new Map(), lastPos = new Map();
 const effects = [];   // expanding rings: {x, z, t0, dur, r0, r1, col}
@@ -274,6 +275,7 @@ function addEffect(x, z, col, r1 = 4, dur = 0.8, r0 = 1) { if (effects.length < 
 function onFrame(f) {
   if (f.view && f.view !== view) return;
   prevF = src.kind === 'live' && curF && curF.n === f.n ? { n: curF.n, agents: { x: Float32Array.from(curF.agents.x), z: Float32Array.from(curF.agents.z) } } : null;
+  if (curF) frameGap += (Math.min(0.4, Math.max(0.03, clock - recvAt)) - frameGap) * 0.15;
   curF = f; recvAt = clock;
   // request lifecycle effects
   const seen = new Set();
@@ -295,9 +297,11 @@ function drawFrame(dt) {
   CAR_K = STREETS ? Math.max(0.32, Math.min(1.25, cam.dist / 380)) : 1.25;
   const A = f.agents, n = f.n, P = prevF ? prevF.agents : null, far = cam.dist > CAR_FAR, cars = far ? carsFar : carsNear;
   (far ? carsNear : carsFar).commit(0);
-  const alpha = P ? clamp01((clock - recvAt) / 0.105) : 1;
+  const alpha = P ? clamp01((clock - recvAt) / frameGap) : 1;
   const turn = 1 - Math.exp(-dt * 14);
   jobLines.reset();
+  R.dash = Math.max(0.5, 2.0 * CAR_K);
+  const night = R.night || 0, lamps = !far && night > 0.05; let nb = 0;
   for (let i = 0; i < n; i++) {
     let x = A.x[i], z = A.z[i];
     if (P) { const px = P.x[i], pz = P.z[i]; if (Math.abs(x - px) + Math.abs(z - pz) < 8) { x = px + (x - px) * alpha; z = pz + (z - pz) * alpha; } }
@@ -306,16 +310,20 @@ function drawFrame(dt) {
     else { let d = target - angle[i]; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; angle[i] += d * turn; }
     const st = A.s[i], c = STATE_COLORS[st];
     cars.set(i, x, 0, z, CAR_K, CAR_K, CAR_K, angle[i], c[0], c[1], c[2], 1);
+    if (lamps && st !== 5) {                              // headlamp pool on the road ahead
+      const fx = Math.sin(angle[i]), fz = Math.cos(angle[i]);
+      beams.set(nb++, x + fx * 2.9 * CAR_K, 0.09, z + fz * 2.9 * CAR_K, 1.25 * CAR_K, 1, 2.3 * CAR_K, angle[i], 1.0, 0.86, 0.58, 0.42 * night);
+    }
     if ((st === 2 || st === 3 || st === 4) && A.tx[i] >= 0) {
       const lc = LINE_COL[st], y = st === 4 ? 0.9 : 1.3;
       // straight lines to far destinations would cross the whole island: on the real map show pickup legs only
       if (!STREETS || (st !== 4 && Math.hypot(A.tx[i] - x, A.tz[i] - z) < 120)) {
-        jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : 1.7);
+        jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : -2.0);
       }
     }
   }
   angleInit = true;
-  cars.commit(n); jobLines.commit();
+  cars.commit(n); jobLines.commit(); beams.commit(nb);
 
   let nr = 0, np = 0;
   renderReqs = f.reqs;
@@ -328,7 +336,10 @@ function drawFrame(dt) {
     if (status === 2) { s *= 0.55; c = C_ASSIGNED; } else if (status === 1) c = C_OFFER; else if (p1) c = C_P1;
     else c = [C_WAIT0[0] + (C_WAIT1[0] - C_WAIT0[0]) * w, C_WAIT0[1] + (C_WAIT1[1] - C_WAIT0[1]) * w, C_WAIT0[2] + (C_WAIT1[2] - C_WAIT0[2]) * w];
     rings.set(nr++, x, 0.1, z, s, 1, s, 0, c[0], c[1], c[2], 0.92);
-    if (p1 && status !== 2 && np < 1500) { const k = grow; pins.set(np++, x, 0, z, k, k, k, 0, C_P1[0], C_P1[1], C_P1[2], 1); }
+    if (p1 && status !== 2 && np < 1500) {                 // urgent pins drop in, then bob
+      const k = (CAR_K / 1.25) * Math.max(0.6, grow), drop = reduceMotion ? 0 : (1 - easeOut(clamp01((clock - b) / 0.6))) * 9 + 0.35 * (1 + Math.sin(clock * 3 + id)) * k;
+      pins.set(np++, x, drop, z, k, k, k, 0, C_P1[0], C_P1[1], C_P1[2], 1);
+    }
   }
   rings.commit(nr); pins.commit(np);
 
@@ -404,7 +415,7 @@ function drawExplain() {
   if (r.base && !r.base.same) seg(r.base.rx, r.base.rz, [0.33, 0.35, 0.39, 1], 3, 2.4);
   seg(r.chosen.rx, r.chosen.rz, [0.88, 0.66, 0.0, 1], 4.2, 2.6);
   exLines.commit();
-  const m = 1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3));
+  const m = (1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3))) * (CAR_K / 1.25);   // sized with the cars, so it stays a marker up close
   marker.set(0, r.x, 0.2, r.z, m, 1, m, 0, 0, 0, 0, 0.9); marker.commit(1);
   plate(plates[0], r.x, 10, r.z, `Request ${r.id}`, '');
   plate(plates[1], r.chosen.rx, 4, r.chosen.rz, `ORCA picks ${car(r.chosen.id)}`, 'pick');
@@ -942,7 +953,7 @@ resize();
     document.title = 'capture-ready';
     return;
   }
-  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => dprNow };   // frame-cost probes (tools/perf_probe.py)
+  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => dprNow, frame: () => curF };   // frame-cost probes (tools/perf_probe.py)
   cam.flyTo(VIEWS.home, reduceMotion ? 0.001 : 3.4);   // the one orchestrated entrance: plan view settles into the model
   let last = performance.now();
   const loop = (now) => { requestAnimationFrame(loop); const raw = (now - last) / 1000, dt = Math.min(0.1, raw); last = now; step(dt); adaptResolution(raw); };

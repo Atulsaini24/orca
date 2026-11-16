@@ -18,8 +18,8 @@ Every 3 seconds ORCA scores each (rider, car) pair on
 then solves the whole batch as a min-cost assignment (Hungarian algorithm), and moves idle cars
 toward zones forecast to run short.
 
-The control room is a **hand-written WebGL2 renderer** (no 3D library) with day and night lighting
-from the city clock; the **home page** is React, TypeScript, Vite and Tailwind; a **narrated tour**
+The control room is a **hand-written WebGL2 renderer** (no 3D library): glass and masonry facades, lit
+windows and headlamps at night, cloud shadows, a sky with sun and stars, all following the city clock; the **home page** is React, TypeScript, Vite and Tailwind; a **narrated tour**
 with an original score is in [`docs/orca-tour.mp4`](docs/orca-tour.mp4).
 
 ## Results

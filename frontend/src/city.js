@@ -5,10 +5,11 @@
 const PAL = {
   road: '#AEB6C0', plate: '#D6DBE1', slab: '#ECEEF0', curb: '#F6F7F8', park: '#C5D4BA', parkPath: '#E3E6DD',
   mark: '#FAFBFC', zebra: '#F4F5F6',
-  clay: ['#F5F4F0', '#EFEEE9', '#F3F2EE', '#ECEBE6', '#F7F6F3'], glass: ['#D9E2EC', '#D2DCE8', '#E0E7EF'],
-  brick: ['#E6D3C3', '#DFC6B4', '#E9DACB', '#D8BFAE', '#EADFD3'],
+  clay: ['#F5F4F0', '#EFEEE9', '#F3F2EE', '#ECEBE6', '#F7F6F3'], glass: ['#C9D3DE', '#BFCBD8', '#D2DAE3'],
+  brick: ['#DDBFA8', '#D2AE97', '#E0CBB8', '#C9A48E', '#E4D3C2'], stone: ['#E9E5DC', '#DFDACF', '#E6E2D9', '#D8D3C8'],
+  concrete: ['#D9DADB', '#CED0D3', '#E0E1E2'],
   hvac: '#DADCDF', tank: '#B39478', tankRoof: '#7E6A58', legs: '#5C5650',
-  leaf: ['#A6BC98', '#9BB48E', '#B2C6A4', '#93AC87'], trunk: '#8C8277',
+  leaf: ['#8FB47C', '#84AB73', '#9BBD88', '#7BA36B'], trunk: '#8C8277',
   glassCar: '#262C33', tyre: '#1F2327', head: '#FFF4D2', tail: '#C8232C', sign: '#FFFFFF',
 };
 const lin = (h) => srgb(h);
@@ -144,10 +145,10 @@ function buildGridCity(R) {
   spires.forEach(([x, z, y, h], i) => sp.set(i, x, y, z, 1, h, 1, 0, 1, 1, 1, 1)); sp.commit(spires.length);
 
   const tree = new Geo();
-  tree.cylinder(0, 0, 0.12, 0, 0.8, lin(PAL.trunk), 6);
-  tree.sphere(0, 1.35, 0, 0.75, [1, 1, 1], 8, 5, 1, 1.05);
+  tree.cylinder(0, 0, 0.11, 0, 0.8, lin(PAL.trunk), 5);
+  tree.ball(0, 1.32, 0, 0.72, [1, 1, 1], 7, 4, 1, 1.0).ball(0.2, 1.85, 0.12, 0.5, [1, 1, 1], 7, 4, 1, 1.0);
   const allTrees = [...parkTrees.map((t) => [...t, 1]), ...streetTrees.map((t) => [...t, 0.7])];
-  const tr = R.mesh(tree, allTrees.length, { cast: true, order: 3 });
+  const tr = R.mesh(tree, allTrees.length, { cast: true, order: 3, sway: 0.03 });
   allTrees.forEach(([x, z, s], i) => {
     const k = s * (0.75 + rnd() * 0.6), c = lin(PAL.leaf[Math.floor(rnd() * PAL.leaf.length)]);
     tr.set(i, x, 0.42, z, k, k * (0.85 + rnd() * 0.4), k, rnd() * 6, c[0], c[1], c[2], 1);
@@ -158,16 +159,26 @@ function buildGridCity(R) {
 
 // ---------------------------------------------------------------- moving things
 function carGeometry() {
-  const g = new Geo(), dark = lin(PAL.glassCar), tyre = lin(PAL.tyre);
-  g.box(-0.62, 0.62, 0.2, 0.62, -1.28, 1.28, [1, 1, 1], 1);                                  // body (instance colour)
-  g.frustum([-0.6, 0.6, -0.78, 0.5], [-0.5, 0.5, -0.56, 0.24], 0.62, 1.04, dark);             // glasshouse
-  g.box(-0.5, 0.5, 1.04, 1.09, -0.56, 0.24, [1, 1, 1], 1);                                     // roof panel
-  g.box(-0.2, 0.2, 1.09, 1.27, -0.26, -0.04, lin(PAL.sign));                                   // taxi roof sign
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.cylinder(sz * 0.84, 0.27, 0.27, sx * 0.53, sx * 0.71, tyre, 9, 0, 'x');
-  for (const s of [-1, 1]) {
-    g.box(s * 0.48 - 0.12, s * 0.48 + 0.12, 0.4, 0.52, 1.27, 1.3, lin(PAL.head));
-    g.box(s * 0.48 - 0.12, s * 0.48 + 0.12, 0.42, 0.52, -1.3, -1.27, lin(PAL.tail));
+  // A saloon with a sculpted shoulder line, a tapered glasshouse, bumpers, mirrors, wheels with hubs and lamps
+  // that glow (mask 2). The body takes the instance colour (mask 1).
+  const g = new Geo(), dark = lin(PAL.glassCar), tyre = lin(PAL.tyre), trim = lin('#3A4047'), hub = lin('#B9BEC4');
+  const W = [1, 1, 1];
+  g.box(-0.63, 0.63, 0.24, 0.50, -1.26, 1.26, W, 1);                                           // lower body
+  g.frustum([-0.63, 0.63, -1.26, 1.26], [-0.57, 0.57, -1.20, 1.16], 0.50, 0.66, W, 1);         // shoulder, hood and boot
+  g.frustum([-0.56, 0.56, -0.80, 0.50], [-0.46, 0.46, -0.52, 0.20], 0.66, 1.03, dark);         // glasshouse
+  g.frustum([-0.47, 0.47, -0.54, 0.22], [-0.42, 0.42, -0.46, 0.14], 1.03, 1.08, W, 1);         // roof
+  g.box(-0.60, 0.60, 0.18, 0.36, 1.26, 1.33, trim); g.box(-0.60, 0.60, 0.18, 0.36, -1.33, -1.26, trim);   // bumpers
+  g.box(-0.64, 0.64, 0.17, 0.24, -1.20, 1.20, trim);                                           // sills
+  for (const sx of [-1, 1]) g.box(sx * 0.60 - 0.07, sx * 0.60 + 0.07, 0.68, 0.76, 0.22, 0.34, W, 1);     // mirrors
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    g.cylinder(sz * 0.82, 0.28, 0.28, sx * 0.50, sx * 0.68, tyre, 10, 0, 'x');
+    g.cylinder(sz * 0.82, 0.28, 0.15, sx * 0.685, sx * 0.70, hub, 8, 0, 'x');
   }
+  for (const s of [-1, 1]) {
+    g.box(s * 0.44 - 0.15, s * 0.44 + 0.15, 0.40, 0.52, 1.24, 1.275, lin(PAL.head), 2);        // headlamps
+    g.box(s * 0.44 - 0.15, s * 0.44 + 0.15, 0.42, 0.52, -1.275, -1.24, lin(PAL.tail), 2);      // tail lamps
+  }
+  g.box(-0.22, 0.22, 1.08, 1.24, -0.28, -0.06, lin('#FFE9A8'), 2);                             // roof sign, lit
   return g;
 }
 // The same car seen from far away: body and glasshouse only (a tenth of the triangles).
@@ -183,7 +194,18 @@ function pinGeometry() {
 // OpenStreetMap, and every building from the city's official footprints, extruded from its
 // real outline to its real height.
 // =============================================================================
-function triangulate(pts) {          // ear clipping for a simple polygon [[x, z], ...]; returns index triples
+// Ear clipping for a simple polygon [[x, z], ...]; returns index triples. A point on an ear's edge blocks it,
+// which is right for almost every outline; the few it fails on (checked by area) are retried with the strict rule.
+function triangulate(pts) {
+  const area = (tris) => { let s = 0; for (const [p, q, r] of tris) s += Math.abs((pts[q][0] - pts[p][0]) * (pts[r][1] - pts[p][1]) - (pts[q][1] - pts[p][1]) * (pts[r][0] - pts[p][0])); return s / 2; };
+  let want = 0; for (let i = 0; i < pts.length; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % pts.length]; want += x0 * z1 - x1 * z0; }
+  want = Math.abs(want) / 2;
+  const a = earClip(pts, 0), ea = Math.abs(area(a) - want);
+  if (ea <= 0.02 * want + 1e-4) return a;
+  const b = earClip(pts, 1e-9);
+  return Math.abs(area(b) - want) < ea ? b : a;
+}
+function earClip(pts, eps) {
   const n = pts.length; if (n < 3) return [];
   let area = 0; for (let i = 0; i < n; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % n]; area += x0 * z1 - x1 * z0; }
   const V = [...Array(n).keys()]; if (area < 0) V.reverse();
@@ -200,7 +222,7 @@ function triangulate(pts) {          // ear clipping for a simple polygon [[x, z
       for (const q of V) {
         if (q === a || q === b || q === c) continue;
         const [qx, qz] = pts[q]; if (qx < x0 || qx > x1 || qz < z0 || qz > z1) continue;
-        if (cross(a, b, q) >= 0 && cross(b, c, q) >= 0 && cross(c, a, q) >= 0) { ear = false; break; }
+        if (cross(a, b, q) >= eps && cross(b, c, q) >= eps && cross(c, a, q) >= eps) { ear = false; break; }
       }
     }
     if (ear) { out.push([a, b, c]); V.splice(i, 1); stall = 0; i = Math.max(0, i - 1); } else { i++; stall++; }
@@ -213,43 +235,86 @@ function triangulate(pts) {          // ear clipping for a simple polygon [[x, z
 const MINOR_M = 24, LOD_FAR = 260;          // buildings under 24 m are drawn within 260 units (about 8 km) of the camera
 function extrudeBuildings(B) {
   const counts = b64Bytes(B.counts), X = b64U16(B.x), Z = b64U16(B.z), H = b64U16(B.h), Y = b64U16(B.year);
+  // What stands on a roof: 1 = a mechanical bulkhead (taller buildings), 2 = a wooden water tank (pre-war mid-rises).
+  const roofKind = (b) => { const hm = (Math.max(0.12, H[b] / 1000)) * B.unit_m, yr = Y[b]; return hm > 30 ? 1 : yr && yr < 1940 && hm > 14 && b % 3 === 0 ? 2 : 0; };
+  const EXTRA = [[0, 0], [20, 30], [42, 54]];                  // vertices and indices of each kind
   let nv = 0, ni = 0;
-  for (let i = 0; i < B.n; i++) { const k = counts[i]; nv += 5 * k; ni += 6 * k + 3 * (k - 2); }
+  for (let i = 0; i < B.n; i++) { const k = counts[i], e = EXTRA[roofKind(i)]; nv += 5 * k + e[0]; ni += 6 * k + 3 * (k - 2) + e[1]; }
   const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3), mask = new Float32Array(nv);
-  const idx = new Uint32Array(ni), ids = new Float32Array(nv), minor = new Uint8Array(nv);   // minor: low-rise, skipped far away
+  const idx = new Uint32Array(ni), ids = new Float32Array(nv), minor = new Uint8Array(nv);   // minor: skipped far away
   let v = 0, t = 0, o = 0, tallest = 0;
   const put = (x, y, z, nx, ny, nz, c, id) => {
     pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z; nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz;
     col[v * 3] = c[0]; col[v * 3 + 1] = c[1]; col[v * 3 + 2] = c[2]; ids[v] = id; return v++;
   };
-  const roofTint = (c) => [c[0] * 0.93, c[1] * 0.93, c[2] * 0.95];
+  const quad = (a, b, c, d) => { idx[t++] = a; idx[t++] = b; idx[t++] = c; idx[t++] = a; idx[t++] = c; idx[t++] = d; };
+  const pal = (list, b) => lin(list[b % list.length]);
+  const hvac = lin(PAL.hvac), wood = lin(PAL.tank), woodRoof = lin(PAL.tankRoof);
+  const inside = (pts, x, z) => {
+    let inn = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, zi] = pts[i], [xj, zj] = pts[j];
+      if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inn = !inn;
+    }
+    return inn;
+  };
   for (let b = 0; b < B.n; b++) {
     const k = counts[b], h = Math.max(0.12, H[b] / 1000), hm = h * B.unit_m, yr = Y[b];
     tallest = Math.max(tallest, hm);
-    const pts = []; let cx = 0, cz = 0;
-    for (let j = 0; j < k; j++) { const p = [X[o + j] / 20, Z[o + j] / 20]; pts.push(p); cx += p[0] / k; cz += p[1] / k; }
+    const pts = []; let cx = 0, cz = 0, x0b = Infinity, x1b = -Infinity, z0b = Infinity, z1b = -Infinity;
+    for (let j = 0; j < k; j++) {
+      const p = [X[o + j] / 20, Z[o + j] / 20]; pts.push(p); cx += p[0] / k; cz += p[1] / k;
+      x0b = Math.min(x0b, p[0]); x1b = Math.max(x1b, p[0]); z0b = Math.min(z0b, p[1]); z1b = Math.max(z1b, p[1]);
+    }
     o += k;
-    const c = lin(hm > 90 ? PAL.glass[b % 3] : yr && yr < 1940 && hm < 40 ? PAL.brick[b % 5] : PAL.clay[b % 5]);
-    const id = (b * 0.6180339887) % 1;                        // per-building hash: which windows are lit at night
+    // The shader reads the building from `id`: its height (integer part, 1/50 unit) and a hash (fraction) that
+    // picks its material, the same rule as here: glass curtain wall for towers, masonry below.
+    const hash = (b * 0.6180339887) % 1, id = Math.floor(h * 50) + Math.min(0.999, hash);
+    const glassy = h > 5 || (h > 2.2 && hash < 0.55);
+    const c = glassy ? pal(PAL.glass, b) : yr && yr < 1940 ? pal(hash < 0.7 ? PAL.brick : PAL.stone, b)
+      : hash < 0.35 ? pal(PAL.stone, b) : hash < 0.6 ? pal(PAL.concrete, b) : pal(PAL.clay, b);
     const v0 = v;
     for (let j = 0; j < k; j++) {                              // walls
-      const [x0, z0] = pts[j], [x1, z1] = pts[(j + 1) % k];
-      let nx = z1 - z0, nz = -(x1 - x0); const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
-      if (nx * ((x0 + x1) / 2 - cx) + nz * ((z0 + z1) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
-      const a = put(x0, 0.06, z0, nx, 0, nz, c, id), bb = put(x1, 0.06, z1, nx, 0, nz, c, id);
-      const cc = put(x1, h, z1, nx, 0, nz, c, id), d = put(x0, h, z0, nx, 0, nz, c, id);
-      idx[t++] = a; idx[t++] = bb; idx[t++] = cc; idx[t++] = a; idx[t++] = cc; idx[t++] = d;
+      const [xa, za] = pts[j], [xb, zb] = pts[(j + 1) % k];
+      let nx = zb - za, nz = -(xb - xa); const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
+      if (nx * ((xa + xb) / 2 - cx) + nz * ((za + zb) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
+      quad(put(xa, 0.06, za, nx, 0, nz, c, id), put(xb, 0.06, zb, nx, 0, nz, c, id), put(xb, h, zb, nx, 0, nz, c, id), put(xa, h, za, nx, 0, nz, c, id));
     }
-    const r0 = v, rc = roofTint(c);                            // roof
-    for (const [x, z] of pts) put(x, h, z, 0, 1, 0, rc, id);
+    const r0 = v;                                              // roof
+    for (const [x, z] of pts) put(x, h, z, 0, 1, 0, c, id);
     const tris = triangulate(pts);
     for (let q = 0; q < k - 2; q++) {
       const tr = tris[q] || [0, q + 1, q + 2];
       idx[t++] = r0 + tr[0]; idx[t++] = r0 + tr[1]; idx[t++] = r0 + tr[2];
     }
     if (hm < MINOR_M) minor.fill(1, v0, v);
+    // rooftop structure, where the footprint has room for it around its centre
+    const kind = roofKind(b), span = Math.min(x1b - x0b, z1b - z0b), e0 = v;
+    if (kind && span > 0.5 && inside(pts, cx, cz)) {
+      if (kind === 1) {
+        const s = Math.min(0.9, span * 0.2), top = h + 0.1 + 0.08 * hash, ang = hash * 3.1;
+        const ux = Math.cos(ang) * s, uz = Math.sin(ang) * s, wx = -uz * 0.7, wz = ux * 0.7;
+        const P = [[cx - ux - wx, cz - uz - wz], [cx + ux - wx, cz + uz - wz], [cx + ux + wx, cz + uz + wz], [cx - ux + wx, cz - uz + wz]];
+        for (let j = 0; j < 4; j++) {
+          const [xa, za] = P[j], [xb, zb] = P[(j + 1) % 4]; let nx = zb - za, nz = -(xb - xa); const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
+          quad(put(xa, h, za, nx, 0, nz, hvac, id), put(xb, h, zb, nx, 0, nz, hvac, id), put(xb, top, zb, nx, 0, nz, hvac, id), put(xa, top, za, nx, 0, nz, hvac, id));
+        }
+        quad(put(P[0][0], top, P[0][1], 0, 1, 0, hvac, id), put(P[1][0], top, P[1][1], 0, 1, 0, hvac, id), put(P[2][0], top, P[2][1], 0, 1, 0, hvac, id), put(P[3][0], top, P[3][1], 0, 1, 0, hvac, id));
+      } else {
+        const r = Math.min(0.11, span * 0.16), y0 = h + 0.07, y1 = y0 + r * 2.1, y2 = y1 + r * 0.9;
+        for (let j = 0; j < 6; j++) {
+          const a0 = (j / 6) * Math.PI * 2, a1 = ((j + 1) / 6) * Math.PI * 2, am = (a0 + a1) / 2;
+          const xa = cx + Math.cos(a0) * r, za = cz + Math.sin(a0) * r, xb = cx + Math.cos(a1) * r, zb = cz + Math.sin(a1) * r, nx = Math.cos(am), nz = Math.sin(am);
+          quad(put(xa, y0, za, nx, 0, nz, wood, id), put(xb, y0, zb, nx, 0, nz, wood, id), put(xb, y1, zb, nx, 0, nz, wood, id), put(xa, y1, za, nx, 0, nz, wood, id));
+          const i0 = put(xa, y1, za, nx, 0.6, nz, woodRoof, id), i1 = put(xb, y1, zb, nx, 0.6, nz, woodRoof, id), i2 = put(cx, y2, cz, nx, 0.6, nz, woodRoof, id);
+          idx[t++] = i0; idx[t++] = i1; idx[t++] = i2;
+        }
+      }
+      minor.fill(1, e0, v);
+    }
   }
-  return { geo: { pos, nor, col, mask, idx: idx.subarray(0, t), count: v, ids, minor }, tallest, n: B.n };
+  return { geo: { pos: pos.subarray(0, v * 3), nor: nor.subarray(0, v * 3), col: col.subarray(0, v * 3), mask: mask.subarray(0, v),
+    idx: idx.subarray(0, t), count: v, ids: ids.subarray(0, v), minor }, tallest, n: B.n };
 }
 
 const TILE = 32;                     // static meshes are culled in tiles of 32 units (about 1 km)
@@ -260,6 +325,12 @@ function buildStreetCity(R, C) {
     if (ny >= 0) geo.tri(a, b, c, col); else geo.tri(a, c, b, col);
   };
   const ring = (k) => { const a = C.ringOff[k], b = C.ringOff[k + 1], out = []; for (let i = a; i < b; i++) out.push([C.rx[i], C.rz[i]]); return out; };
+  // A flat polygon facing up, its outline's vertices shared by all its triangles (a third of the vertices).
+  const flatPoly = (geo, pts, y, col) => {
+    const o = geo.count;
+    for (const [x, z] of pts) geo.vert([x, y, z], 0, 1, 0, col, 0);
+    for (const [a, b, c] of triangulate(pts)) geo.idx.push(o + a, o + b, o + c);
+  };
   const parkZones = new Set(C.zones.map((z, i) => (/^(Central Park|Grant Park|Millenium Park|Millennium Park)$/.test(z.name) ? i : -1)).filter((i) => i >= 0));
 
   // ---------------------------------------------------------------- land, embankment, surroundings
@@ -271,7 +342,7 @@ function buildStreetCity(R, C) {
       const pts = ring(r);
       if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
       const isPark = parkZones.has(zi), col = isPark ? park : slab, y = isPark ? 0.05 : 0;
-      for (const [a, b, c] of triangulate(pts)) up(land, [pts[a][0], y, pts[a][1]], [pts[b][0], y, pts[b][1]], [pts[c][0], y, pts[c][1]], col);
+      flatPoly(land, pts, y, col);
       for (let i = 0; i < pts.length; i++) {
         const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % pts.length];
         land.quad([x0, 0, z0], [x1, 0, z1], [x1, -3.2, z1], [x0, -3.2, z0], bank);
@@ -308,7 +379,7 @@ function buildStreetCity(R, C) {
     const pts = []; for (let i = 0; i + 1 < flat.length; i += 2) pts.push([flat[i], flat[i + 1]]);
     if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
     if (pts.length < 3 || pts.length > 400) continue;
-    for (const [a, b, c] of triangulate(pts)) up(green, [pts[a][0], 0.03, pts[a][1]], [pts[b][0], 0.03, pts[b][1]], [pts[c][0], 0.03, pts[c][1]], parkCol);
+    flatPoly(green, pts, 0.03, parkCol);
     let ar = 0; for (let i = 0; i < pts.length; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % pts.length]; ar += x0 * z1 - x1 * z0; }
     const nTrees = Math.min(60, Math.floor(Math.abs(ar) / 2 / 6));
     let xs = Infinity, xe = -Infinity, zs = Infinity, ze = -Infinity;
@@ -335,8 +406,10 @@ function buildStreetCity(R, C) {
     const L = Math.hypot(x1 - x0, z1 - z0); if (L < 1e-4) return;
     const dx = (x1 - x0) / L, dz = (z1 - z0) / L, nx = -dz * w, nz = dx * w;
     x0 -= dx * w * 0.6; z0 -= dz * w * 0.6; x1 += dx * w * 0.6; z1 += dz * w * 0.6;        // overlap the joints
-    const a = [x0 + nx, y, z0 + nz], b = [x1 + nx, y, z1 + nz], c = [x1 - nx, y, z1 - nz], d = [x0 - nx, y, z0 - nz];
-    up(geo, a, b, c, col); up(geo, a, c, d, col);
+    const o = geo.count;
+    geo.vert([x0 + nx, y, z0 + nz], 0, 1, 0, col, 0); geo.vert([x1 + nx, y, z1 + nz], 0, 1, 0, col, 0);
+    geo.vert([x1 - nx, y, z1 - nz], 0, 1, 0, col, 0); geo.vert([x0 - nx, y, z0 - nz], 0, 1, 0, col, 0);
+    geo.idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
   };
   for (let e = 0; e < C.src.length; e++) {
     const u = C.src[e], v = C.dst[e], key = Math.min(u, v) + '_' + Math.max(u, v) + '_' + Math.round(C.len[e] * 10);
@@ -389,9 +462,9 @@ function buildStreetCity(R, C) {
     if (Math.hypot(sx - x, sz - z) > 1.2) { trees.push([x, z]); got++; }
   }
   const tree = new Geo();
-  tree.cylinder(0, 0, 0.06, 0, 0.35, lin(PAL.trunk), 6);
-  tree.sphere(0, 0.62, 0, 0.36, [1, 1, 1], 8, 5, 1, 1.05);
-  const tr = R.mesh(tree, Math.max(1, trees.length), { cast: true, order: 3 });
+  tree.cylinder(0, 0, 0.05, 0, 0.36, lin(PAL.trunk), 5);
+  tree.ball(0, 0.60, 0, 0.34, [1, 1, 1], 7, 4, 1, 1.0).ball(0.10, 0.86, 0.06, 0.24, [1.08, 1.1, 1.02], 7, 4, 1, 1.0);   // crown in two soft lobes
+  const tr = R.mesh(tree, Math.max(1, trees.length), { cast: true, order: 3, sway: 0.035 });
   trees.forEach(([x, z], i) => {
     const k = 0.8 + rnd() * 0.6, c = lin(PAL.leaf[Math.floor(rnd() * PAL.leaf.length)]);
     tr.set(i, x, 0.05, z, k, k * (0.85 + rnd() * 0.4), k, rnd() * 6, c[0], c[1], c[2], 1);

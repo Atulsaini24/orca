@@ -1428,6 +1428,19 @@ class Geo {
     }
     return this;
   }
+  // A smooth-shaded ball (normals from the centre): soft tree crowns.
+  ball(cx, cy, cz, r, color, seg = 7, rings = 4, mask = 0, squash = 1) {
+    const o = this.count;
+    for (let j = 0; j <= rings; j++) for (let i = 0; i <= seg; i++) {
+      const th = (i / seg) * Math.PI * 2, ph = (j / rings) * Math.PI, nx = Math.sin(ph) * Math.cos(th), ny = Math.cos(ph), nz = Math.sin(ph) * Math.sin(th);
+      this.vert([cx + nx * r, cy + ny * r * squash, cz + nz * r], nx, ny, nz, color, mask);
+    }
+    for (let j = 0; j < rings; j++) for (let i = 0; i < seg; i++) {
+      const a = o + j * (seg + 1) + i, b = a + 1, c = a + seg + 1, d = c + 1;
+      if (j > 0) this.idx.push(a, b, c); if (j < rings - 1) this.idx.push(b, d, c);
+    }
+    return this;
+  }
   ring(r0, r1, seg, color) {
     for (let i = 0; i < seg; i++) {
       const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
@@ -1442,22 +1455,29 @@ const VS_MESH = `#version 300 es
 layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor; layout(location=2) in vec3 aCol; layout(location=3) in float aMask;
 layout(location=4) in vec3 iOff; layout(location=5) in vec3 iScale; layout(location=6) in float iRot; layout(location=7) in vec4 iCol;
 layout(location=8) in float aId;
-uniform mat4 uVP; uniform mat4 uLVP;
-out vec3 vW; out vec3 vN; out vec3 vCol; out float vA; out vec4 vL; out vec3 vLoc; out vec3 vSc; out float vId;
+uniform mat4 uVP; uniform mat4 uLVP; uniform float uTime, uSway, uTexel;
+out vec3 vW; out vec3 vN; out vec3 vCol; out float vA; out vec4 vL; out vec3 vLoc; out vec3 vSc; out float vId; out float vEm;
 void main(){
   float c = cos(iRot), s = sin(iRot);
   vec3 p = aPos * iScale;
   vec3 w = vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z) + iOff;
+  if (uSway > 0.0) {                                       // trees lean in the wind, more toward the crown
+    float ph = iOff.x * 0.71 + iOff.z * 0.93, k = uSway * p.y * p.y;
+    w.x += sin(uTime * 1.4 + ph) * k; w.z += cos(uTime * 1.1 + ph * 1.3) * k;
+  }
   vec3 n = normalize(aNor / iScale);
   vN = vec3(c*n.x + s*n.z, n.y, -s*n.x + c*n.z);
-  vW = w; vCol = mix(aCol, iCol.rgb, aMask); vA = iCol.a; vL = uLVP * vec4(w, 1.0); vLoc = aPos; vSc = iScale; vId = aId;
+  // mask: 1 = tinted by the instance colour, 2 = emissive (lamps)
+  vW = w; vCol = mix(aCol, iCol.rgb, step(0.5, aMask) * step(aMask, 1.5)); vEm = step(1.5, aMask); vA = iCol.a;
+  vL = uLVP * vec4(w + vN * uTexel, 1.0);                  // offset along the normal: no shadow streaks on walls
+  vLoc = aPos; vSc = iScale; vId = aId;
   gl_Position = uVP * vec4(w, 1.0);
 }`;
 const FS_MESH = `#version 300 es
 precision highp float; precision highp sampler2DShadow;
-in vec3 vW; in vec3 vN; in vec3 vCol; in float vA; in vec4 vL; in vec3 vLoc; in vec3 vSc; in float vId;
+in vec3 vW; in vec3 vN; in vec3 vCol; in float vA; in vec4 vL; in vec3 vLoc; in vec3 vSc; in float vId; in float vEm;
 uniform vec3 uSun, uSunCol, uSky, uGround, uCam, uFog, uGlow; uniform vec2 uFogR;
-uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO, uNight; uniform int uPcf;
+uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO, uNight, uTime, uSoft, uSelf; uniform int uPcf;
 uniform sampler2DShadow uShadow;
 out vec4 outColor;
 float shadowAt(vec4 l){
@@ -1466,38 +1486,88 @@ float shadowAt(vec4 l){
   vec2 t = 1.0 / vec2(textureSize(uShadow, 0));
   float s = 0.0;
   float k = float(uPcf), n = 0.0;
-  for (int x = -uPcf; x <= uPcf; x++) for (int y = -uPcf; y <= uPcf; y++) { s += texture(uShadow, vec3(p.xy + vec2(x, y) * t * (1.7 / max(k, 1.0)), p.z - 0.0012)); n += 1.0; }
+  for (int x = -uPcf; x <= uPcf; x++) for (int y = -uPcf; y <= uPcf; y++) { s += texture(uShadow, vec3(p.xy + vec2(x, y) * t * (1.7 / max(k, 1.0)), p.z - 0.0008)); n += 1.0; }
   return s / n;
 }
 vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
 float hash3(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
+// soft cloud shadows drifting over the city by day
+float clouds(vec2 p){
+  if (uNight > 0.98) return 1.0;
+  p = p * 0.011 + uTime * vec2(0.021, 0.013);
+  float n = sin(p.x) * sin(p.y) + 0.5 * sin(p.x * 2.3 + 1.7) * sin(p.y * 1.9 + 0.4);
+  return 1.0 - 0.30 * smoothstep(0.25, 0.95, n) * (1.0 - uNight);
+}
 void main(){
-  vec3 col = vCol;
+  vec3 col = vCol, glowAdd = vec3(0.0), lit = col;
+  float alpha = vA;
   if (uUnlit < 0.5) {
     vec3 n = normalize(vN);
     float ndl = max(dot(n, uSun), 0.0);
     float sh = uShadowOn > 0.5 && ndl > 0.0 ? shadowAt(vL) : 1.0;           // faces turned from the sun need no lookup
     vec3 amb = mix(uGround, uSky, n.y * 0.5 + 0.5);
     float ao = mix(1.0 - uAO, 1.0, smoothstep(0.0, 3.5, vW.y + 0.2));
-    vec3 glowAdd = vec3(0.0);
+    vec3 sun = uSunCol * ndl * sh * clouds(vW.xz);
+    float glassK = 0.0; vec3 glassLit = vec3(0.0);
     if (uFacade > 1.5) {
-      // Real footprints: floors every 3.6 m (0.12 units), window bays along each wall in world space.
-      float wall = 1.0 - abs(n.y);
-      float d = distance(uCam, vW);
-      float fade = 1.0 - smoothstep(60.0, 260.0, d);                          // detail fades with distance
-      if (wall > 0.5 && (fade > 0.0 || uNight > 0.01)) {
+      // Real footprints. vId carries the building: height (integer part, 1/50 unit) and a hash (fraction).
+      // Tall buildings are glass curtain walls, the rest masonry with punched windows; floors are 3.6 m.
+      float bh = floor(vId) / 50.0, hid = fract(vId), d = distance(uCam, vW);
+      if (abs(n.y) < 0.5) {
+        bool glassy = bh > 5.0 || (bh > 2.2 && hid < 0.55);
         vec2 t = normalize(vec2(-n.z, n.x) + 1e-5);
-        float fy = vW.y / 0.12, fb = dot(vW.xz, t) / 0.11;
-        float floorLine = smoothstep(0.10, 0.0, abs(fract(fy) - 0.5) - 0.42) * step(0.2, vW.y);
-        vec2 cellF = fract(vec2(fb, fy)) - 0.5;
-        float glass = step(abs(cellF.x), 0.34) * step(abs(cellF.y), 0.30) * wall * step(0.15, vW.y);
-        col *= 1.0 - wall * fade * (0.06 * floorLine) - glass * fade * 0.05;
-        if (uNight > 0.01) {
-          // At night some windows are lit: which ones depends on the building and the cell.
-          float lit = step(0.58, hash3(vec3(floor(fb), floor(fy), vId * 97.0)));
-          vec3 warm = mix(vec3(1.0, 0.78, 0.48), vec3(0.85, 0.9, 1.0), step(0.85, hash3(vec3(floor(fy), vId * 13.0, floor(fb)))));
-          glowAdd = uNight * glass * lit * warm * mix(0.9, 0.45, smoothstep(80.0, 700.0, d));
+        float fy = vW.y / 0.12, fb = dot(vW.xz, t) / (glassy ? 0.085 : 0.13);
+        float px = max(fwidth(fb), fwidth(fy)), px4 = px * 0.25;
+        float detail = 1.0 - smoothstep(0.30, 0.90, px);                      // cells near 1 px blend to their mean
+        float street = step(vW.y, 0.16), above = step(bh + 0.005, vW.y), crown = step(bh - 0.13, vW.y) * step(1.0, bh) * (1.0 - above);
+        float body = (1.0 - crown) * (1.0 - above) * step(0.035, vW.y);
+        vec2 half2 = street > 0.5 ? vec2(0.44, 0.36) : glassy ? vec2(0.45, 0.40) : vec2(0.29, 0.27);   // shop fronts, curtain wall, punched
+        float win = 4.0 * half2.x * half2.y;                                  // far away: the windows' share of the wall
+        // glass mirrors the sky, more at grazing angles
+        vec3 V = normalize(uCam - vW), R = reflect(-V, n);
+        float f1 = 1.0 - max(dot(V, n), 0.0), fres = f1 * f1 * f1;
+        vec3 skyRef = mix(uGround * 1.1, uSky * vec3(1.25, 1.45, 1.75), clamp(R.y * 0.6 + 0.55, 0.0, 1.0));
+        vec3 tint = glassy ? mix(vec3(0.10, 0.16, 0.25), vec3(0.13, 0.19, 0.22), hid) : vec3(0.07, 0.09, 0.12);
+        glassLit = mix(tint * (amb + sun * 0.7), skyRef, 0.22 + 0.62 * fres);
+        if (detail > 0.0) {                                                   // near enough to tell windows apart
+          vec2 cf = abs(fract(vec2(fb, fy)) - 0.5);
+          float aa = px * 0.7 + 0.012;
+          float w1 = (1.0 - smoothstep(half2.x - aa, half2.x + aa, cf.x)) * (1.0 - smoothstep(half2.y - aa, half2.y + aa, cf.y));
+          win = mix(win, w1, detail);
+          glassLit += uSunCol * pow(max(dot(R, uSun), 0.0), 90.0) * sh * 0.5; // and it catches the sun
         }
+        win *= body;
+        glassK = win * (glassy ? 0.92 : 0.85);
+        col *= 1.0 + 0.05 * crown - 0.05 * street;                            // cornice and base course
+        if (uNight > 0.01) {
+          // Lit windows: offices by the floor, homes one by one; mostly warm, a few cool. Farther away single
+          // windows are under a pixel: groups of four floors by four bays show instead, and beyond that only a
+          // faint glow that differs from building to building.
+          vec3 far3 = vec3(0.045 * (0.35 + 1.3 * fract(hid * 7.31)) * body) * vec3(1.0, 0.76, 0.48);
+          if (px4 < 0.9) {
+            vec2 g4 = vec2(fb, fy) * 0.25, c4 = abs(fract(g4) - 0.5);
+            float aa4 = px4 * 0.7 + 0.02, k4 = hash3(vec3(floor(g4), hid * 53.0));
+            float win4 = (1.0 - smoothstep(0.40 - aa4, 0.40 + aa4, c4.x)) * (1.0 - smoothstep(0.36 - aa4, 0.36 + aa4, c4.y));
+            vec3 coarse = vec3(win4 * step(0.60, k4) * (0.16 + 0.22 * k4) * body) * mix(vec3(1.0, 0.70, 0.40), vec3(1.0, 0.82, 0.56), k4);
+            far3 = mix(far3, coarse, 1.0 - smoothstep(0.30, 0.90, px4));
+          }
+          glowAdd = far3;
+          if (detail > 0.0) {
+            vec2 cell = floor(vec2(fb, fy));
+            float h1 = hash3(vec3(cell, hid * 97.0)), h2 = hash3(vec3(cell.yx, hid * 13.0)), fl = hash3(vec3(cell.y, hid * 31.0, 7.0));
+            float on = max(glassy ? step(0.65, h1 * 0.55 + fl * 0.45) : step(0.74, h1), street * step(0.25, h1));
+            vec3 lamp = h2 > 0.90 ? vec3(0.55, 0.74, 1.0) : mix(vec3(1.0, 0.60, 0.26), vec3(1.0, 0.80, 0.50), h2);
+            glowAdd = mix(far3, win * on * (0.30 + 0.50 * h2) * lamp, detail);
+            glassK *= 1.0 - 0.6 * uNight * on * detail;
+          }
+          glowAdd *= uNight * mix(1.0, 0.6, smoothstep(80.0, 700.0, d));
+          // towers wear a lit crown
+          if (bh > 4.0) glowAdd += uNight * crown * mix(vec3(1.0, 0.80, 0.52), vec3(0.50, 0.72, 1.0), step(0.5, hid)) * 0.42;
+        }
+      } else if (n.y > 0.5) {
+        // roofs: membrane, gravel or tar, by building
+        vec3 roof = hid < 0.4 ? vec3(0.62, 0.63, 0.64) : hid < 0.75 ? vec3(0.47, 0.46, 0.44) : vec3(0.30, 0.31, 0.33);
+        col = mix(col, roof, 0.55);
       }
     } else if (uFacade > 0.5) {
       // Engraved floor lines and faint window bays on walls; brighter rims where edges catch light.
@@ -1511,13 +1581,16 @@ void main(){
       float rim = 1.0 - smoothstep(0.0, 0.18, min(e2.x, e2.y));
       col *= 1.0 + 0.10 * rim;
     }
-    col = col * (amb * ao + uSunCol * ndl * sh) + glowAdd * 2.2 + uGlow * uNight * 0.35;
+    lit = mix(col * (amb * ao + sun), glassLit * ao, glassK) + glowAdd * 1.25 + uGlow * uNight * 0.20
+        + vCol * (vEm * (0.5 + 3.0 * uNight) + uSelf * uNight);               // lamps; cars keep their status colour at night
+  } else if (uSoft > 0.5) {
+    alpha *= 1.0 - smoothstep(0.0, 1.0, length(vLoc.xz));                     // soft discs: light pools
   }
   float d = distance(uCam, vW);
-  vec3 c = aces(col * uExposure);
+  vec3 c = aces(lit * uExposure);
   c = pow(c, vec3(1.0 / 2.2));
   c = mix(c, uFog, smoothstep(uFogR.x, uFogR.y, d));
-  outColor = vec4(c, vA);
+  outColor = vec4(c, alpha);
 }`;
 const FS_DEPTH = `#version 300 es
 precision mediump float; out vec4 o; void main(){ o = vec4(1.0); }`;
@@ -1526,18 +1599,25 @@ const VS_LINE = `#version 300 es
 layout(location=0) in vec2 aCorner;
 layout(location=1) in vec3 iA; layout(location=2) in vec3 iB; layout(location=3) in vec4 iCol; layout(location=4) in float iW;
 uniform mat4 uVP; uniform vec2 uRes;
-out vec4 vCol;
+out vec4 vCol; out float vT;
 void main(){
+  vT = iW < 0.0 ? aCorner.x * distance(iA, iB) : -1.0;       // negative width: dashes that march from A to B
+  float iWa = abs(iW);
   vec4 a = uVP * vec4(iA, 1.0), b = uVP * vec4(iB, 1.0);
   vec2 sa = a.xy / a.w, sb = b.xy / b.w;
   vec2 dir = (sb - sa) * uRes; float l = length(dir); dir = l > 1e-5 ? dir / l : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   vec4 p = mix(a, b, aCorner.x);
-  p.xy += nrm * aCorner.y * iW / uRes * p.w;
+  p.xy += nrm * aCorner.y * iWa / uRes * p.w;
   gl_Position = p; vCol = iCol;
 }`;
 const FS_LINE = `#version 300 es
-precision mediump float; in vec4 vCol; out vec4 o; void main(){ o = vCol; }`;
+precision highp float; in vec4 vCol; in float vT; uniform float uTime, uDash; out vec4 o;
+void main(){
+  float a = vCol.a;
+  if (vT >= 0.0) { float f = fract(vT / uDash - uTime * 1.6); a *= 0.25 + 0.75 * smoothstep(0.0, 0.12, f) * (1.0 - smoothstep(0.55, 0.67, f)); }
+  o = vec4(vCol.rgb, a);
+}`;
 
 const VS_PLANE = `#version 300 es
 layout(location=0) in vec2 aXZ; uniform mat4 uVP; uniform vec4 uRect; uniform float uY;
@@ -1561,9 +1641,24 @@ void main(){
   o = vec4(mix(c, uFog, smoothstep(uFogR.x, uFogR.y, d)), 1.0);
 }`;
 const VS_SKY = `#version 300 es
-layout(location=0) in vec2 aXZ; out vec2 vP; void main(){ vP = aXZ; gl_Position = vec4(aXZ * 2.0 - 1.0, 0.9999, 1.0); }`;
+layout(location=0) in vec2 aXZ; uniform mat4 uIVP; uniform vec3 uCam; out vec3 vDir;
+void main(){
+  vec2 ndc = aXZ * 2.0 - 1.0; vec4 far = uIVP * vec4(ndc, 1.0, 1.0);
+  vDir = far.xyz / far.w - uCam; gl_Position = vec4(ndc, 0.9999, 1.0);
+}`;
 const FS_SKY = `#version 300 es
-precision mediump float; in vec2 vP; uniform vec3 uTop, uBot; out vec4 o; void main(){ o = vec4(mix(uBot, uTop, smoothstep(0.2, 1.0, vP.y)), 1.0); }`;
+precision highp float; in vec3 vDir; uniform vec3 uTop, uBot, uSun, uSunCol; uniform float uNight, uTime; out vec4 o;
+float hash3(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
+void main(){
+  vec3 d = normalize(vDir);
+  vec3 c = mix(uBot, uTop, smoothstep(0.0, 0.55, d.y));
+  float s = max(dot(d, uSun), 0.0), day = 1.0 - uNight;
+  c += day * normalize(uSunCol + 1e-4) * (pow(s, 900.0) * 1.6 + pow(s, 24.0) * 0.20 + pow(s, 4.0) * 0.06);   // disc, glow, haze
+  vec3 g = floor(d * 190.0);
+  float star = step(0.9972, hash3(g)) * smoothstep(0.02, 0.25, d.y);
+  c += uNight * star * (0.55 + 0.45 * sin(uTime * 2.0 + hash3(g.zxy) * 40.0)) * vec3(0.9, 0.93, 1.0);
+  o = vec4(c, 1.0);
+}`;
 
 // ---------------------------------------------------------------- renderer
 const INST_FLOATS = 11;   // off(3) scale(3) rot(1) color(4)
@@ -1599,7 +1694,7 @@ class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.light = { dir: [0, 1, 0], color: [1, 1, 1], sky: [0.5, 0.5, 0.5], ground: [0.3, 0.3, 0.3] };
     this.fog = [0.9, 0.9, 0.9]; this.fogRange = [600, 1600]; this.exposure = 1; this.ao = 0.35;
-    this.planes = [];
+    this.planes = []; this.shadowTexel = 0.2;
   }
   program(vs, fs) {
     const gl = this.gl, mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh) + '\n' + s); return sh; };
@@ -1637,7 +1732,7 @@ class Renderer {
     });
     gl.bindVertexArray(null);
     const layer = { vao: v, ibuf, data, max, n: 0, elems: geo.idx.length, itype: big ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, bpe: big ? 4 : 2,
-      tiles: tiled && tiled.tiles, lod: opts.lod || 0,
+      tiles: tiled && tiled.tiles, lod: opts.lod || 0, sway: opts.sway || 0, soft: !!opts.soft, self: opts.self || 0,
       cast: !!opts.cast, dynamic: !!opts.dynamic, unlit: !!opts.unlit, facade: opts.facade ? +opts.facade : 0, glow: opts.glow || [0, 0, 0], alpha: !!opts.alpha, shadowed: opts.shadowed !== false,
       order: opts.order || 0, visible: true, dirty: true, depthWrite: opts.depthWrite !== false,
       set(i, x, y, z, sx, sy, sz, rot, r, g, b, a = 1) {
@@ -1701,6 +1796,7 @@ class Renderer {
       gl.uniform3fv(u.uSun, L.dir); gl.uniform3fv(u.uSunCol, L.color); gl.uniform3fv(u.uSky, L.sky); gl.uniform3fv(u.uGround, L.ground);
       gl.uniform3fv(u.uCam, cam); gl.uniform3fv(u.uFog, this.fog); gl.uniform2fv(u.uFogR, this.fogRange);
       gl.uniform1f(u.uExposure, this.exposure); gl.uniform1f(u.uAO, this.ao); gl.uniform1i(u.uPcf, this.pcf);
+      gl.uniform1f(u.uTime, this.time); gl.uniform1f(u.uTexel, Math.min(0.12, this.shadowTexel * 0.5));
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.shadowTex); gl.uniform1i(u.uShadow, 0);
     }
   }
@@ -1734,20 +1830,21 @@ class Renderer {
     const dir = L.dir.map(q), dl = Math.hypot(...dir), key = `${c[0]},${c[2]},${R},${dir}`;
     const eye = [c[0] + (dir[0] / dl) * 600, c[1] + (dir[1] / dl) * 600, c[2] + (dir[2] / dl) * 600];
     const lvp = M4.mul(M4.ortho(-R, R, -R, R, 200, 1100), M4.lookAt(eye, c, [0, 1, 0]));
+    this.shadowTexel = (2 * R) / this.shadowSize;
     if (key !== this.shadowKey) {
       this.shadowKey = key; this.stats.shadow = true;
       const S = this.shadowSize, planes = frustumPlanes(lvp);
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo); gl.viewport(0, 0, S, S);
       gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND); gl.clear(gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
-      gl.useProgram(this.pDepth.p); gl.uniformMatrix4fv(this.pDepth.u.uVP, false, lvp);
+      gl.useProgram(this.pDepth.p); gl.uniformMatrix4fv(this.pDepth.u.uVP, false, lvp); gl.uniform1f(this.pDepth.u.uSway, 0);
       for (const l of this.layers) if (l.cast && l.visible && l.n) this.drawLayer(l, planes, null, 0);
       gl.disable(gl.POLYGON_OFFSET_FILL);
     }
     // main pass: opaque meshes first (front to back), so the sky and water only shade what is left uncovered
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LEQUAL); gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LESS); gl.disable(gl.BLEND);   // strict: coplanar overlaps shade once
     gl.clearColor(this.fog[0], this.fog[1], this.fog[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const planes = frustumPlanes(cam.vp), far = this.fogRange[1] + 40;
     gl.useProgram(this.pMesh.p); this.meshUniforms(this.pMesh, cam.vp, lvp, cam.eye);
@@ -1755,6 +1852,7 @@ class Renderer {
     gl.uniform1f(u.uNight, this.night || 0);
     const drawMesh = (l) => {
       gl.uniform1f(u.uUnlit, l.unlit ? 1 : 0); gl.uniform1f(u.uFacade, l.facade); gl.uniform3fv(u.uGlow, l.glow); gl.uniform1f(u.uShadowOn, l.shadowed ? 1 : 0);
+      gl.uniform1f(u.uSway, l.sway); gl.uniform1f(u.uSoft, l.soft ? 1 : 0); gl.uniform1f(u.uSelf, l.self);
       this.drawLayer(l, planes, cam.eye, far);
     };
     for (const l of this.layers) if (!l.alpha && l.visible && l.n) drawMesh(l);
@@ -1766,8 +1864,11 @@ class Renderer {
       gl.uniform3fv(w.uDeep, this.water.deep); gl.uniform3fv(w.uShallow, this.water.shallow); gl.uniform3fv(w.uSun, L.dir); gl.uniform4fv(w.uCity, this.water.city);
       gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
-    gl.depthMask(false); gl.useProgram(this.pSky.p); gl.uniform3fv(this.pSky.u.uTop, this.skyTop); gl.uniform3fv(this.pSky.u.uBot, this.fog);
-    gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
+    const sk = this.pSky.u;
+    gl.depthMask(false); gl.depthFunc(gl.LEQUAL); gl.useProgram(this.pSky.p); gl.uniform3fv(sk.uTop, this.skyTop); gl.uniform3fv(sk.uBot, this.fog);
+    gl.uniformMatrix4fv(sk.uIVP, false, cam.ivp); gl.uniform3fv(sk.uCam, cam.eye); gl.uniform3fv(sk.uSun, L.dir); gl.uniform3fv(sk.uSunCol, L.color);
+    gl.uniform1f(sk.uNight, this.night || 0); gl.uniform1f(sk.uTime, this.time);
+    gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthFunc(gl.LESS);
     // translucent: heat wash, rings, then lines
     gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     for (const pl of this.planes) if (pl.visible && pl.alpha > 0.01) {
@@ -1779,6 +1880,7 @@ class Renderer {
     gl.useProgram(this.pMesh.p);
     for (const l of this.layers) if (l.alpha && l.visible && l.n) { if (l.depthWrite) gl.depthMask(true); drawMesh(l); gl.depthMask(false); }
     gl.useProgram(this.pLine.p); gl.uniformMatrix4fv(this.pLine.u.uVP, false, cam.vp); gl.uniform2f(this.pLine.u.uRes, this.canvas.width / this.dpr, this.canvas.height / this.dpr);
+    gl.uniform1f(this.pLine.u.uTime, this.time); gl.uniform1f(this.pLine.u.uDash, this.dash || 1.5);
     for (const l of this.lineLayers) if (l.visible && l.n) {
       if (l.depth) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
       gl.bindVertexArray(l.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, l.n);
@@ -1870,10 +1972,11 @@ class OrbitCam {
 const PAL = {
   road: '#AEB6C0', plate: '#D6DBE1', slab: '#ECEEF0', curb: '#F6F7F8', park: '#C5D4BA', parkPath: '#E3E6DD',
   mark: '#FAFBFC', zebra: '#F4F5F6',
-  clay: ['#F5F4F0', '#EFEEE9', '#F3F2EE', '#ECEBE6', '#F7F6F3'], glass: ['#D9E2EC', '#D2DCE8', '#E0E7EF'],
-  brick: ['#E6D3C3', '#DFC6B4', '#E9DACB', '#D8BFAE', '#EADFD3'],
+  clay: ['#F5F4F0', '#EFEEE9', '#F3F2EE', '#ECEBE6', '#F7F6F3'], glass: ['#C9D3DE', '#BFCBD8', '#D2DAE3'],
+  brick: ['#DDBFA8', '#D2AE97', '#E0CBB8', '#C9A48E', '#E4D3C2'], stone: ['#E9E5DC', '#DFDACF', '#E6E2D9', '#D8D3C8'],
+  concrete: ['#D9DADB', '#CED0D3', '#E0E1E2'],
   hvac: '#DADCDF', tank: '#B39478', tankRoof: '#7E6A58', legs: '#5C5650',
-  leaf: ['#A6BC98', '#9BB48E', '#B2C6A4', '#93AC87'], trunk: '#8C8277',
+  leaf: ['#8FB47C', '#84AB73', '#9BBD88', '#7BA36B'], trunk: '#8C8277',
   glassCar: '#262C33', tyre: '#1F2327', head: '#FFF4D2', tail: '#C8232C', sign: '#FFFFFF',
 };
 const lin = (h) => srgb(h);
@@ -2009,10 +2112,10 @@ function buildGridCity(R) {
   spires.forEach(([x, z, y, h], i) => sp.set(i, x, y, z, 1, h, 1, 0, 1, 1, 1, 1)); sp.commit(spires.length);
 
   const tree = new Geo();
-  tree.cylinder(0, 0, 0.12, 0, 0.8, lin(PAL.trunk), 6);
-  tree.sphere(0, 1.35, 0, 0.75, [1, 1, 1], 8, 5, 1, 1.05);
+  tree.cylinder(0, 0, 0.11, 0, 0.8, lin(PAL.trunk), 5);
+  tree.ball(0, 1.32, 0, 0.72, [1, 1, 1], 7, 4, 1, 1.0).ball(0.2, 1.85, 0.12, 0.5, [1, 1, 1], 7, 4, 1, 1.0);
   const allTrees = [...parkTrees.map((t) => [...t, 1]), ...streetTrees.map((t) => [...t, 0.7])];
-  const tr = R.mesh(tree, allTrees.length, { cast: true, order: 3 });
+  const tr = R.mesh(tree, allTrees.length, { cast: true, order: 3, sway: 0.03 });
   allTrees.forEach(([x, z, s], i) => {
     const k = s * (0.75 + rnd() * 0.6), c = lin(PAL.leaf[Math.floor(rnd() * PAL.leaf.length)]);
     tr.set(i, x, 0.42, z, k, k * (0.85 + rnd() * 0.4), k, rnd() * 6, c[0], c[1], c[2], 1);
@@ -2023,16 +2126,26 @@ function buildGridCity(R) {
 
 // ---------------------------------------------------------------- moving things
 function carGeometry() {
-  const g = new Geo(), dark = lin(PAL.glassCar), tyre = lin(PAL.tyre);
-  g.box(-0.62, 0.62, 0.2, 0.62, -1.28, 1.28, [1, 1, 1], 1);                                  // body (instance colour)
-  g.frustum([-0.6, 0.6, -0.78, 0.5], [-0.5, 0.5, -0.56, 0.24], 0.62, 1.04, dark);             // glasshouse
-  g.box(-0.5, 0.5, 1.04, 1.09, -0.56, 0.24, [1, 1, 1], 1);                                     // roof panel
-  g.box(-0.2, 0.2, 1.09, 1.27, -0.26, -0.04, lin(PAL.sign));                                   // taxi roof sign
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.cylinder(sz * 0.84, 0.27, 0.27, sx * 0.53, sx * 0.71, tyre, 9, 0, 'x');
-  for (const s of [-1, 1]) {
-    g.box(s * 0.48 - 0.12, s * 0.48 + 0.12, 0.4, 0.52, 1.27, 1.3, lin(PAL.head));
-    g.box(s * 0.48 - 0.12, s * 0.48 + 0.12, 0.42, 0.52, -1.3, -1.27, lin(PAL.tail));
+  // A saloon with a sculpted shoulder line, a tapered glasshouse, bumpers, mirrors, wheels with hubs and lamps
+  // that glow (mask 2). The body takes the instance colour (mask 1).
+  const g = new Geo(), dark = lin(PAL.glassCar), tyre = lin(PAL.tyre), trim = lin('#3A4047'), hub = lin('#B9BEC4');
+  const W = [1, 1, 1];
+  g.box(-0.63, 0.63, 0.24, 0.50, -1.26, 1.26, W, 1);                                           // lower body
+  g.frustum([-0.63, 0.63, -1.26, 1.26], [-0.57, 0.57, -1.20, 1.16], 0.50, 0.66, W, 1);         // shoulder, hood and boot
+  g.frustum([-0.56, 0.56, -0.80, 0.50], [-0.46, 0.46, -0.52, 0.20], 0.66, 1.03, dark);         // glasshouse
+  g.frustum([-0.47, 0.47, -0.54, 0.22], [-0.42, 0.42, -0.46, 0.14], 1.03, 1.08, W, 1);         // roof
+  g.box(-0.60, 0.60, 0.18, 0.36, 1.26, 1.33, trim); g.box(-0.60, 0.60, 0.18, 0.36, -1.33, -1.26, trim);   // bumpers
+  g.box(-0.64, 0.64, 0.17, 0.24, -1.20, 1.20, trim);                                           // sills
+  for (const sx of [-1, 1]) g.box(sx * 0.60 - 0.07, sx * 0.60 + 0.07, 0.68, 0.76, 0.22, 0.34, W, 1);     // mirrors
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    g.cylinder(sz * 0.82, 0.28, 0.28, sx * 0.50, sx * 0.68, tyre, 10, 0, 'x');
+    g.cylinder(sz * 0.82, 0.28, 0.15, sx * 0.685, sx * 0.70, hub, 8, 0, 'x');
   }
+  for (const s of [-1, 1]) {
+    g.box(s * 0.44 - 0.15, s * 0.44 + 0.15, 0.40, 0.52, 1.24, 1.275, lin(PAL.head), 2);        // headlamps
+    g.box(s * 0.44 - 0.15, s * 0.44 + 0.15, 0.42, 0.52, -1.275, -1.24, lin(PAL.tail), 2);      // tail lamps
+  }
+  g.box(-0.22, 0.22, 1.08, 1.24, -0.28, -0.06, lin('#FFE9A8'), 2);                             // roof sign, lit
   return g;
 }
 // The same car seen from far away: body and glasshouse only (a tenth of the triangles).
@@ -2048,7 +2161,18 @@ function pinGeometry() {
 // OpenStreetMap, and every building from the city's official footprints, extruded from its
 // real outline to its real height.
 // =============================================================================
-function triangulate(pts) {          // ear clipping for a simple polygon [[x, z], ...]; returns index triples
+// Ear clipping for a simple polygon [[x, z], ...]; returns index triples. A point on an ear's edge blocks it,
+// which is right for almost every outline; the few it fails on (checked by area) are retried with the strict rule.
+function triangulate(pts) {
+  const area = (tris) => { let s = 0; for (const [p, q, r] of tris) s += Math.abs((pts[q][0] - pts[p][0]) * (pts[r][1] - pts[p][1]) - (pts[q][1] - pts[p][1]) * (pts[r][0] - pts[p][0])); return s / 2; };
+  let want = 0; for (let i = 0; i < pts.length; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % pts.length]; want += x0 * z1 - x1 * z0; }
+  want = Math.abs(want) / 2;
+  const a = earClip(pts, 0), ea = Math.abs(area(a) - want);
+  if (ea <= 0.02 * want + 1e-4) return a;
+  const b = earClip(pts, 1e-9);
+  return Math.abs(area(b) - want) < ea ? b : a;
+}
+function earClip(pts, eps) {
   const n = pts.length; if (n < 3) return [];
   let area = 0; for (let i = 0; i < n; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % n]; area += x0 * z1 - x1 * z0; }
   const V = [...Array(n).keys()]; if (area < 0) V.reverse();
@@ -2065,7 +2189,7 @@ function triangulate(pts) {          // ear clipping for a simple polygon [[x, z
       for (const q of V) {
         if (q === a || q === b || q === c) continue;
         const [qx, qz] = pts[q]; if (qx < x0 || qx > x1 || qz < z0 || qz > z1) continue;
-        if (cross(a, b, q) >= 0 && cross(b, c, q) >= 0 && cross(c, a, q) >= 0) { ear = false; break; }
+        if (cross(a, b, q) >= eps && cross(b, c, q) >= eps && cross(c, a, q) >= eps) { ear = false; break; }
       }
     }
     if (ear) { out.push([a, b, c]); V.splice(i, 1); stall = 0; i = Math.max(0, i - 1); } else { i++; stall++; }
@@ -2078,43 +2202,86 @@ function triangulate(pts) {          // ear clipping for a simple polygon [[x, z
 const MINOR_M = 24, LOD_FAR = 260;          // buildings under 24 m are drawn within 260 units (about 8 km) of the camera
 function extrudeBuildings(B) {
   const counts = b64Bytes(B.counts), X = b64U16(B.x), Z = b64U16(B.z), H = b64U16(B.h), Y = b64U16(B.year);
+  // What stands on a roof: 1 = a mechanical bulkhead (taller buildings), 2 = a wooden water tank (pre-war mid-rises).
+  const roofKind = (b) => { const hm = (Math.max(0.12, H[b] / 1000)) * B.unit_m, yr = Y[b]; return hm > 30 ? 1 : yr && yr < 1940 && hm > 14 && b % 3 === 0 ? 2 : 0; };
+  const EXTRA = [[0, 0], [20, 30], [42, 54]];                  // vertices and indices of each kind
   let nv = 0, ni = 0;
-  for (let i = 0; i < B.n; i++) { const k = counts[i]; nv += 5 * k; ni += 6 * k + 3 * (k - 2); }
+  for (let i = 0; i < B.n; i++) { const k = counts[i], e = EXTRA[roofKind(i)]; nv += 5 * k + e[0]; ni += 6 * k + 3 * (k - 2) + e[1]; }
   const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3), mask = new Float32Array(nv);
-  const idx = new Uint32Array(ni), ids = new Float32Array(nv), minor = new Uint8Array(nv);   // minor: low-rise, skipped far away
+  const idx = new Uint32Array(ni), ids = new Float32Array(nv), minor = new Uint8Array(nv);   // minor: skipped far away
   let v = 0, t = 0, o = 0, tallest = 0;
   const put = (x, y, z, nx, ny, nz, c, id) => {
     pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z; nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz;
     col[v * 3] = c[0]; col[v * 3 + 1] = c[1]; col[v * 3 + 2] = c[2]; ids[v] = id; return v++;
   };
-  const roofTint = (c) => [c[0] * 0.93, c[1] * 0.93, c[2] * 0.95];
+  const quad = (a, b, c, d) => { idx[t++] = a; idx[t++] = b; idx[t++] = c; idx[t++] = a; idx[t++] = c; idx[t++] = d; };
+  const pal = (list, b) => lin(list[b % list.length]);
+  const hvac = lin(PAL.hvac), wood = lin(PAL.tank), woodRoof = lin(PAL.tankRoof);
+  const inside = (pts, x, z) => {
+    let inn = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, zi] = pts[i], [xj, zj] = pts[j];
+      if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inn = !inn;
+    }
+    return inn;
+  };
   for (let b = 0; b < B.n; b++) {
     const k = counts[b], h = Math.max(0.12, H[b] / 1000), hm = h * B.unit_m, yr = Y[b];
     tallest = Math.max(tallest, hm);
-    const pts = []; let cx = 0, cz = 0;
-    for (let j = 0; j < k; j++) { const p = [X[o + j] / 20, Z[o + j] / 20]; pts.push(p); cx += p[0] / k; cz += p[1] / k; }
+    const pts = []; let cx = 0, cz = 0, x0b = Infinity, x1b = -Infinity, z0b = Infinity, z1b = -Infinity;
+    for (let j = 0; j < k; j++) {
+      const p = [X[o + j] / 20, Z[o + j] / 20]; pts.push(p); cx += p[0] / k; cz += p[1] / k;
+      x0b = Math.min(x0b, p[0]); x1b = Math.max(x1b, p[0]); z0b = Math.min(z0b, p[1]); z1b = Math.max(z1b, p[1]);
+    }
     o += k;
-    const c = lin(hm > 90 ? PAL.glass[b % 3] : yr && yr < 1940 && hm < 40 ? PAL.brick[b % 5] : PAL.clay[b % 5]);
-    const id = (b * 0.6180339887) % 1;                        // per-building hash: which windows are lit at night
+    // The shader reads the building from `id`: its height (integer part, 1/50 unit) and a hash (fraction) that
+    // picks its material, the same rule as here: glass curtain wall for towers, masonry below.
+    const hash = (b * 0.6180339887) % 1, id = Math.floor(h * 50) + Math.min(0.999, hash);
+    const glassy = h > 5 || (h > 2.2 && hash < 0.55);
+    const c = glassy ? pal(PAL.glass, b) : yr && yr < 1940 ? pal(hash < 0.7 ? PAL.brick : PAL.stone, b)
+      : hash < 0.35 ? pal(PAL.stone, b) : hash < 0.6 ? pal(PAL.concrete, b) : pal(PAL.clay, b);
     const v0 = v;
     for (let j = 0; j < k; j++) {                              // walls
-      const [x0, z0] = pts[j], [x1, z1] = pts[(j + 1) % k];
-      let nx = z1 - z0, nz = -(x1 - x0); const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
-      if (nx * ((x0 + x1) / 2 - cx) + nz * ((z0 + z1) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
-      const a = put(x0, 0.06, z0, nx, 0, nz, c, id), bb = put(x1, 0.06, z1, nx, 0, nz, c, id);
-      const cc = put(x1, h, z1, nx, 0, nz, c, id), d = put(x0, h, z0, nx, 0, nz, c, id);
-      idx[t++] = a; idx[t++] = bb; idx[t++] = cc; idx[t++] = a; idx[t++] = cc; idx[t++] = d;
+      const [xa, za] = pts[j], [xb, zb] = pts[(j + 1) % k];
+      let nx = zb - za, nz = -(xb - xa); const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
+      if (nx * ((xa + xb) / 2 - cx) + nz * ((za + zb) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
+      quad(put(xa, 0.06, za, nx, 0, nz, c, id), put(xb, 0.06, zb, nx, 0, nz, c, id), put(xb, h, zb, nx, 0, nz, c, id), put(xa, h, za, nx, 0, nz, c, id));
     }
-    const r0 = v, rc = roofTint(c);                            // roof
-    for (const [x, z] of pts) put(x, h, z, 0, 1, 0, rc, id);
+    const r0 = v;                                              // roof
+    for (const [x, z] of pts) put(x, h, z, 0, 1, 0, c, id);
     const tris = triangulate(pts);
     for (let q = 0; q < k - 2; q++) {
       const tr = tris[q] || [0, q + 1, q + 2];
       idx[t++] = r0 + tr[0]; idx[t++] = r0 + tr[1]; idx[t++] = r0 + tr[2];
     }
     if (hm < MINOR_M) minor.fill(1, v0, v);
+    // rooftop structure, where the footprint has room for it around its centre
+    const kind = roofKind(b), span = Math.min(x1b - x0b, z1b - z0b), e0 = v;
+    if (kind && span > 0.5 && inside(pts, cx, cz)) {
+      if (kind === 1) {
+        const s = Math.min(0.9, span * 0.2), top = h + 0.1 + 0.08 * hash, ang = hash * 3.1;
+        const ux = Math.cos(ang) * s, uz = Math.sin(ang) * s, wx = -uz * 0.7, wz = ux * 0.7;
+        const P = [[cx - ux - wx, cz - uz - wz], [cx + ux - wx, cz + uz - wz], [cx + ux + wx, cz + uz + wz], [cx - ux + wx, cz - uz + wz]];
+        for (let j = 0; j < 4; j++) {
+          const [xa, za] = P[j], [xb, zb] = P[(j + 1) % 4]; let nx = zb - za, nz = -(xb - xa); const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
+          quad(put(xa, h, za, nx, 0, nz, hvac, id), put(xb, h, zb, nx, 0, nz, hvac, id), put(xb, top, zb, nx, 0, nz, hvac, id), put(xa, top, za, nx, 0, nz, hvac, id));
+        }
+        quad(put(P[0][0], top, P[0][1], 0, 1, 0, hvac, id), put(P[1][0], top, P[1][1], 0, 1, 0, hvac, id), put(P[2][0], top, P[2][1], 0, 1, 0, hvac, id), put(P[3][0], top, P[3][1], 0, 1, 0, hvac, id));
+      } else {
+        const r = Math.min(0.11, span * 0.16), y0 = h + 0.07, y1 = y0 + r * 2.1, y2 = y1 + r * 0.9;
+        for (let j = 0; j < 6; j++) {
+          const a0 = (j / 6) * Math.PI * 2, a1 = ((j + 1) / 6) * Math.PI * 2, am = (a0 + a1) / 2;
+          const xa = cx + Math.cos(a0) * r, za = cz + Math.sin(a0) * r, xb = cx + Math.cos(a1) * r, zb = cz + Math.sin(a1) * r, nx = Math.cos(am), nz = Math.sin(am);
+          quad(put(xa, y0, za, nx, 0, nz, wood, id), put(xb, y0, zb, nx, 0, nz, wood, id), put(xb, y1, zb, nx, 0, nz, wood, id), put(xa, y1, za, nx, 0, nz, wood, id));
+          const i0 = put(xa, y1, za, nx, 0.6, nz, woodRoof, id), i1 = put(xb, y1, zb, nx, 0.6, nz, woodRoof, id), i2 = put(cx, y2, cz, nx, 0.6, nz, woodRoof, id);
+          idx[t++] = i0; idx[t++] = i1; idx[t++] = i2;
+        }
+      }
+      minor.fill(1, e0, v);
+    }
   }
-  return { geo: { pos, nor, col, mask, idx: idx.subarray(0, t), count: v, ids, minor }, tallest, n: B.n };
+  return { geo: { pos: pos.subarray(0, v * 3), nor: nor.subarray(0, v * 3), col: col.subarray(0, v * 3), mask: mask.subarray(0, v),
+    idx: idx.subarray(0, t), count: v, ids: ids.subarray(0, v), minor }, tallest, n: B.n };
 }
 
 const TILE = 32;                     // static meshes are culled in tiles of 32 units (about 1 km)
@@ -2125,6 +2292,12 @@ function buildStreetCity(R, C) {
     if (ny >= 0) geo.tri(a, b, c, col); else geo.tri(a, c, b, col);
   };
   const ring = (k) => { const a = C.ringOff[k], b = C.ringOff[k + 1], out = []; for (let i = a; i < b; i++) out.push([C.rx[i], C.rz[i]]); return out; };
+  // A flat polygon facing up, its outline's vertices shared by all its triangles (a third of the vertices).
+  const flatPoly = (geo, pts, y, col) => {
+    const o = geo.count;
+    for (const [x, z] of pts) geo.vert([x, y, z], 0, 1, 0, col, 0);
+    for (const [a, b, c] of triangulate(pts)) geo.idx.push(o + a, o + b, o + c);
+  };
   const parkZones = new Set(C.zones.map((z, i) => (/^(Central Park|Grant Park|Millenium Park|Millennium Park)$/.test(z.name) ? i : -1)).filter((i) => i >= 0));
 
   // ---------------------------------------------------------------- land, embankment, surroundings
@@ -2136,7 +2309,7 @@ function buildStreetCity(R, C) {
       const pts = ring(r);
       if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
       const isPark = parkZones.has(zi), col = isPark ? park : slab, y = isPark ? 0.05 : 0;
-      for (const [a, b, c] of triangulate(pts)) up(land, [pts[a][0], y, pts[a][1]], [pts[b][0], y, pts[b][1]], [pts[c][0], y, pts[c][1]], col);
+      flatPoly(land, pts, y, col);
       for (let i = 0; i < pts.length; i++) {
         const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % pts.length];
         land.quad([x0, 0, z0], [x1, 0, z1], [x1, -3.2, z1], [x0, -3.2, z0], bank);
@@ -2173,7 +2346,7 @@ function buildStreetCity(R, C) {
     const pts = []; for (let i = 0; i + 1 < flat.length; i += 2) pts.push([flat[i], flat[i + 1]]);
     if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
     if (pts.length < 3 || pts.length > 400) continue;
-    for (const [a, b, c] of triangulate(pts)) up(green, [pts[a][0], 0.03, pts[a][1]], [pts[b][0], 0.03, pts[b][1]], [pts[c][0], 0.03, pts[c][1]], parkCol);
+    flatPoly(green, pts, 0.03, parkCol);
     let ar = 0; for (let i = 0; i < pts.length; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[(i + 1) % pts.length]; ar += x0 * z1 - x1 * z0; }
     const nTrees = Math.min(60, Math.floor(Math.abs(ar) / 2 / 6));
     let xs = Infinity, xe = -Infinity, zs = Infinity, ze = -Infinity;
@@ -2200,8 +2373,10 @@ function buildStreetCity(R, C) {
     const L = Math.hypot(x1 - x0, z1 - z0); if (L < 1e-4) return;
     const dx = (x1 - x0) / L, dz = (z1 - z0) / L, nx = -dz * w, nz = dx * w;
     x0 -= dx * w * 0.6; z0 -= dz * w * 0.6; x1 += dx * w * 0.6; z1 += dz * w * 0.6;        // overlap the joints
-    const a = [x0 + nx, y, z0 + nz], b = [x1 + nx, y, z1 + nz], c = [x1 - nx, y, z1 - nz], d = [x0 - nx, y, z0 - nz];
-    up(geo, a, b, c, col); up(geo, a, c, d, col);
+    const o = geo.count;
+    geo.vert([x0 + nx, y, z0 + nz], 0, 1, 0, col, 0); geo.vert([x1 + nx, y, z1 + nz], 0, 1, 0, col, 0);
+    geo.vert([x1 - nx, y, z1 - nz], 0, 1, 0, col, 0); geo.vert([x0 - nx, y, z0 - nz], 0, 1, 0, col, 0);
+    geo.idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
   };
   for (let e = 0; e < C.src.length; e++) {
     const u = C.src[e], v = C.dst[e], key = Math.min(u, v) + '_' + Math.max(u, v) + '_' + Math.round(C.len[e] * 10);
@@ -2254,9 +2429,9 @@ function buildStreetCity(R, C) {
     if (Math.hypot(sx - x, sz - z) > 1.2) { trees.push([x, z]); got++; }
   }
   const tree = new Geo();
-  tree.cylinder(0, 0, 0.06, 0, 0.35, lin(PAL.trunk), 6);
-  tree.sphere(0, 0.62, 0, 0.36, [1, 1, 1], 8, 5, 1, 1.05);
-  const tr = R.mesh(tree, Math.max(1, trees.length), { cast: true, order: 3 });
+  tree.cylinder(0, 0, 0.05, 0, 0.36, lin(PAL.trunk), 5);
+  tree.ball(0, 0.60, 0, 0.34, [1, 1, 1], 7, 4, 1, 1.0).ball(0.10, 0.86, 0.06, 0.24, [1.08, 1.1, 1.02], 7, 4, 1, 1.0);   // crown in two soft lobes
+  const tr = R.mesh(tree, Math.max(1, trees.length), { cast: true, order: 3, sway: 0.035 });
   trees.forEach(([x, z], i) => {
     const k = 0.8 + rnd() * 0.6, c = lin(PAL.leaf[Math.floor(rnd() * PAL.leaf.length)]);
     tr.set(i, x, 0.05, z, k, k * (0.85 + rnd() * 0.4), k, rnd() * 6, c[0], c[1], c[2], 1);
@@ -2481,8 +2656,9 @@ performance.mark('orca-city-start');
 buildCity(R);
 performance.measure('orca-city-build', 'orca-city-start');
 
-const carsNear = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, order: 4 });
-const carsFar = R.mesh(carGeometryFar(), MAX_AGENTS, { dynamic: true, order: 4 });
+const carsNear = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, order: 4, self: 0.45 });
+const carsFar = R.mesh(carGeometryFar(), MAX_AGENTS, { dynamic: true, order: 4, self: 0.6 });
+const beams = R.mesh(new Geo().ring(0, 1, 14, [1, 1, 1]), MAX_AGENTS, { dynamic: true, unlit: true, alpha: true, soft: true, order: 5, depthWrite: false });
 const CAR_FAR = 240;                                // beyond this camera distance cars use the simple model
 const pins = R.mesh(pinGeometry(), 1500, { dynamic: true, order: 4 });
 const rings = R.mesh(new Geo().ring(1.25, 1.95, 40, [1, 1, 1]), MAX_REQ, { dynamic: true, unlit: true, alpha: true, order: 6, depthWrite: false });
@@ -2508,7 +2684,7 @@ const HOME_T = STREETS ? place('Midtown North') : [W / 2, 0, W / 2 + 6];
 const cam = new OrbitCam(HOME_T, 0.62, 1.45, STREETS ? 900 : 520);
 cam.limits.cx = WX / 2; cam.limits.cz = WZ / 2; cam.limits.bound = W / 2 + 60;
 cam.limits.boundX = WX / 2 + 60; cam.limits.boundZ = WZ / 2 + 60;
-if (STREETS) cam.limits.distMax = 1300;
+if (STREETS) { cam.limits.distMax = 1300; cam.limits.distMin = 14; }   // close enough to see a car's lamps
 cam.lightCenter = [WX / 2, 0, WZ / 2]; cam.lightRadius = STREETS ? 260 : 200;
 const VIEWS = {
   home: { t: HOME_T, yaw: STREETS ? 0.55 : 0.62, pitch: STREETS ? 0.66 : 0.72, dist: STREETS ? 520 : 340 },
@@ -2533,7 +2709,7 @@ function adaptResolution(dt) {
 
 // ----------------------------------------------------------------------------- live frame state + drawing
 let src, curF = null, prevF = null, recvAt = 0, summary = null, view = 'smart';
-let renderReqs = [];
+let renderReqs = [], frameGap = 0.1;          // seconds between frames from the server, smoothed
 const angle = new Float32Array(MAX_AGENTS); let angleInit = false;
 const born = new Map(), lastStatus = new Map(), lastPos = new Map();
 const effects = [];   // expanding rings: {x, z, t0, dur, r0, r1, col}
@@ -2542,6 +2718,7 @@ function addEffect(x, z, col, r1 = 4, dur = 0.8, r0 = 1) { if (effects.length < 
 function onFrame(f) {
   if (f.view && f.view !== view) return;
   prevF = src.kind === 'live' && curF && curF.n === f.n ? { n: curF.n, agents: { x: Float32Array.from(curF.agents.x), z: Float32Array.from(curF.agents.z) } } : null;
+  if (curF) frameGap += (Math.min(0.4, Math.max(0.03, clock - recvAt)) - frameGap) * 0.15;
   curF = f; recvAt = clock;
   // request lifecycle effects
   const seen = new Set();
@@ -2563,9 +2740,11 @@ function drawFrame(dt) {
   CAR_K = STREETS ? Math.max(0.32, Math.min(1.25, cam.dist / 380)) : 1.25;
   const A = f.agents, n = f.n, P = prevF ? prevF.agents : null, far = cam.dist > CAR_FAR, cars = far ? carsFar : carsNear;
   (far ? carsNear : carsFar).commit(0);
-  const alpha = P ? clamp01((clock - recvAt) / 0.105) : 1;
+  const alpha = P ? clamp01((clock - recvAt) / frameGap) : 1;
   const turn = 1 - Math.exp(-dt * 14);
   jobLines.reset();
+  R.dash = Math.max(0.5, 2.0 * CAR_K);
+  const night = R.night || 0, lamps = !far && night > 0.05; let nb = 0;
   for (let i = 0; i < n; i++) {
     let x = A.x[i], z = A.z[i];
     if (P) { const px = P.x[i], pz = P.z[i]; if (Math.abs(x - px) + Math.abs(z - pz) < 8) { x = px + (x - px) * alpha; z = pz + (z - pz) * alpha; } }
@@ -2574,16 +2753,20 @@ function drawFrame(dt) {
     else { let d = target - angle[i]; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; angle[i] += d * turn; }
     const st = A.s[i], c = STATE_COLORS[st];
     cars.set(i, x, 0, z, CAR_K, CAR_K, CAR_K, angle[i], c[0], c[1], c[2], 1);
+    if (lamps && st !== 5) {                              // headlamp pool on the road ahead
+      const fx = Math.sin(angle[i]), fz = Math.cos(angle[i]);
+      beams.set(nb++, x + fx * 2.9 * CAR_K, 0.09, z + fz * 2.9 * CAR_K, 1.25 * CAR_K, 1, 2.3 * CAR_K, angle[i], 1.0, 0.86, 0.58, 0.42 * night);
+    }
     if ((st === 2 || st === 3 || st === 4) && A.tx[i] >= 0) {
       const lc = LINE_COL[st], y = st === 4 ? 0.9 : 1.3;
       // straight lines to far destinations would cross the whole island: on the real map show pickup legs only
       if (!STREETS || (st !== 4 && Math.hypot(A.tx[i] - x, A.tz[i] - z) < 120)) {
-        jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : 1.7);
+        jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : -2.0);
       }
     }
   }
   angleInit = true;
-  cars.commit(n); jobLines.commit();
+  cars.commit(n); jobLines.commit(); beams.commit(nb);
 
   let nr = 0, np = 0;
   renderReqs = f.reqs;
@@ -2596,7 +2779,10 @@ function drawFrame(dt) {
     if (status === 2) { s *= 0.55; c = C_ASSIGNED; } else if (status === 1) c = C_OFFER; else if (p1) c = C_P1;
     else c = [C_WAIT0[0] + (C_WAIT1[0] - C_WAIT0[0]) * w, C_WAIT0[1] + (C_WAIT1[1] - C_WAIT0[1]) * w, C_WAIT0[2] + (C_WAIT1[2] - C_WAIT0[2]) * w];
     rings.set(nr++, x, 0.1, z, s, 1, s, 0, c[0], c[1], c[2], 0.92);
-    if (p1 && status !== 2 && np < 1500) { const k = grow; pins.set(np++, x, 0, z, k, k, k, 0, C_P1[0], C_P1[1], C_P1[2], 1); }
+    if (p1 && status !== 2 && np < 1500) {                 // urgent pins drop in, then bob
+      const k = (CAR_K / 1.25) * Math.max(0.6, grow), drop = reduceMotion ? 0 : (1 - easeOut(clamp01((clock - b) / 0.6))) * 9 + 0.35 * (1 + Math.sin(clock * 3 + id)) * k;
+      pins.set(np++, x, drop, z, k, k, k, 0, C_P1[0], C_P1[1], C_P1[2], 1);
+    }
   }
   rings.commit(nr); pins.commit(np);
 
@@ -2672,7 +2858,7 @@ function drawExplain() {
   if (r.base && !r.base.same) seg(r.base.rx, r.base.rz, [0.33, 0.35, 0.39, 1], 3, 2.4);
   seg(r.chosen.rx, r.chosen.rz, [0.88, 0.66, 0.0, 1], 4.2, 2.6);
   exLines.commit();
-  const m = 1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3));
+  const m = (1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3))) * (CAR_K / 1.25);   // sized with the cars, so it stays a marker up close
   marker.set(0, r.x, 0.2, r.z, m, 1, m, 0, 0, 0, 0, 0.9); marker.commit(1);
   plate(plates[0], r.x, 10, r.z, `Request ${r.id}`, '');
   plate(plates[1], r.chosen.rx, 4, r.chosen.rz, `ORCA picks ${car(r.chosen.id)}`, 'pick');
@@ -3210,7 +3396,7 @@ resize();
     document.title = 'capture-ready';
     return;
   }
-  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => dprNow };   // frame-cost probes (tools/perf_probe.py)
+  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => dprNow, frame: () => curF };   // frame-cost probes (tools/perf_probe.py)
   cam.flyTo(VIEWS.home, reduceMotion ? 0.001 : 3.4);   // the one orchestrated entrance: plan view settles into the model
   let last = performance.now();
   const loop = (now) => { requestAnimationFrame(loop); const raw = (now - last) / 1000, dt = Math.min(0.1, raw); last = now; step(dt); adaptResolution(raw); };

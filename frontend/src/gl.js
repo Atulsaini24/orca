@@ -169,6 +169,19 @@ class Geo {
     }
     return this;
   }
+  // A smooth-shaded ball (normals from the centre): soft tree crowns.
+  ball(cx, cy, cz, r, color, seg = 7, rings = 4, mask = 0, squash = 1) {
+    const o = this.count;
+    for (let j = 0; j <= rings; j++) for (let i = 0; i <= seg; i++) {
+      const th = (i / seg) * Math.PI * 2, ph = (j / rings) * Math.PI, nx = Math.sin(ph) * Math.cos(th), ny = Math.cos(ph), nz = Math.sin(ph) * Math.sin(th);
+      this.vert([cx + nx * r, cy + ny * r * squash, cz + nz * r], nx, ny, nz, color, mask);
+    }
+    for (let j = 0; j < rings; j++) for (let i = 0; i < seg; i++) {
+      const a = o + j * (seg + 1) + i, b = a + 1, c = a + seg + 1, d = c + 1;
+      if (j > 0) this.idx.push(a, b, c); if (j < rings - 1) this.idx.push(b, d, c);
+    }
+    return this;
+  }
   ring(r0, r1, seg, color) {
     for (let i = 0; i < seg; i++) {
       const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
@@ -183,22 +196,29 @@ const VS_MESH = `#version 300 es
 layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor; layout(location=2) in vec3 aCol; layout(location=3) in float aMask;
 layout(location=4) in vec3 iOff; layout(location=5) in vec3 iScale; layout(location=6) in float iRot; layout(location=7) in vec4 iCol;
 layout(location=8) in float aId;
-uniform mat4 uVP; uniform mat4 uLVP;
-out vec3 vW; out vec3 vN; out vec3 vCol; out float vA; out vec4 vL; out vec3 vLoc; out vec3 vSc; out float vId;
+uniform mat4 uVP; uniform mat4 uLVP; uniform float uTime, uSway, uTexel;
+out vec3 vW; out vec3 vN; out vec3 vCol; out float vA; out vec4 vL; out vec3 vLoc; out vec3 vSc; out float vId; out float vEm;
 void main(){
   float c = cos(iRot), s = sin(iRot);
   vec3 p = aPos * iScale;
   vec3 w = vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z) + iOff;
+  if (uSway > 0.0) {                                       // trees lean in the wind, more toward the crown
+    float ph = iOff.x * 0.71 + iOff.z * 0.93, k = uSway * p.y * p.y;
+    w.x += sin(uTime * 1.4 + ph) * k; w.z += cos(uTime * 1.1 + ph * 1.3) * k;
+  }
   vec3 n = normalize(aNor / iScale);
   vN = vec3(c*n.x + s*n.z, n.y, -s*n.x + c*n.z);
-  vW = w; vCol = mix(aCol, iCol.rgb, aMask); vA = iCol.a; vL = uLVP * vec4(w, 1.0); vLoc = aPos; vSc = iScale; vId = aId;
+  // mask: 1 = tinted by the instance colour, 2 = emissive (lamps)
+  vW = w; vCol = mix(aCol, iCol.rgb, step(0.5, aMask) * step(aMask, 1.5)); vEm = step(1.5, aMask); vA = iCol.a;
+  vL = uLVP * vec4(w + vN * uTexel, 1.0);                  // offset along the normal: no shadow streaks on walls
+  vLoc = aPos; vSc = iScale; vId = aId;
   gl_Position = uVP * vec4(w, 1.0);
 }`;
 const FS_MESH = `#version 300 es
 precision highp float; precision highp sampler2DShadow;
-in vec3 vW; in vec3 vN; in vec3 vCol; in float vA; in vec4 vL; in vec3 vLoc; in vec3 vSc; in float vId;
+in vec3 vW; in vec3 vN; in vec3 vCol; in float vA; in vec4 vL; in vec3 vLoc; in vec3 vSc; in float vId; in float vEm;
 uniform vec3 uSun, uSunCol, uSky, uGround, uCam, uFog, uGlow; uniform vec2 uFogR;
-uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO, uNight; uniform int uPcf;
+uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO, uNight, uTime, uSoft, uSelf; uniform int uPcf;
 uniform sampler2DShadow uShadow;
 out vec4 outColor;
 float shadowAt(vec4 l){
@@ -207,38 +227,88 @@ float shadowAt(vec4 l){
   vec2 t = 1.0 / vec2(textureSize(uShadow, 0));
   float s = 0.0;
   float k = float(uPcf), n = 0.0;
-  for (int x = -uPcf; x <= uPcf; x++) for (int y = -uPcf; y <= uPcf; y++) { s += texture(uShadow, vec3(p.xy + vec2(x, y) * t * (1.7 / max(k, 1.0)), p.z - 0.0012)); n += 1.0; }
+  for (int x = -uPcf; x <= uPcf; x++) for (int y = -uPcf; y <= uPcf; y++) { s += texture(uShadow, vec3(p.xy + vec2(x, y) * t * (1.7 / max(k, 1.0)), p.z - 0.0008)); n += 1.0; }
   return s / n;
 }
 vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
 float hash3(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
+// soft cloud shadows drifting over the city by day
+float clouds(vec2 p){
+  if (uNight > 0.98) return 1.0;
+  p = p * 0.011 + uTime * vec2(0.021, 0.013);
+  float n = sin(p.x) * sin(p.y) + 0.5 * sin(p.x * 2.3 + 1.7) * sin(p.y * 1.9 + 0.4);
+  return 1.0 - 0.30 * smoothstep(0.25, 0.95, n) * (1.0 - uNight);
+}
 void main(){
-  vec3 col = vCol;
+  vec3 col = vCol, glowAdd = vec3(0.0), lit = col;
+  float alpha = vA;
   if (uUnlit < 0.5) {
     vec3 n = normalize(vN);
     float ndl = max(dot(n, uSun), 0.0);
     float sh = uShadowOn > 0.5 && ndl > 0.0 ? shadowAt(vL) : 1.0;           // faces turned from the sun need no lookup
     vec3 amb = mix(uGround, uSky, n.y * 0.5 + 0.5);
     float ao = mix(1.0 - uAO, 1.0, smoothstep(0.0, 3.5, vW.y + 0.2));
-    vec3 glowAdd = vec3(0.0);
+    vec3 sun = uSunCol * ndl * sh * clouds(vW.xz);
+    float glassK = 0.0; vec3 glassLit = vec3(0.0);
     if (uFacade > 1.5) {
-      // Real footprints: floors every 3.6 m (0.12 units), window bays along each wall in world space.
-      float wall = 1.0 - abs(n.y);
-      float d = distance(uCam, vW);
-      float fade = 1.0 - smoothstep(60.0, 260.0, d);                          // detail fades with distance
-      if (wall > 0.5 && (fade > 0.0 || uNight > 0.01)) {
+      // Real footprints. vId carries the building: height (integer part, 1/50 unit) and a hash (fraction).
+      // Tall buildings are glass curtain walls, the rest masonry with punched windows; floors are 3.6 m.
+      float bh = floor(vId) / 50.0, hid = fract(vId), d = distance(uCam, vW);
+      if (abs(n.y) < 0.5) {
+        bool glassy = bh > 5.0 || (bh > 2.2 && hid < 0.55);
         vec2 t = normalize(vec2(-n.z, n.x) + 1e-5);
-        float fy = vW.y / 0.12, fb = dot(vW.xz, t) / 0.11;
-        float floorLine = smoothstep(0.10, 0.0, abs(fract(fy) - 0.5) - 0.42) * step(0.2, vW.y);
-        vec2 cellF = fract(vec2(fb, fy)) - 0.5;
-        float glass = step(abs(cellF.x), 0.34) * step(abs(cellF.y), 0.30) * wall * step(0.15, vW.y);
-        col *= 1.0 - wall * fade * (0.06 * floorLine) - glass * fade * 0.05;
-        if (uNight > 0.01) {
-          // At night some windows are lit: which ones depends on the building and the cell.
-          float lit = step(0.58, hash3(vec3(floor(fb), floor(fy), vId * 97.0)));
-          vec3 warm = mix(vec3(1.0, 0.78, 0.48), vec3(0.85, 0.9, 1.0), step(0.85, hash3(vec3(floor(fy), vId * 13.0, floor(fb)))));
-          glowAdd = uNight * glass * lit * warm * mix(0.9, 0.45, smoothstep(80.0, 700.0, d));
+        float fy = vW.y / 0.12, fb = dot(vW.xz, t) / (glassy ? 0.085 : 0.13);
+        float px = max(fwidth(fb), fwidth(fy)), px4 = px * 0.25;
+        float detail = 1.0 - smoothstep(0.30, 0.90, px);                      // cells near 1 px blend to their mean
+        float street = step(vW.y, 0.16), above = step(bh + 0.005, vW.y), crown = step(bh - 0.13, vW.y) * step(1.0, bh) * (1.0 - above);
+        float body = (1.0 - crown) * (1.0 - above) * step(0.035, vW.y);
+        vec2 half2 = street > 0.5 ? vec2(0.44, 0.36) : glassy ? vec2(0.45, 0.40) : vec2(0.29, 0.27);   // shop fronts, curtain wall, punched
+        float win = 4.0 * half2.x * half2.y;                                  // far away: the windows' share of the wall
+        // glass mirrors the sky, more at grazing angles
+        vec3 V = normalize(uCam - vW), R = reflect(-V, n);
+        float f1 = 1.0 - max(dot(V, n), 0.0), fres = f1 * f1 * f1;
+        vec3 skyRef = mix(uGround * 1.1, uSky * vec3(1.25, 1.45, 1.75), clamp(R.y * 0.6 + 0.55, 0.0, 1.0));
+        vec3 tint = glassy ? mix(vec3(0.10, 0.16, 0.25), vec3(0.13, 0.19, 0.22), hid) : vec3(0.07, 0.09, 0.12);
+        glassLit = mix(tint * (amb + sun * 0.7), skyRef, 0.22 + 0.62 * fres);
+        if (detail > 0.0) {                                                   // near enough to tell windows apart
+          vec2 cf = abs(fract(vec2(fb, fy)) - 0.5);
+          float aa = px * 0.7 + 0.012;
+          float w1 = (1.0 - smoothstep(half2.x - aa, half2.x + aa, cf.x)) * (1.0 - smoothstep(half2.y - aa, half2.y + aa, cf.y));
+          win = mix(win, w1, detail);
+          glassLit += uSunCol * pow(max(dot(R, uSun), 0.0), 90.0) * sh * 0.5; // and it catches the sun
         }
+        win *= body;
+        glassK = win * (glassy ? 0.92 : 0.85);
+        col *= 1.0 + 0.05 * crown - 0.05 * street;                            // cornice and base course
+        if (uNight > 0.01) {
+          // Lit windows: offices by the floor, homes one by one; mostly warm, a few cool. Farther away single
+          // windows are under a pixel: groups of four floors by four bays show instead, and beyond that only a
+          // faint glow that differs from building to building.
+          vec3 far3 = vec3(0.045 * (0.35 + 1.3 * fract(hid * 7.31)) * body) * vec3(1.0, 0.76, 0.48);
+          if (px4 < 0.9) {
+            vec2 g4 = vec2(fb, fy) * 0.25, c4 = abs(fract(g4) - 0.5);
+            float aa4 = px4 * 0.7 + 0.02, k4 = hash3(vec3(floor(g4), hid * 53.0));
+            float win4 = (1.0 - smoothstep(0.40 - aa4, 0.40 + aa4, c4.x)) * (1.0 - smoothstep(0.36 - aa4, 0.36 + aa4, c4.y));
+            vec3 coarse = vec3(win4 * step(0.60, k4) * (0.16 + 0.22 * k4) * body) * mix(vec3(1.0, 0.70, 0.40), vec3(1.0, 0.82, 0.56), k4);
+            far3 = mix(far3, coarse, 1.0 - smoothstep(0.30, 0.90, px4));
+          }
+          glowAdd = far3;
+          if (detail > 0.0) {
+            vec2 cell = floor(vec2(fb, fy));
+            float h1 = hash3(vec3(cell, hid * 97.0)), h2 = hash3(vec3(cell.yx, hid * 13.0)), fl = hash3(vec3(cell.y, hid * 31.0, 7.0));
+            float on = max(glassy ? step(0.65, h1 * 0.55 + fl * 0.45) : step(0.74, h1), street * step(0.25, h1));
+            vec3 lamp = h2 > 0.90 ? vec3(0.55, 0.74, 1.0) : mix(vec3(1.0, 0.60, 0.26), vec3(1.0, 0.80, 0.50), h2);
+            glowAdd = mix(far3, win * on * (0.30 + 0.50 * h2) * lamp, detail);
+            glassK *= 1.0 - 0.6 * uNight * on * detail;
+          }
+          glowAdd *= uNight * mix(1.0, 0.6, smoothstep(80.0, 700.0, d));
+          // towers wear a lit crown
+          if (bh > 4.0) glowAdd += uNight * crown * mix(vec3(1.0, 0.80, 0.52), vec3(0.50, 0.72, 1.0), step(0.5, hid)) * 0.42;
+        }
+      } else if (n.y > 0.5) {
+        // roofs: membrane, gravel or tar, by building
+        vec3 roof = hid < 0.4 ? vec3(0.62, 0.63, 0.64) : hid < 0.75 ? vec3(0.47, 0.46, 0.44) : vec3(0.30, 0.31, 0.33);
+        col = mix(col, roof, 0.55);
       }
     } else if (uFacade > 0.5) {
       // Engraved floor lines and faint window bays on walls; brighter rims where edges catch light.
@@ -252,13 +322,16 @@ void main(){
       float rim = 1.0 - smoothstep(0.0, 0.18, min(e2.x, e2.y));
       col *= 1.0 + 0.10 * rim;
     }
-    col = col * (amb * ao + uSunCol * ndl * sh) + glowAdd * 2.2 + uGlow * uNight * 0.35;
+    lit = mix(col * (amb * ao + sun), glassLit * ao, glassK) + glowAdd * 1.25 + uGlow * uNight * 0.20
+        + vCol * (vEm * (0.5 + 3.0 * uNight) + uSelf * uNight);               // lamps; cars keep their status colour at night
+  } else if (uSoft > 0.5) {
+    alpha *= 1.0 - smoothstep(0.0, 1.0, length(vLoc.xz));                     // soft discs: light pools
   }
   float d = distance(uCam, vW);
-  vec3 c = aces(col * uExposure);
+  vec3 c = aces(lit * uExposure);
   c = pow(c, vec3(1.0 / 2.2));
   c = mix(c, uFog, smoothstep(uFogR.x, uFogR.y, d));
-  outColor = vec4(c, vA);
+  outColor = vec4(c, alpha);
 }`;
 const FS_DEPTH = `#version 300 es
 precision mediump float; out vec4 o; void main(){ o = vec4(1.0); }`;
@@ -267,18 +340,25 @@ const VS_LINE = `#version 300 es
 layout(location=0) in vec2 aCorner;
 layout(location=1) in vec3 iA; layout(location=2) in vec3 iB; layout(location=3) in vec4 iCol; layout(location=4) in float iW;
 uniform mat4 uVP; uniform vec2 uRes;
-out vec4 vCol;
+out vec4 vCol; out float vT;
 void main(){
+  vT = iW < 0.0 ? aCorner.x * distance(iA, iB) : -1.0;       // negative width: dashes that march from A to B
+  float iWa = abs(iW);
   vec4 a = uVP * vec4(iA, 1.0), b = uVP * vec4(iB, 1.0);
   vec2 sa = a.xy / a.w, sb = b.xy / b.w;
   vec2 dir = (sb - sa) * uRes; float l = length(dir); dir = l > 1e-5 ? dir / l : vec2(1.0, 0.0);
   vec2 nrm = vec2(-dir.y, dir.x);
   vec4 p = mix(a, b, aCorner.x);
-  p.xy += nrm * aCorner.y * iW / uRes * p.w;
+  p.xy += nrm * aCorner.y * iWa / uRes * p.w;
   gl_Position = p; vCol = iCol;
 }`;
 const FS_LINE = `#version 300 es
-precision mediump float; in vec4 vCol; out vec4 o; void main(){ o = vCol; }`;
+precision highp float; in vec4 vCol; in float vT; uniform float uTime, uDash; out vec4 o;
+void main(){
+  float a = vCol.a;
+  if (vT >= 0.0) { float f = fract(vT / uDash - uTime * 1.6); a *= 0.25 + 0.75 * smoothstep(0.0, 0.12, f) * (1.0 - smoothstep(0.55, 0.67, f)); }
+  o = vec4(vCol.rgb, a);
+}`;
 
 const VS_PLANE = `#version 300 es
 layout(location=0) in vec2 aXZ; uniform mat4 uVP; uniform vec4 uRect; uniform float uY;
@@ -302,9 +382,24 @@ void main(){
   o = vec4(mix(c, uFog, smoothstep(uFogR.x, uFogR.y, d)), 1.0);
 }`;
 const VS_SKY = `#version 300 es
-layout(location=0) in vec2 aXZ; out vec2 vP; void main(){ vP = aXZ; gl_Position = vec4(aXZ * 2.0 - 1.0, 0.9999, 1.0); }`;
+layout(location=0) in vec2 aXZ; uniform mat4 uIVP; uniform vec3 uCam; out vec3 vDir;
+void main(){
+  vec2 ndc = aXZ * 2.0 - 1.0; vec4 far = uIVP * vec4(ndc, 1.0, 1.0);
+  vDir = far.xyz / far.w - uCam; gl_Position = vec4(ndc, 0.9999, 1.0);
+}`;
 const FS_SKY = `#version 300 es
-precision mediump float; in vec2 vP; uniform vec3 uTop, uBot; out vec4 o; void main(){ o = vec4(mix(uBot, uTop, smoothstep(0.2, 1.0, vP.y)), 1.0); }`;
+precision highp float; in vec3 vDir; uniform vec3 uTop, uBot, uSun, uSunCol; uniform float uNight, uTime; out vec4 o;
+float hash3(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
+void main(){
+  vec3 d = normalize(vDir);
+  vec3 c = mix(uBot, uTop, smoothstep(0.0, 0.55, d.y));
+  float s = max(dot(d, uSun), 0.0), day = 1.0 - uNight;
+  c += day * normalize(uSunCol + 1e-4) * (pow(s, 900.0) * 1.6 + pow(s, 24.0) * 0.20 + pow(s, 4.0) * 0.06);   // disc, glow, haze
+  vec3 g = floor(d * 190.0);
+  float star = step(0.9972, hash3(g)) * smoothstep(0.02, 0.25, d.y);
+  c += uNight * star * (0.55 + 0.45 * sin(uTime * 2.0 + hash3(g.zxy) * 40.0)) * vec3(0.9, 0.93, 1.0);
+  o = vec4(c, 1.0);
+}`;
 
 // ---------------------------------------------------------------- renderer
 const INST_FLOATS = 11;   // off(3) scale(3) rot(1) color(4)
@@ -340,7 +435,7 @@ class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.light = { dir: [0, 1, 0], color: [1, 1, 1], sky: [0.5, 0.5, 0.5], ground: [0.3, 0.3, 0.3] };
     this.fog = [0.9, 0.9, 0.9]; this.fogRange = [600, 1600]; this.exposure = 1; this.ao = 0.35;
-    this.planes = [];
+    this.planes = []; this.shadowTexel = 0.2;
   }
   program(vs, fs) {
     const gl = this.gl, mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh) + '\n' + s); return sh; };
@@ -378,7 +473,7 @@ class Renderer {
     });
     gl.bindVertexArray(null);
     const layer = { vao: v, ibuf, data, max, n: 0, elems: geo.idx.length, itype: big ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, bpe: big ? 4 : 2,
-      tiles: tiled && tiled.tiles, lod: opts.lod || 0,
+      tiles: tiled && tiled.tiles, lod: opts.lod || 0, sway: opts.sway || 0, soft: !!opts.soft, self: opts.self || 0,
       cast: !!opts.cast, dynamic: !!opts.dynamic, unlit: !!opts.unlit, facade: opts.facade ? +opts.facade : 0, glow: opts.glow || [0, 0, 0], alpha: !!opts.alpha, shadowed: opts.shadowed !== false,
       order: opts.order || 0, visible: true, dirty: true, depthWrite: opts.depthWrite !== false,
       set(i, x, y, z, sx, sy, sz, rot, r, g, b, a = 1) {
@@ -442,6 +537,7 @@ class Renderer {
       gl.uniform3fv(u.uSun, L.dir); gl.uniform3fv(u.uSunCol, L.color); gl.uniform3fv(u.uSky, L.sky); gl.uniform3fv(u.uGround, L.ground);
       gl.uniform3fv(u.uCam, cam); gl.uniform3fv(u.uFog, this.fog); gl.uniform2fv(u.uFogR, this.fogRange);
       gl.uniform1f(u.uExposure, this.exposure); gl.uniform1f(u.uAO, this.ao); gl.uniform1i(u.uPcf, this.pcf);
+      gl.uniform1f(u.uTime, this.time); gl.uniform1f(u.uTexel, Math.min(0.12, this.shadowTexel * 0.5));
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.shadowTex); gl.uniform1i(u.uShadow, 0);
     }
   }
@@ -475,20 +571,21 @@ class Renderer {
     const dir = L.dir.map(q), dl = Math.hypot(...dir), key = `${c[0]},${c[2]},${R},${dir}`;
     const eye = [c[0] + (dir[0] / dl) * 600, c[1] + (dir[1] / dl) * 600, c[2] + (dir[2] / dl) * 600];
     const lvp = M4.mul(M4.ortho(-R, R, -R, R, 200, 1100), M4.lookAt(eye, c, [0, 1, 0]));
+    this.shadowTexel = (2 * R) / this.shadowSize;
     if (key !== this.shadowKey) {
       this.shadowKey = key; this.stats.shadow = true;
       const S = this.shadowSize, planes = frustumPlanes(lvp);
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo); gl.viewport(0, 0, S, S);
       gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND); gl.clear(gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
-      gl.useProgram(this.pDepth.p); gl.uniformMatrix4fv(this.pDepth.u.uVP, false, lvp);
+      gl.useProgram(this.pDepth.p); gl.uniformMatrix4fv(this.pDepth.u.uVP, false, lvp); gl.uniform1f(this.pDepth.u.uSway, 0);
       for (const l of this.layers) if (l.cast && l.visible && l.n) this.drawLayer(l, planes, null, 0);
       gl.disable(gl.POLYGON_OFFSET_FILL);
     }
     // main pass: opaque meshes first (front to back), so the sky and water only shade what is left uncovered
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LEQUAL); gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LESS); gl.disable(gl.BLEND);   // strict: coplanar overlaps shade once
     gl.clearColor(this.fog[0], this.fog[1], this.fog[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const planes = frustumPlanes(cam.vp), far = this.fogRange[1] + 40;
     gl.useProgram(this.pMesh.p); this.meshUniforms(this.pMesh, cam.vp, lvp, cam.eye);
@@ -496,6 +593,7 @@ class Renderer {
     gl.uniform1f(u.uNight, this.night || 0);
     const drawMesh = (l) => {
       gl.uniform1f(u.uUnlit, l.unlit ? 1 : 0); gl.uniform1f(u.uFacade, l.facade); gl.uniform3fv(u.uGlow, l.glow); gl.uniform1f(u.uShadowOn, l.shadowed ? 1 : 0);
+      gl.uniform1f(u.uSway, l.sway); gl.uniform1f(u.uSoft, l.soft ? 1 : 0); gl.uniform1f(u.uSelf, l.self);
       this.drawLayer(l, planes, cam.eye, far);
     };
     for (const l of this.layers) if (!l.alpha && l.visible && l.n) drawMesh(l);
@@ -507,8 +605,11 @@ class Renderer {
       gl.uniform3fv(w.uDeep, this.water.deep); gl.uniform3fv(w.uShallow, this.water.shallow); gl.uniform3fv(w.uSun, L.dir); gl.uniform4fv(w.uCity, this.water.city);
       gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
-    gl.depthMask(false); gl.useProgram(this.pSky.p); gl.uniform3fv(this.pSky.u.uTop, this.skyTop); gl.uniform3fv(this.pSky.u.uBot, this.fog);
-    gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
+    const sk = this.pSky.u;
+    gl.depthMask(false); gl.depthFunc(gl.LEQUAL); gl.useProgram(this.pSky.p); gl.uniform3fv(sk.uTop, this.skyTop); gl.uniform3fv(sk.uBot, this.fog);
+    gl.uniformMatrix4fv(sk.uIVP, false, cam.ivp); gl.uniform3fv(sk.uCam, cam.eye); gl.uniform3fv(sk.uSun, L.dir); gl.uniform3fv(sk.uSunCol, L.color);
+    gl.uniform1f(sk.uNight, this.night || 0); gl.uniform1f(sk.uTime, this.time);
+    gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthFunc(gl.LESS);
     // translucent: heat wash, rings, then lines
     gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     for (const pl of this.planes) if (pl.visible && pl.alpha > 0.01) {
@@ -520,6 +621,7 @@ class Renderer {
     gl.useProgram(this.pMesh.p);
     for (const l of this.layers) if (l.alpha && l.visible && l.n) { if (l.depthWrite) gl.depthMask(true); drawMesh(l); gl.depthMask(false); }
     gl.useProgram(this.pLine.p); gl.uniformMatrix4fv(this.pLine.u.uVP, false, cam.vp); gl.uniform2f(this.pLine.u.uRes, this.canvas.width / this.dpr, this.canvas.height / this.dpr);
+    gl.uniform1f(this.pLine.u.uTime, this.time); gl.uniform1f(this.pLine.u.uDash, this.dash || 1.5);
     for (const l of this.lineLayers) if (l.visible && l.n) {
       if (l.depth) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
       gl.bindVertexArray(l.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, l.n);

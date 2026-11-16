@@ -199,14 +199,15 @@ The control room page is 200 KB of code; at start-up it loads only the chosen ci
 |---|---|
 | `sim.js` | the dispatch engine in JavaScript, used when no server is reachable |
 | `cities.js` | `StreetCity` (Dijkstra on a binary heap, spatial hash, zone x hour traffic) and `GridCity` |
-| `gl.js` | WebGL2 renderer: instanced and static meshes, facade shading for real footprints with lit windows at night, a sun shadow map that follows the camera, screen-space lines, water, sky, ACES tone mapping, orbit camera |
-| `city.js` | the 3D city: land from the zone polygons (or the mainland and a lake), street ribbons along the real geometry, bridges with piers, parks with trees, every building extruded from its real outline |
-| `app.js` | data sources, day and night from the city clock, frame interpolation, distance-adaptive car size, real zone outlines and an SVG zone map, a city switcher, the console and the guided tour |
+| `gl.js` | WebGL2 renderer: instanced and tiled static meshes; facade materials for real footprints (glass curtain walls that mirror the sky, masonry with punched windows, shop fronts, cornices, anti-aliased with screen-space derivatives; warm lit windows and tower crowns at night); a sun shadow map that follows the camera; drifting cloud shadows; a sky with sun and stars; marching-dash lines; lamps; water; ACES tone mapping; orbit camera |
+| `city.js` | the 3D city: land from the zone polygons (or the mainland and a lake), street ribbons along the real geometry, bridges with piers, parks with soft-crowned trees that sway, every building extruded from its real outline with a rooftop bulkhead or water tank, and the car models (detailed near, simple far) |
+| `app.js` | data sources, day and night from the city clock, frame interpolation paced to the server's frame gap, distance-adaptive car size, headlamp pools at night, flowing pickup routes, real zone outlines and an SVG zone map, a city switcher, the console and the guided tour |
 
 ### Rendering budget
 
-The target is 60 frames per second on integrated graphics (measured on Intel Iris Xe at 1.5x pixel
-ratio with `make perf`: 27 fps before this design, 45-64 fps after, depending on the view).
+The target is 60 frames per second on integrated graphics. Measured on Intel Iris Xe on a 1.5x screen
+with `make perf`: 27 fps before this design; with it and the full facade shading, about 50 fps over
+the whole city (dynamic resolution settles near a 1.1x pixel ratio there) and 60-70 fps zoomed in.
 
 * **Tiles.** Land, streets, bridges and the 1.8-million-index building mesh are reordered once at
   start-up into 32-unit (about 1 km) ground tiles, each with its index range and bounding box. Every
@@ -218,7 +219,8 @@ ratio with `make perf`: 27 fps before this design, 45-64 fps after, depending on
   key changes: the sun direction (quantised to about 0.3 degrees) or the shadowed area, which follows
   the camera in 30-unit steps. Surfaces facing away from the sun skip the lookup.
 * **Overdraw.** Sky and water are drawn after the opaque meshes, so they shade only uncovered pixels;
-  facade detail and lit windows are computed only where they show (near, or at night).
+  window patterns, sun glints and lit-window hashes are computed only where a window is at least about
+  a pixel wide, and walls farther away use the windows' mean. Flat ground shares vertices.
 * **Dynamic resolution.** When frames take over 21 ms for a second, the pixel ratio drops in 0.2 steps
   (to at least 55% of the screen's); after several fast seconds it climbs back, waiting longer after
   each fall so it settles instead of oscillating.
