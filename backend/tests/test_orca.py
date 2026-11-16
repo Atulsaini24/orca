@@ -124,6 +124,45 @@ def test_street_cruising_and_eta_tree():
     assert np.isfinite(eta).all() and (eta >= 0).all()
 
 
+@pytest.mark.parametrize("name", [c for c in CITIES if c != "grid"])
+def test_routes_follow_the_hour_and_go_around_accidents(name):
+    from orca.routing_report import route_time
+    city, rng = G.use(name), random.Random(3)
+    try:
+        city.set_conditions(17 * 3600 + 60.0, [])
+        assert city.traffic_routing
+        w17 = city._w_free / city.zone_hour[city.edge_zone, 17]
+        for _ in range(100):
+            car = _Car(*city.random_point(rng))
+            car.node = city.nearest_node(car.x, car.z)
+            tx, tz = city.random_point(rng)
+            nodes = [car.node] + [int(n) for *_, n in city.route(car, tx, tz) if n >= 0]
+            for u, v in itertools.pairwise(nodes):
+                assert (u, v) in city.edge_of
+            cost = sum(w17[city.edge_of[(u, v)]] for u, v in itertools.pairwise(nodes))
+            assert cost == pytest.approx(city.tree_to(nodes[-1])[0][nodes[0]], rel=1e-4)    # fastest at 17:00
+        # an accident on a route's middle: the new route is never slower under the accident, and usually avoids it
+        avoided = 0
+        for _ in range(30):
+            u, v = city.nearest_node(*city.random_point(rng)), city.nearest_node(*city.random_point(rng))
+            city.set_conditions(17 * 3600 + 60.0, [])
+            path = city.path_nodes(u, v)
+            if len(path) < 8:
+                continue
+            mid = path[len(path) // 2]
+            acc = (float(city.nx[mid]), float(city.nz[mid]), 20.0, 0.78)
+            d2 = (city.edge_mx - acc[0]) ** 2 + (city.edge_mz - acc[1]) ** 2
+            w_acc = w17 / np.maximum(0.22, 1 - 0.78 * np.exp(-d2 / 800.0))
+            blind, _ = route_time(city, u, v, city.tree_to(v)[1], w_acc)
+            city.set_conditions(17 * 3600 + 60.0, [acc])
+            aware, _ = route_time(city, u, v, city.tree_to(v)[1], w_acc)
+            assert aware <= blind * (1 + 1e-5)
+            avoided += aware < blind * 0.999
+        assert avoided >= 5
+    finally:
+        city.set_conditions(-1.0, [])
+
+
 # ---------------------------------------------------------------------------- engine invariants
 @pytest.fixture(scope="module", params=CITIES)
 def engine(request):

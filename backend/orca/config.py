@@ -13,6 +13,7 @@ ZSIZE = W / ZONES
 BASE_SPEED = 0.3          # units per second on a free local road (~32 km/h)
 ART_MULT = 1.55           # arterial roads are faster
 IDLE_CRUISE = 0.55        # idle units cruise slowly
+TRAFFIC_ROUTING = True    # street cities: route by the hour's real zone speeds and around accidents
 
 OFFER_TIMEOUT = 20.0      # an unanswered offer expires after this
 STALE_AFTER = 15.0        # GPS older than this is unreliable

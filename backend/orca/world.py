@@ -188,9 +188,10 @@ class World:
         return np.array([(b.x, b.z, b.r, b.s) for b in self.blobs], dtype=float).reshape(-1, 4)
 
     def speed_now(self) -> float:
-        """Typical driving speed across the city right now (units / s): for planning shared-ride stops."""
-        f = self.city.city_factor(self.clock()) if self.city_traffic else self.traffic_factor()
-        return self.city.base_speed * f
+        """Divide a routing-tree distance by this to get seconds of driving now (for planning shared-ride stops)."""
+        if self.city_traffic:
+            return self.city.plan_speed(self.clock())
+        return self.city.base_speed * self.traffic_factor()
 
     def traffic_factor(self) -> float:
         """Citywide speed multiplier for the hour: measured from real NYC trips when available."""
@@ -275,6 +276,9 @@ class World:
             self.move_bounce(b, dt)
         self.source.drift(dt)
         self.blobs = [b for b in self.blobs if b.until > t]
+        if hasattr(self.city, "set_conditions"):         # drivers navigate by the hour's traffic and around accidents
+            self.city.set_conditions(self.clock() if self.city_traffic else -1.0,
+                                     [(b.x, b.z, b.r, b.s) for b in self.blobs if b.accident])
         self.spikes = [s for s in self.spikes if s.until > t]
         self.outages = [o for o in self.outages if o.until > t]
         self.spike_boost = sum(s.boost for s in self.spikes)

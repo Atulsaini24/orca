@@ -188,7 +188,7 @@ class Dispatcher:
         self.sample_timer = 0.0
         self.minute_timer = 0.0
         self.m = dict(served=0, lost=0, reoffers=0, timeouts=0, declines=0, waits=[], p1waits=[],
-                      interval=[], interval_lost=0, series=[], all=[], dropped=0, shared=0, detour=[])
+                      interval=[], interval_lost=0, series=[], all=[], dropped=0, shared=0, detour=[], ride=[])
         # spatial index over car positions
         self.B = 30.0
         self.BN = math.ceil(max(self.city.WX, self.city.WZ) / self.B) + 1
@@ -354,6 +354,7 @@ class Dispatcher:
             self.m["dropped"] += 1
             if rs.shared:
                 self.m["shared"] += 1
+            self.m["ride"].append(t - rs.picked_at)
             if rs.direct > 0:
                 self.m["detour"].append((t - rs.picked_at) / rs.direct)
         self.advance_plan(i)
@@ -478,7 +479,8 @@ class Dispatcher:
                     svc_km_per_rider=float(f.odo[:, K.ODO_PICKUP:].sum()) * self.unit_km / dropped if dropped else 0.0,
                     occupancy=float(f.odo[:, K.ODO_LOADED].sum() / max(1e-9, f.odo.sum())),
                     shared=self.m["shared"] / dropped if dropped else 0.0,
-                    detour=float(np.mean(det)) if det else 0.0)
+                    detour=float(np.mean(det)) if det else 0.0,
+                    ride=float(np.mean(self.m["ride"])) if self.m["ride"] else 0.0)
 
 
 class NearestDispatcher(Dispatcher):

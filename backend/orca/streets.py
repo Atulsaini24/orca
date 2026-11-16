@@ -6,7 +6,11 @@
   local congestion). The class factors (highways faster, side streets slower) are relative;
   the absolute speed comes from the city's trip records (artifacts/traffic_<city>.json): per zone and
   per hour, so Midtown at 6 pm is slower than Harlem at 6 pm.
-* Shortest paths by free-flow travel time. Every request gets one reverse shortest-path tree
+* Routes follow traffic: edge weights use the real speed of the edge's zone for the current hour,
+  and slow down around live accidents, so cars take a different way at 6 pm than at 3 am and
+  drive around a crash (``set_conditions``, called by the world every tick; a no-op unless the
+  hour or the set of accidents changed). Without conditions the weights are free-flow.
+* Shortest paths by travel time. Every request gets one reverse shortest-path tree
   (Dijkstra on the transposed graph, ~0.4 ms): it gives the road travel time from *every*
   candidate car to the rider and, followed forwards, each car's actual route. Trees are cached
   (LRU, float32). Walking a tree (routes, road distance) runs in compiled kernels (orca/kernels.py).
@@ -26,6 +30,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
 
+from . import config as C
 from . import kernels as K
 
 UNREACHABLE = 1e9
@@ -69,8 +74,10 @@ class StreetCity:
             if j is None or w[i] < w[j]:
                 self.edge_of[(u, v)] = i
         best = np.fromiter(self.edge_of.values(), dtype=int)
-        self.G = csr_matrix((w[best], (self.src[best], self.dst[best])), shape=(self.n, self.n))
-        self.GT = self.G.T.tocsr()
+        self._best, self._w_free = best, w
+        self._cond = None                      # (hour, accidents) the routing weights were built for
+        self.traffic_routing = False           # weights include the hour's real zone speeds
+        self._set_weights(w)
         self.out_edges: list[list[int]] = [[] for _ in range(self.n)]
         for i, u in enumerate(self.src):
             self.out_edges[int(u)].append(i)
@@ -96,7 +103,6 @@ class StreetCity:
         street[self.dst[ok_edge]] = True
         self.pick_nodes = np.flatnonzero(street)
         self.kd_pick = cKDTree(np.c_[self.nx[self.pick_nodes], self.nz[self.pick_nodes]])
-        self._trees: OrderedDict[int, tuple[np.ndarray, np.ndarray]] = OrderedDict()
 
         # zones
         self.zone_ids = [int(z) for z in d["zone_ids"]]
@@ -115,6 +121,9 @@ class StreetCity:
             self.rh, self.rw = self.zone_lut.shape
         else:                                   # build time only (needs matplotlib)
             self._build_zone_raster()
+        mid = (self.geo_off64[:-1] + self.geo_off64[1:]) // 2          # a point half-way along each edge
+        self.edge_mx, self.edge_mz = self.geo_x[mid], self.geo_z[mid]
+        self.edge_zone = self.zone_of_many(self.edge_mx, self.edge_mz)
         node_zone = self.zone_of_many(self.nx, self.nz)
         self.zone_nodes = [np.flatnonzero(node_zone == k) for k in range(self.N_ZONES)]
         pick = np.zeros(self.n, dtype=bool)
@@ -149,6 +158,33 @@ class StreetCity:
         # Synthetic demand (tests only): a car here is busy ~13 min per ride (real-speed trips of ~2 km plus
         # the pickup), against ~6 min on the fast grid, so it can carry about half the grid's request rate.
         self.demand_scale = 0.5
+
+    # ---- routing weights ---------------------------------------------------------------------------
+    def _set_weights(self, w: np.ndarray):
+        b = self._best
+        self.G = csr_matrix((w[b], (self.src[b], self.dst[b])), shape=(self.n, self.n))
+        self.GT = self.G.T.tocsr()
+        self._trees: OrderedDict[int, tuple[np.ndarray, np.ndarray]] = OrderedDict()
+
+    def set_conditions(self, clock: float, accidents: list[tuple[float, float, float, float]]):
+        """Route by this hour's real zone speeds, around these accidents (x, z, radius, strength)."""
+        hour = int(clock // 3600) % 24 if (clock >= 0 and C.TRAFFIC_ROUTING and self.zone_hour is not None) else -1
+        key = (hour, tuple(accidents))
+        if key == self._cond:
+            return
+        self._cond = key
+        w = self._w_free.copy()
+        if hour >= 0:
+            w /= self.zone_hour[self.edge_zone, hour]
+        for x, z, r, s in accidents:
+            d2 = (self.edge_mx - x) ** 2 + (self.edge_mz - z) ** 2
+            w /= np.maximum(0.22, 1 - s * np.exp(-d2 / (2 * r * r)))
+        self.traffic_routing = hour >= 0
+        self._set_weights(w)
+
+    def plan_speed(self, clock: float) -> float:
+        """Divide a tree distance by this to get seconds (the hour's speeds are already in the weights)."""
+        return self.base_speed if self.traffic_routing else self.base_speed * self.city_factor(clock)
 
     def traffic(self, x: float, z: float, clock: float) -> float:
         """Local speed multiplier: the real speed of this zone at this hour relative to the city's daytime mean."""

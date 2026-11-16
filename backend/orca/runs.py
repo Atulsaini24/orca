@@ -46,7 +46,7 @@ def _stats(d) -> dict:
     s = d.stats()
     return dict(mean=float(w.mean()), p50=float(np.percentile(w, 50)), p95=float(np.percentile(w, 95)),
                 served=int(d.m["served"]), lost=int(d.m["lost"]), reoffers=int(d.m["reoffers"]),
-                **{k: float(s[k]) for k in ("veh_km", "km_per_rider", "svc_km_per_rider", "occupancy", "shared", "detour")})
+                **{k: float(s[k]) for k in ("veh_km", "km_per_rider", "svc_km_per_rider", "occupancy", "shared", "detour", "ride")})
 
 
 def run(spec: RunSpec) -> dict:
@@ -65,6 +65,7 @@ def run(spec: RunSpec) -> dict:
     for d in (e.smart, e.base):
         d.m["all"].clear()
         d.m["detour"].clear()
+        d.m["ride"].clear()
         d.m["served"] = d.m["lost"] = d.m["reoffers"] = d.m["dropped"] = d.m["shared"] = 0
         d.f.odo[:] = 0.0
     todo = sorted(spec.events or SCENARIOS[spec.scenario])
