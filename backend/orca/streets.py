@@ -4,7 +4,8 @@
   classes; segments keep their full geometry, so cars follow the real curves of the streets.
 * Travel time on a segment = length / (real median taxi speed for the hour x class factor x
   local congestion). The class factors (highways faster, side streets slower) are relative;
-  the absolute speed comes from the TLC trip records (artifacts/nyc_traffic_profile.json).
+  the absolute speed comes from the city's trip records (artifacts/traffic_<city>.json): per zone and
+  per hour, so Midtown at 6 pm is slower than Harlem at 6 pm.
 * Shortest paths by free-flow travel time. Every request gets one reverse shortest-path tree
   (Dijkstra on the transposed graph, ~1 ms): it gives the road travel time from *every*
   candidate car to the rider and, followed forwards, each car's actual route. Trees are cached.
@@ -28,11 +29,14 @@ UNREACHABLE = 1e9
 
 
 class StreetCity:
-    name = "manhattan"
-    label = "Manhattan street network (OpenStreetMap)"
     RASTER = 2.0                 # zone lookup cell size, world units
 
     def __init__(self, d: dict):
+        self.name = str(d["city"]) if "city" in d else "manhattan"
+        short = str(d["label"]).split(",")[0] if "label" in d else "Manhattan"
+        self.label = f"{short} street network (OpenStreetMap)"
+        self.city_label = str(d["label"]) if "label" in d else "Manhattan, New York"
+        self.zone_label = str(d["zone_label"]) if "zone_label" in d else "official TLC taxi zones"
         self.nx, self.nz = d["node_x"].astype(float), d["node_z"].astype(float)
         self.n = len(self.nx)
         self.src, self.dst = d["src"].astype(int), d["dst"].astype(int)
@@ -66,6 +70,15 @@ class StreetCity:
         for i, u in enumerate(self.src):
             self.out_edges[int(u)].append(i)
         self.kd = cKDTree(np.c_[self.nx, self.nz])
+        # Riders are picked up on ordinary streets, never on an expressway: only intersections touching at
+        # least one non-motorway street are valid pickup / drop-off points (cars still drive everything).
+        motor = {i for i, n in enumerate(d["class_names"]) if str(n) in ("motorway", "motorway_link", "trunk_link")}             if "class_names" in d else {0, 8, 9}
+        street = np.zeros(self.n, dtype=bool)
+        ok_edge = ~np.isin(self.cls, list(motor))
+        street[self.src[ok_edge]] = True
+        street[self.dst[ok_edge]] = True
+        self.pick_nodes = np.flatnonzero(street)
+        self.kd_pick = cKDTree(np.c_[self.nx[self.pick_nodes], self.nz[self.pick_nodes]])
         self._trees: OrderedDict[int, tuple[np.ndarray, np.ndarray]] = OrderedDict()
 
         # zones
@@ -87,19 +100,31 @@ class StreetCity:
             self._build_zone_raster()
         node_zone = self.zone_of_many(self.nx, self.nz)
         self.zone_nodes = [np.flatnonzero(node_zone == k) for k in range(self.N_ZONES)]
+        pick = np.zeros(self.n, dtype=bool)
+        pick[self.pick_nodes] = True
+        self.zone_pick = [ns[pick[ns]] for ns in self.zone_nodes]
         self.zone_centers = [(float(self.nx[ns].mean()), float(self.nz[ns].mean())) if len(ns) else (0.0, 0.0)
                              for ns in self.zone_nodes]
         typical = math.sqrt(self.WX * self.WZ / self.N_ZONES)
         self._zone_scale = typical
-        speed_file = Path(__file__).resolve().parents[1] / "artifacts" / "nyc_traffic_profile.json"
+        # Real traffic: hourly median speed for the city, and a zone x hour table of local speeds
+        # (scripts/prepare_trips.py), both measured from this city's own trip records.
+        art = Path(__file__).resolve().parents[1] / "artifacts"
+        prof_file = art / f"traffic_{self.name}.json"
+        if not prof_file.exists() and self.name == "manhattan":
+            prof_file = art / "nyc_traffic_profile.json"             # older single-city profile
+        self.zone_hour = None
         try:
-            prof = json.loads(speed_file.read_text())["speed_mps"]
-            day = float(np.mean(prof[8:20]))
+            prof = json.loads(prof_file.read_text())
+            day = float(np.mean(prof["speed_mps"][8:20]))
+            self.hour_factor = np.clip(np.asarray(prof["factor"], dtype=float), 0.6, 1.8)
+            if "zone_hour_factor" in prof and len(prof["zone_hour_factor"]) == self.N_ZONES:
+                self.zone_hour = np.clip(np.asarray(prof["zone_hour_factor"], dtype=float), 0.4, 2.2)
         except (OSError, ValueError, KeyError):
-            day = 3.8
+            day, self.hour_factor = 3.8, np.ones(24)
         self.base_speed = day / self.frame["unit_m"]          # world units per second at traffic factor 1
         self.speed_scale = 1.0
-        cal = Path(__file__).resolve().parents[1] / "artifacts" / "speed_calibration_manhattan.json"
+        cal = art / f"speed_calibration_{self.name}.json"
         if cal.exists():                                       # python -m orca.calibrate: fitted to real trip times
             self.speed_scale = float(json.loads(cal.read_text())["speed_scale"])
             self.base_speed /= self.speed_scale
@@ -107,6 +132,15 @@ class StreetCity:
         # Synthetic demand (tests only): a car here is busy ~13 min per ride (real-speed trips of ~2 km plus
         # the pickup), against ~6 min on the fast grid, so it can carry about half the grid's request rate.
         self.demand_scale = 0.5
+
+    def traffic(self, x: float, z: float, clock: float) -> float:
+        """Local speed multiplier: the real speed of this zone at this hour relative to the city's daytime mean."""
+        h = (clock / 3600) % 24
+        i, f = int(h), h - int(h)
+        if self.zone_hour is not None:
+            row = self.zone_hour[self.zone_of(x, z)]
+            return float(row[i] * (1 - f) + row[(i + 1) % 24] * f)
+        return float(self.hour_factor[i] * (1 - f) + self.hour_factor[(i + 1) % 24] * f)
 
     @classmethod
     def load(cls, path: Path) -> StreetCity:
@@ -156,20 +190,23 @@ class StreetCity:
     def nearest_node(self, x: float, z: float) -> int:
         return int(self.kd.query((x, z))[1])
 
+    def nearest_pickup(self, x: float, z: float) -> int:
+        return int(self.pick_nodes[self.kd_pick.query((x, z))[1]])
+
     def snap(self, x: float, z: float) -> tuple[float, float]:
-        k = self.nearest_node(x, z)
+        k = self.nearest_pickup(x, z)
         return float(self.nx[k]), float(self.nz[k])
 
     def on_road(self, x: float, z: float) -> bool:
         return True
 
     def random_point(self, rng) -> tuple[float, float]:
-        k = rng.randrange(self.n)
+        k = int(self.pick_nodes[rng.randrange(len(self.pick_nodes))])
         return float(self.nx[k]), float(self.nz[k])
 
     def point_in_zone(self, zi: int, rng) -> tuple[float, float]:
-        ns = self.zone_nodes[zi]
-        k = int(ns[rng.randrange(len(ns))]) if len(ns) else rng.randrange(self.n)
+        ns = self.zone_pick[zi]
+        k = int(ns[rng.randrange(len(ns))]) if len(ns) else int(self.pick_nodes[rng.randrange(len(self.pick_nodes))])
         return float(self.nx[k]), float(self.nz[k])
 
     def street_name(self, x: float, z: float) -> str:

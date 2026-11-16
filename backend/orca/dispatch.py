@@ -425,6 +425,19 @@ class NearestDispatcher(Dispatcher):
                 self.queue.append(rs)
 
 
+def deadline_cost(wait: float, eta: float) -> float:
+    """Penalty for a pairing that would reach the rider close to or after the moment they give up.
+
+    Riders cancel after C.ABANDON seconds. A logistic ramp over the last two minutes before that point
+    makes ORCA prefer, for riders who have waited long, a car that arrives in time over a cheaper one
+    that would arrive too late; without it a 16-minute arrival scores almost like a 14-minute one.
+    """
+    if C.DEADLINE_W <= 0:
+        return 0.0
+    slack = C.ABANDON - (wait + eta + 30.0)                # 30 s margin for the offer round-trip
+    return C.DEADLINE_W * C.DEADLINE_COST / (1.0 + math.exp(slack / 40.0))
+
+
 class OrcaDispatcher(Dispatcher):
     policy = "smart"
     label = "ORCA"
@@ -494,7 +507,7 @@ class OrcaDispatcher(Dispatcher):
                 p = self.accept.p(a, eta, rs.r.p1)
                 zc = self.zone_cost(a.rx, a.rz)
                 cost = eta + (1 - p) * C.REOFFER + zc
-                adj = cost * (C.URGENT_W if rs.r.p1 else 1.0) - min(wait, C.WAIT_CAP) * C.WAIT_W
+                adj = cost * (C.URGENT_W if rs.r.p1 else 1.0) - min(wait, C.WAIT_CAP) * C.WAIT_W + deadline_cost(wait, eta)
                 rs.cands.append(dict(a=a, eta=eta, p=p, zc=zc, cost=cost, adj=adj, age=t - a.last_ping, rx=a.rx, rz=a.rz))
 
         assignments = self.solve(q)

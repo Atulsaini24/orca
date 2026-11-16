@@ -40,7 +40,9 @@ class Engine:
     def demand_label(self):
         src = self.world.source
         if src.name == "nyc-tlc":
-            return "real NYC TLC taxi trips"
+            from . import cityspec
+            spec = cityspec.CITIES.get(self.city.name)
+            return f"real {spec.demand_source}" if spec else "real trip records"
         return "synthetic city demand"
 
     # ---- stepping ---------------------------------------------------------------

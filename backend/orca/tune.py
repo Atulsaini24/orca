@@ -31,6 +31,7 @@ SPACE = {
     "ZONE_CAP": (20.0, 180.0, True),
     "URGENT_W": (0.3, 1.0, False),
     "WAIT_W": (0.0, 0.6, False),
+    "DEADLINE_W": (0.0, 3.0, False),
     "K": (6, 16, False),
 }
 LOST_PENALTY = 900.0
@@ -45,7 +46,9 @@ def sample(rng: np.random.Generator) -> dict:
 
 
 def evaluate(cands: list[dict], seeds: list[int], minutes: int, label: str) -> np.ndarray:
-    specs = [RunSpec(seed=s, minutes=minutes, scenario=sc, params=p, tag=f"{label} c{i}", warm=240,
+    from . import city as G
+    name = G.use().name                                # workers run this city, explicitly
+    specs = [RunSpec(seed=s, minutes=minutes, scenario=sc, params=p, tag=f"{label} c{i}", warm=240, city=name,
                      events=tuple((round(t * minutes / 45), ev) for t, ev in ((20, "spike"), (20, "outage"), (40, "accident")))
                      if sc == "stress" else ())
              for i, p in enumerate(cands) for s in seeds for sc in ("steady", "stress")]

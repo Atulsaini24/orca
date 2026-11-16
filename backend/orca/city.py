@@ -133,18 +133,21 @@ _CITY = None
 
 
 def available() -> list[str]:
-    return ["manhattan", "grid"] if STREETS_FILE.exists() else ["grid"]
+    """Built real cities (registry order: Manhattan first), then the synthetic grid."""
+    from . import cityspec
+    return [*cityspec.built(), "grid"]
 
 
 def use(name: str | None = None):
-    """Activate a city by name ('manhattan' or 'grid'); default from ORCA_CITY, else the best available."""
+    """Activate a city by name ('manhattan', 'chicago', ... or 'grid'); default from ORCA_CITY, else the first built."""
     global _CITY
     name = name or os.environ.get("ORCA_CITY") or available()[0]
     if _CITY is not None and _CITY.name == name:
         return _CITY
-    if name == "manhattan":
+    from . import cityspec
+    if name in cityspec.CITIES and cityspec.get(name).streets.exists():
         from .streets import StreetCity
-        _CITY = StreetCity.load(STREETS_FILE)
+        _CITY = StreetCity.load(cityspec.get(name).streets)
     elif name == "grid":
         _CITY = GridCity()
     else:

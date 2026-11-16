@@ -10,11 +10,10 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
 
-REAL_DATA = Path(__file__).resolve().parents[1] / "data" / "nyc_tlc_2015-01_manhattan.parquet"
+REAL_DATA = None          # each city replays its own prepared trips (orca.cityspec.trips_file)
 SCENARIOS = {
     "steady": [],
     "stress": [(20, "spike"), (20, "outage"), (40, "accident")],
@@ -29,7 +28,7 @@ class RunSpec:
     use_learned: bool = True
     fleet: int = 1200
     demand: str = "tlc"
-    data: str = str(REAL_DATA)
+    data: str | None = None             # None = the city's own prepared trips
     city: str | None = None             # None = the default city (Manhattan's streets when built)
     params: dict | None = None          # scoring weights; None = whatever config loaded (tuned if available)
     start_hour: float | None = None     # simulated clock at the start; None = config.START_CLOCK
@@ -52,9 +51,11 @@ def run(spec: RunSpec) -> dict:
     # Workers are reused across runs: always start from the loaded configuration, then override.
     C.apply({**C.DEFAULTS, **C.TUNED, **(spec.params or {})})
     C.START_CLOCK = spec.start_hour * 3600 - spec.warm if spec.start_hour is not None else C.START_DEFAULT
+    from . import cityspec
     from .engine import Engine
-    e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand,
-               data=spec.data if spec.demand == "tlc" else None, city=spec.city)
+    data = spec.data or (str(cityspec.trips_file(G.current().name)) if cityspec.trips_file(G.current().name) else None)
+    e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand if data else "synthetic",
+               data=data if spec.demand == "tlc" else None, city=spec.city)
     e.warm_up(spec.warm)
     for d in (e.smart, e.base):
         d.m["all"].clear()
@@ -72,7 +73,7 @@ def run(spec: RunSpec) -> dict:
                 new = d.m["all"][seen[name]:]
                 seen[name] = len(d.m["all"])
                 hourly[name].setdefault(h, []).extend(new)
-    out = dict(spec=dict(seed=spec.seed, minutes=spec.minutes, scenario=spec.scenario, use_learned=spec.use_learned,
+    out = dict(spec=dict(seed=spec.seed, minutes=spec.minutes, scenario=spec.scenario, use_learned=spec.use_learned, city=G.current().name,
                          params=spec.params, tag=spec.tag, start_hour=spec.start_hour))
     for name, d in (("orca", e.smart), ("nearest", e.base)):
         out[name] = _stats(d.m["all"], d.m["served"], d.m["lost"], d.m["reoffers"])

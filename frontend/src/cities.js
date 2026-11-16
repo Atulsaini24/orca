@@ -5,7 +5,7 @@
 // Routes are flat arrays with stride 4: x, z, speed multiplier of the leg, node id (or -1).
 // =============================================================================
 function b64Bytes(s) {
-  const bin = typeof atob === 'function' ? atob(s) : Buffer.from(s, 'base64').toString('binary');
+  const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
@@ -54,8 +54,12 @@ class GridCity {
 
 class StreetCity {
   constructor(D) {
-    this.name = 'manhattan'; this.label = 'Manhattan street network (OpenStreetMap)';
+    this.name = D.city || 'manhattan'; this.short = D.short || 'Manhattan';
+    this.label = `${this.short} street network (OpenStreetMap)`; this.cityLabel = D.label || this.short;
+    this.zoneLabel = D.zone_label || 'zones'; this.surround = D.surround || 'water';
     this.WX = D.WX; this.WZ = D.WZ; this.source = D.source;
+    this.bridges = (D.bridges || []).map((b) => ({ cls: b.c, p: b.p }));
+    this.parks = D.parks || [];
     const q = (s) => Float32Array.from(b64U16(s), (v) => v / 20);
     this.nx = q(D.node_x); this.nz = q(D.node_z); this.n = this.nx.length;
     this.src = b64U16(D.src); this.dst = b64U16(D.dst); this.cls = b64Bytes(D.cls);
@@ -93,6 +97,11 @@ class StreetCity {
     this.HC = 4; this.hw = Math.ceil(this.WX / this.HC); this.hh = Math.ceil(this.WZ / this.HC);
     this.hash = Array.from({ length: this.hw * this.hh }, () => []);
     for (let i = 0; i < this.n; i++) this.hash[this.cell(this.nx[i], this.nz[i])].push(i);
+    // pickup points: intersections touching an ordinary street (never only an expressway)
+    const MOTOR = new Set([0, 8, 9]);                                   // motorway, motorway_link, trunk_link
+    this.pickable = new Uint8Array(this.n);
+    for (let e = 0; e < E; e++) if (!MOTOR.has(this.cls[e])) { this.pickable[this.src[e]] = 1; this.pickable[this.dst[e]] = 1; }
+    this.pickList = []; for (let i = 0; i < this.n; i++) if (this.pickable[i]) this.pickList.push(i);
     // zones
     this.zones = D.zones; this.N = D.zones.length;
     this.lut = b64Bytes(D.zone_lut); this.lutW = D.lut_w; this.lutH = D.lut_h; this.lutCell = D.lut_cell;
@@ -109,6 +118,8 @@ class StreetCity {
     const mps = typeof CAL_MPS !== 'undefined' ? CAL_MPS : (prof && prof.speed_day_mps) || 3.8;
     this.baseSpeed = mps / D.unit_m;
     this.ambientCongestion = false; this.demandScale = 0.5;
+    // real local traffic: speed by zone and hour (scripts/prepare_trips.py), rows in zone order
+    this.zoneHour = prof && prof.zone_hour && prof.zone_hour.length === this.N ? prof.zone_hour : null;
     this.trees = new Map(); this.heap = new Int32Array(this.n * 4); this.hkey = new Float64Array(this.n * 4);
   }
   cell(x, z) { return clamp(Math.floor(z / this.HC), 0, this.hh - 1) * this.hw + clamp(Math.floor(x / this.HC), 0, this.hw - 1); }
@@ -117,9 +128,13 @@ class StreetCity {
     return this.lut[j * this.lutW + i];
   }
   zoneName(i) { return this.zones[i].name; }
+  traffic(x, z, clock) {
+    const h = (clock / 3600) % 24, i = Math.floor(h), f = h - i, row = this.zoneHour[this.zoneOf(x, z)];
+    return clamp(row[i] * (1 - f) + row[(i + 1) % 24] * f, 0.4, 2.2);
+  }
   zoneCenter(i) { return this.centers[i]; }
   zoneDist(a, b) { const [ax, az] = this.centers[a], [bx, bz] = this.centers[b]; return Math.hypot(bx - ax, bz - az) / this.zoneScale; }
-  nearestNode(x, z) {
+  nearestNode(x, z, pickOnly = false) {
     const cx = clamp(Math.floor(x / this.HC), 0, this.hw - 1), cz = clamp(Math.floor(z / this.HC), 0, this.hh - 1);
     let best = -1, bd = Infinity;
     for (let r = 0; r < Math.max(this.hw, this.hh); r++) {
@@ -128,6 +143,7 @@ class StreetCity {
         for (let i = cx - r; i <= cx + r; i++) {
           if (i < 0 || i >= this.hw || Math.max(Math.abs(i - cx), Math.abs(j - cz)) !== r) continue;
           for (const k of this.hash[j * this.hw + i]) {
+            if (pickOnly && !this.pickable[k]) continue;
             const d = (this.nx[k] - x) ** 2 + (this.nz[k] - z) ** 2;
             if (d < bd) { bd = d; best = k; }
           }
@@ -137,9 +153,13 @@ class StreetCity {
     }
     return best;
   }
-  snap(x, z) { const k = this.nearestNode(x, z); return [this.nx[k], this.nz[k]]; }
-  randomPoint(r) { const k = Math.floor(r() * this.n); return [this.nx[k], this.nz[k]]; }
-  pointInZone(zi, r) { const ns = this.zoneNodes[zi], k = ns.length ? ns[Math.floor(r() * ns.length)] : Math.floor(r() * this.n); return [this.nx[k], this.nz[k]]; }
+  snap(x, z) { const k = this.nearestNode(x, z, true); return [this.nx[k], this.nz[k]]; }
+  randomPoint(r) { const k = this.pickList[Math.floor(r() * this.pickList.length)]; return [this.nx[k], this.nz[k]]; }
+  pointInZone(zi, r) {
+    const ns = this.zoneNodes[zi].filter((k) => this.pickable[k]);
+    const k = ns.length ? ns[Math.floor(r() * ns.length)] : this.pickList[Math.floor(r() * this.pickList.length)];
+    return [this.nx[k], this.nz[k]];
+  }
   // Dijkstra on the reverse graph: free-flow cost from every node to `target`, and each node's next hop.
   treeTo(target) {
     let t = this.trees.get(target);

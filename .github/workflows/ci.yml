@@ -50,15 +50,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            backend/data/nyc_tlc_2015-01_manhattan.parquet
-          key: tlc-${{ hashFiles('backend/scripts/prepare_tlc.py', 'backend/scripts/download_tlc.py') }}
+            backend/data/trips_manhattan.parquet
+            backend/artifacts/traffic_manhattan.json
+            frontend/data/manhattan/trips.js
+          key: trips-2026-09-${{ hashFiles('backend/scripts/prepare_trips.py', 'backend/scripts/download_tlc.py', 'backend/artifacts/streets_manhattan.npz') }}
       - name: Download and prepare real data
         if: steps.data.outputs.cache-hit != 'true'
         working-directory: backend
         run: |
-          python scripts/download_tlc.py --year 2015 --month 1
+          # yellow taxis only in CI (67 MB); the full build adds Uber / Lyft (510 MB)
+          python scripts/download_tlc.py --year 2026 --month 9
           python scripts/download_tlc.py --zones
-          python scripts/prepare_tlc.py
+          python scripts/prepare_trips.py --city manhattan
           git -C .. diff --stat -- frontend/src/tlc_data.js backend/artifacts/nyc_traffic_profile.json
       - uses: actions/setup-node@v4
         with: { node-version: "22", cache: npm, cache-dependency-path: web/package-lock.json }

@@ -84,8 +84,8 @@ def test_home_page(server, browser):
     for section in ("#how", "#results", "#data", "#tour"):
         assert page.locator(section).count() == 1
     assert page.locator("video source[src='/media/orca-tour.mp4']").count() == 1
-    page.get_by_role("link", name="Launch the live control room").click()
-    page.wait_for_url("**/app")
+    page.get_by_role("link", name="Launch the Manhattan control room").click()
+    page.wait_for_url(lambda u: "/app" in u)
     _until(lambda: page.inner_text("#modeTxt") == "Live server", what="control room after navigation")
     assert not [e for e in errors if "favicon" not in e], errors
 
@@ -106,11 +106,22 @@ def test_control_room_live(server, browser):
 
 
 def test_control_room_offline_runs_real_data(browser):
-    """Opened as a file, the page runs the engine in the browser on the bundled real NYC trips."""
+    """Opened as a file, the page runs the engine in the browser on the bundled real trips of the first city."""
     errors: list[str] = []
     page = _page(browser, errors)
     page.goto((REPO / "frontend" / "index.html").resolve().as_uri())
     _until(lambda: page.inner_text("#modeTxt") == "In-browser engine", what="in-browser engine")
-    _until(lambda: "real NYC" in page.inner_text("#engine"), what="real-data engine label")
+    _until(lambda: "real Manhattan trips" in page.inner_text("#engine"), what="real-data engine label")
     real = [e for e in errors if "fonts.g" not in e and "ERR_FILE_NOT_FOUND" not in e]
     assert not real, real
+
+
+@pytest.mark.skipif(not (REPO / "frontend" / "data" / "chicago" / "streets.js").exists(), reason="Chicago not built")
+def test_control_room_other_city_runs_in_browser(server, browser):
+    """Regression: asking for a city the server is not simulating must not draw the server's cars on it."""
+    errors: list[str] = []
+    page = _page(browser, errors)
+    page.goto(server + "/app?city=chicago")
+    _until(lambda: page.inner_text("#modeTxt") == "In-browser engine", what="in-browser engine for the other city")
+    _until(lambda: "real Chicago trips" in page.inner_text("#engine"), what="Chicago engine label")
+    assert not [e for e in errors if "favicon" not in e], errors

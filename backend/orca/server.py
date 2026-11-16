@@ -27,17 +27,21 @@ import asyncio
 import json
 import os
 import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from starlette.routing import Route
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from .engine import Engine
+from .security import HardeningMiddleware
 
-REAL_DATA = Path(__file__).resolve().parents[1] / "data" / "nyc_tlc_2015-01_manhattan.parquet"
 FRONTEND = Path(os.environ.get("ORCA_FRONTEND", Path(__file__).resolve().parents[2] / "frontend" / "index.html"))
 ROOT = Path(__file__).resolve().parents[2]
 HOME = Path(os.environ.get("ORCA_HOME_DIST", ROOT / "web" / "dist"))
@@ -58,12 +62,22 @@ class Hub:
         self.engine = self._new_engine(opts)
         self.tick = 0
         self.cache: dict = {}
+        self.explicit_data = bool(opts.get("data"))
         self.lock = asyncio.Lock()
         self.task = None
 
     def _new_engine(self, opts):
-        e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=opts["demand"], data=opts.get("data"),
-                   zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=opts.get("city"))
+        from . import city as G
+        from . import cityspec
+        name = opts.get("city") or G.available()[0]
+        data, demand = opts.get("data") or cityspec.trips_file(name), opts["demand"]
+        if demand == "tlc" and (data is None or not Path(data).exists()):
+            demand, data = "synthetic", None                 # this city's real trips are not prepared yet
+        e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=demand, data=str(data) if data else None,
+                   zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=name)
+        if demand != opts["demand"]:
+            e.world.log("sys", f"No prepared real trips for {e.city.label}: running synthetic demand "
+                               f"(python scripts/prepare_trips.py --city {name})")
         e.warm_up(opts.get("warm", 540))
         e.speed = opts.get("speed", 20.0)
         return e
@@ -90,6 +104,19 @@ class Hub:
         if key not in self.cache:
             self.cache[key] = dumps(self.engine.summary())
         return self.cache[key]
+
+
+class CachedStatic(StaticFiles):
+    """Static files with a Cache-Control header (ETag and Last-Modified revalidation come from StaticFiles)."""
+
+    def __init__(self, *a, cache: str, **kw):
+        super().__init__(*a, **kw)
+        self.cache = cache
+
+    def file_response(self, *a, **kw):
+        resp = super().file_response(*a, **kw)
+        resp.headers["Cache-Control"] = self.cache
+        return resp
 
 
 def build_app(opts: dict) -> Starlette:
@@ -158,11 +185,18 @@ def build_app(opts: dict) -> Starlette:
         opts = dict(hub.opts)
         opts["fleet"] = int(max(200, min(4000, body.get("fleet", opts["fleet"]))))
         opts["seed"] = int(body.get("seed", int(time.time()) % 100000))
+        if "city" in body:
+            from . import city as G
+            if body["city"] not in G.available():
+                return JSONResponse({"ok": False, "error": f"Unknown city '{body['city']}'"}, status_code=400)
+            opts["city"] = body["city"]
+            if not hub.explicit_data:
+                opts["data"] = None
         new = await asyncio.to_thread(hub._new_engine, opts)
         async with hub.lock:
             new.speed = hub.engine.speed
             hub.engine, hub.opts = new, opts
-        return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"]})
+        return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"], "city": new.city.name})
 
     async def explain(request: Request):
         try:
@@ -207,23 +241,20 @@ def build_app(opts: dict) -> Starlette:
         Route("/api/explain/{rid}", explain), Route("/api/analytics", analytics), Route("/api/trips", trips),
         Route("/api/models", models), Route("/metrics", metrics),
     ]
-    from starlette.routing import Mount
-    from starlette.staticfiles import StaticFiles
-    if (HOME / "assets").is_dir():
-        routes.append(Mount("/assets", StaticFiles(directory=HOME / "assets")))
-    if (HOME / "favicon.svg").exists():
-        routes.append(Route("/favicon.svg", lambda r: FileResponse(HOME / "favicon.svg")))
+    if (HOME / "assets").is_dir():                         # content-hashed file names: cache for a year
+        routes.append(Mount("/assets", CachedStatic(directory=HOME / "assets", cache="public, max-age=31536000, immutable")))
+    city_data = FRONTEND.parent / "data"
+    if city_data.is_dir():                                 # each city's streets, buildings, trips and config for /app
+        routes.append(Mount("/app/data", CachedStatic(directory=city_data, cache="public, max-age=600, must-revalidate")))
+    icon = HOME / "favicon.svg"
+    routes.append(Route("/favicon.svg", lambda r: FileResponse(icon) if icon.exists() else Response(status_code=204)))
+    routes.append(Route("/favicon.ico", lambda r: RedirectResponse("/favicon.svg", status_code=301)))
     if os.environ.get("ORCA_DEV_STATIC"):          # development only: serve extra static files
-        from starlette.routing import Mount
-        from starlette.staticfiles import StaticFiles
         routes.append(Mount("/stub", StaticFiles(directory=os.environ["ORCA_DEV_STATIC"])))
-    from collections import defaultdict
-
-    from starlette.middleware import Middleware
-
-    from .security import HardeningMiddleware
     http_metrics: dict = defaultdict(int)
-    app = Starlette(routes=routes, lifespan=lifespan, middleware=[Middleware(HardeningMiddleware, metrics=http_metrics)])
+    # gzip shrinks the city data about fourfold; Starlette leaves the event stream uncompressed
+    app = Starlette(routes=routes, lifespan=lifespan, middleware=[Middleware(HardeningMiddleware, metrics=http_metrics),
+                                                                  Middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)])
     app.state.hub = hub
     app.state.http_metrics = http_metrics
     return app
@@ -237,16 +268,15 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--speed", type=float, default=20.0)
     ap.add_argument("--demand", choices=["synthetic", "tlc"], default=os.environ.get("ORCA_DEMAND", "tlc"))
-    ap.add_argument("--data", default=os.environ.get("ORCA_DATA") or str(REAL_DATA))
+    ap.add_argument("--data", default=os.environ.get("ORCA_DATA"), help="trip file to replay (default: the city's own)")
     ap.add_argument("--zones", default=None)
-    ap.add_argument("--city", choices=["manhattan", "grid"], default=os.environ.get("ORCA_CITY"),
-                    help="street network: Manhattan's real streets (default when built) or the synthetic grid")
+    from . import city as G
+    ap.add_argument("--city", choices=G.available(), default=os.environ.get("ORCA_CITY"),
+                    help="city to run: a built real city (Manhattan first) or the synthetic grid")
     ap.add_argument("--db", default=os.environ.get("ORCA_DB"), help="SQLite file for the trip ledger (default: in memory)")
     a = ap.parse_args()
-    if a.demand == "tlc" and not Path(a.data).exists():
-        ap.error(f"real trip data not found at {a.data}. Download and prepare it once with `make data` "
-                 "(python scripts/download_tlc.py && python scripts/prepare_tlc.py), "
-                 "or run with --demand synthetic.")
+    if a.demand == "tlc" and a.data and not Path(a.data).exists():
+        ap.error(f"trip file not found: {a.data}")
     import uvicorn
     print("Warming up the city…")
     app = build_app(vars(a))

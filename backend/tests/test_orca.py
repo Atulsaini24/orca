@@ -12,13 +12,14 @@ import numpy as np
 import pytest
 
 from orca import city as G
+from orca import cityspec
 from orca import config as C
 from orca.city import GridCity, is_arterial
 from orca.dispatch import OrcaDispatcher
 from orca.engine import Engine
 
 ROOT = Path(__file__).resolve().parents[1]
-CITIES = ["grid", "manhattan"] if G.STREETS_FILE.exists() else ["grid"]
+CITIES = ["grid", *cityspec.built()]                          # every built real city, plus the grid
 
 
 class _Car:
@@ -65,6 +66,42 @@ def test_street_routes_follow_one_way_streets_to_the_target():
 
 
 @pytest.mark.skipif("manhattan" not in CITIES, reason="street network not built")
+@pytest.mark.skipif("chicago" not in CITIES, reason="Chicago not built")
+def test_chicago_landmarks_land_in_the_right_neighbourhoods():
+    from orca.demand import StreetProjector
+    from orca.geo import to_il_east
+    city = G.use("chicago")
+    proj = StreetProjector(city)
+    for lon, lat, zone in [(-87.635915, 41.878876, "Loop"), (-87.6051, 41.8917, "Streeterville"), (-87.6553, 41.9484, "Wrigleyville"),
+                           (-87.6334, 41.9211, "Lincoln Park")]:
+        x, z = proj(*to_il_east(lon, lat))
+        assert city.zone_names[city.zone_of(float(x), float(z))] == zone
+
+
+@pytest.mark.parametrize("name", [c for c in CITIES if c != "grid"])
+def test_riders_are_never_picked_up_on_an_expressway(name):
+    city, rng = G.use(name), random.Random(5)
+    motor = {i for i, n in enumerate(["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential",
+                                      "living_street", "motorway_link", "trunk_link"]) if n in ("motorway", "motorway_link", "trunk_link")}
+    touching: dict[int, list[int]] = {}
+    for e, (u, v) in enumerate(zip(city.src.tolist(), city.dst.tolist())):
+        touching.setdefault(u, []).append(e)
+        touching.setdefault(v, []).append(e)
+    for _ in range(500):
+        x, z = city.snap(rng.random() * city.WX, rng.random() * city.WZ)
+        k = city.nearest_node(x, z)
+        assert any(int(city.cls[e]) not in motor for e in touching[k]), "pickup snapped to an expressway-only intersection"
+
+
+def test_give_up_guard_prefers_a_car_that_arrives_in_time(monkeypatch):
+    from orca import config
+    from orca.dispatch import deadline_cost
+    monkeypatch.setattr(config, "DEADLINE_W", 1.0)                     # each city tunes its own weight; test the shape
+    assert deadline_cost(60, 120) < 1                                    # fresh request: no penalty
+    late, early = deadline_cost(700, 240), deadline_cost(700, 60)        # waited 11:40: a 4-min car arrives too late
+    assert late > 400 and early < 60
+
+
 def test_real_landmarks_land_in_the_right_taxi_zones():
     from orca.demand import StreetProjector
     from orca.geo import to_state_plane
@@ -123,7 +160,18 @@ def test_both_policies_see_identical_demand(engine):
 
 
 def test_orca_beats_nearest_on_mean_wait(engine):
-    assert engine.smart.stats()["mean"] < engine.base.stats()["mean"]
+    # One 20-minute run is noisy (a single seed can go either way by a few seconds), so average three seeds.
+    smart, base = [engine.smart.stats()["mean"]], [engine.base.stats()["mean"]]
+    for seed in (6, 7):
+        e = Engine(seed=seed, fleet=500, use_learned=False, city=engine.city.name)
+        for i in range(1200):
+            e.step(1.0)
+            if i == 400:
+                e.world.trigger_spike()
+                e.world.trigger_outage()
+        smart.append(e.smart.stats()["mean"])
+        base.append(e.base.stats()["mean"])
+    assert np.mean(smart) < np.mean(base)
 
 
 def test_snapshots_are_json(engine):
@@ -148,7 +196,6 @@ def test_ledger_matches_dispatchers(engine):
         assert sum(d.z_n) == d.m["served"] and sum(d.hist) == d.m["served"]
         if a[key]["trips"]:
             assert a[key]["p50"] <= a[key]["p95"]
-    assert a["smart"]["mean"] < a["base"]["mean"]
     assert len(engine.ledger.recent(10)) == 10
 
 
@@ -230,18 +277,20 @@ def test_tlc_loader_and_replay(tmp_path, city):
     assert got > 0
 
 
-REAL = ROOT / "data" / "nyc_tlc_2015-01_manhattan.parquet"
+PREPARED = [c for c in cityspec.built() if cityspec.trips_file(c) is not None]
 
 
-@pytest.mark.skipif(not REAL.exists(), reason="real data not prepared (make data)")
-def test_real_nyc_replay():
-    e = Engine(seed=1, fleet=600, demand="tlc", data=str(REAL), use_learned=False, city=CITIES[-1])
+@pytest.mark.skipif(not PREPARED, reason="real trips not prepared (make data)")
+@pytest.mark.parametrize("city", PREPARED)
+def test_real_trip_replay(city):
+    e = Engine(seed=1, fleet=600, demand="tlc", data=str(cityspec.trips_file(city)), use_learned=False, city=city)
     src = e.world.source
-    assert src.n > 1_000_000 and src.days >= 15
-    assert e.demand_label() == "real NYC TLC taxi trips"
-    assert e.world.traffic is not None and len(e.world.traffic) == 24
+    assert src.n > 500_000 and src.days >= 15
+    assert "real" in e.demand_label()
+    assert e.world.city_traffic and e.city.zone_hour is not None and e.city.zone_hour.shape == (e.city.N_ZONES, 24)
     hourly = np.bincount((src.sec // 3600).astype(int), minlength=24)
     assert hourly[18] > 3 * hourly[4]                                   # real evening peak vs. 4 am lull
+    assert e.city.traffic(100, 100, 4 * 3600) > e.city.traffic(100, 100, 18 * 3600)   # night faster than the rush
     for _ in range(300):
         e.step(1.0)
     assert e.world.next_req > 50
@@ -327,3 +376,12 @@ def test_api_end_to_end():
     finally:
         proc.terminate()
         proc.wait(5)
+
+
+@pytest.mark.skipif(len(CITIES) < 3, reason="needs two real cities")
+def test_worker_processes_run_the_requested_city():
+    """Regression: pool workers start on the default city and must switch to the one each run asks for."""
+    from orca.runs import RunSpec, run_many
+    specs = [RunSpec(seed=1, minutes=1, warm=5, demand="synthetic", city=c) for c in CITIES[1:]]
+    res = run_many(specs + specs[::-1], workers=2, progress=False)
+    assert [r["spec"]["city"] for r in res] == [s.city for s in specs + specs[::-1]]

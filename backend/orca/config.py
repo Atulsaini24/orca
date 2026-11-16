@@ -38,7 +38,9 @@ ZONE_CAP = 60.0           # maximum zone supply cost (s)
 URGENT_W = 0.55           # urgent requests' cost multiplier
 WAIT_W = 0.25             # cost credit per second a request has already waited
 WAIT_CAP = 300.0          # ... up to this many seconds
-TUNABLE = ("REOFFER", "COVER", "ZONE_SLOPE", "ZONE_CAP", "URGENT_W", "WAIT_W", "K")
+DEADLINE_W = 1.0          # weight of the give-up penalty: riders cancel after ABANDON seconds without a car
+DEADLINE_COST = 600.0     # cost (s) of a pairing that would arrive after the rider has given up
+TUNABLE = ("REOFFER", "COVER", "ZONE_SLOPE", "ZONE_CAP", "URGENT_W", "WAIT_W", "DEADLINE_W", "K")
 DEFAULTS = {k: globals()[k] for k in TUNABLE}
 
 

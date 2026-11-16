@@ -143,6 +143,8 @@ class World:
             tlc.attach(self)
         self.spike_boost = 0.0
         self.traffic = load_traffic() if tlc is not None else None
+        # street cities with real data: speed by zone and hour; otherwise one citywide factor per hour
+        self.city_traffic = tlc is not None and hasattr(self.city, "traffic")
 
     # ---- time, traffic ----------------------------------------------------
     def clock(self) -> float:
@@ -157,7 +159,8 @@ class World:
         for b in self.blobs:
             dx, dz = x - b.x, z - b.z
             m *= 1 - b.s * math.exp(-(dx * dx + dz * dz) / (2 * b.r * b.r))
-        return max(0.22, m * self.traffic_factor())
+        local = self.city.traffic(x, z, self.clock()) if self.city_traffic else self.traffic_factor()
+        return max(0.22, m * local)
 
     def traffic_factor(self) -> float:
         """Citywide speed multiplier for the hour: measured from real NYC trips when available."""

@@ -8,6 +8,12 @@ __pycache__/
 *.egg-info/
 backend/data/*
 !backend/data/.gitkeep
+# Chicago's official boundaries (small, needed to build the city)
+!backend/data/chicago/
+backend/data/chicago/*
+!backend/data/chicago/region.json
+!backend/data/chicago/community_areas.geojson
+!backend/data/chicago/neighborhoods/
 build-test/
 .pytest_cache/
 web/node_modules/

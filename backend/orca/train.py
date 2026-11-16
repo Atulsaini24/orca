@@ -26,7 +26,7 @@ from . import config as C
 from .features import DEMAND_FEATURES, ETA_FEATURES, FeatureStore
 from .models import ARTIFACTS, artifact
 
-REAL_DATA = ARTIFACTS.parent / "data" / "nyc_tlc_2015-01_manhattan.parquet"
+REAL_DATA = None          # default: the active city's prepared trips
 
 
 
@@ -46,12 +46,14 @@ def _print(title, rows, unit):
 # ---------------------------------------------------------------------------- ETA
 def _eta_run(job: tuple) -> np.ndarray:
     """One telemetry run (worker process): fleet under real demand from a given hour, frequent incidents."""
-    seed, start_hour, hours, fleet, source, data, incident_every = job
+    seed, start_hour, hours, fleet, source, data, incident_every, city = job
+    from . import city as G
+    G.use(city)                                            # worker processes start on the default city
     if start_hour is not None:
         C.START_CLOCK = start_hour * 3600
     from .engine import Engine
     e = Engine(seed=seed, fleet=fleet, use_learned=False, telemetry=True,
-               demand="tlc" if source == "tlc" else "synthetic", data=data)
+               demand="tlc" if source == "tlc" else "synthetic", data=data, city=city)
     rng = random.Random(seed)
     for i in range(int(hours * 3600)):
         e.step(1.0)
@@ -65,7 +67,8 @@ def collect_eta(hours: float, seeds: list[int], fleet: int, source: str = "tlc",
     """Telemetry runs in parallel, each starting at a different time of day (real traffic varies by hour)."""
     from concurrent.futures import ProcessPoolExecutor
     starts = start_hours or [None] * len(seeds)
-    jobs = [(s, h, hours, fleet, source, data, incident_every) for s, h in zip(seeds, starts)]
+    from . import city as G
+    jobs = [(s, h, hours, fleet, source, data, incident_every, G.current().name) for s, h in zip(seeds, starts)]
     with ProcessPoolExecutor(max_workers=min(len(jobs), 7)) as ex:
         runs = list(ex.map(_eta_run, jobs))
     for (s, h, *_), r in zip(jobs, runs):
@@ -207,7 +210,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("task", choices=["eta", "demand", "eta-real"])
     ap.add_argument("--source", choices=["sim", "tlc"], default="tlc")
-    ap.add_argument("--data", default=str(REAL_DATA), help="NYC TLC trip file (CSV or Parquet) when --source tlc")
+    ap.add_argument("--data", default=None, help="trip file (default: the city's own prepared trips)")
+    ap.add_argument("--city", default=None, help="city to train for (default: the first built real city)")
     ap.add_argument("--zones", help="zone centroid CSV for PULocationID-style files")
     ap.add_argument("--hours", type=float, default=2.0)
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
@@ -216,6 +220,13 @@ def main():
                     help="ETA: one telemetry run starting at each of these clock hours")
     ap.add_argument("--incident-every", type=float, default=700, help="ETA: mean seconds between random incidents")
     args = ap.parse_args()
+    G.use(args.city)
+    if args.data is None and args.source == "tlc":
+        from . import cityspec
+        f = cityspec.trips_file(G.current().name)
+        if f is None:
+            raise SystemExit(f"no prepared trips for {G.current().name}: run scripts/prepare_trips.py --city {G.current().name}")
+        args.data = str(f)
     if args.task == "eta-real":
         from .real_eta import train as train_eta_real
         return train_eta_real(args)

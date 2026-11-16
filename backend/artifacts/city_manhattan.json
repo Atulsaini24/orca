@@ -6,11 +6,14 @@
   "one_way_share": 0.649,
   "width_km": 5.7,
   "length_km": 21.5,
-  "source": "OpenStreetMap contributors (ODbL), drivable ways; zones: NYC TLC taxi zones",
-  "buildings": 44693,
+  "source": "OpenStreetMap contributors (ODbL), drivable ways; zones: official TLC taxi zones",
+  "buildings": 44375,
   "footprints": 45172,
   "tallest_m": 472,
   "median_height_m": 18,
   "buildings_over_150m": 256,
-  "buildings_source": "NYC Open Data, BUILDING footprints (5zhs-2jue)"
+  "buildings_source": "NYC Open Data, BUILDING footprints (5zhs-2jue), NYC DoITT",
+  "city": "manhattan",
+  "label": "Manhattan, New York",
+  "real_outline_share": 0.998
 }

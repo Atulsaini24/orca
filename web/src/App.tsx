@@ -1,18 +1,20 @@
 import { motion } from 'framer-motion';
 import {
-  ArrowRight, Activity, Clock3, Database, Gauge, Map as MapIcon, Play, Radar, Route, Satellite, ShieldCheck, Sparkles, Users, Workflow,
+  ArrowRight, Activity, Clock3, Database, Gauge, Map as MapIcon, Play, Radar, Route, Satellite, ShieldCheck, Sparkles, Users, Workflow, Scale,
 } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import HeroMap from './components/HeroMap';
 import { BenchmarkChart, FullDayChart, HourlyChart, RealEtaCard } from './components/Charts';
-import { agg, benchConfig, benchTests, calibration, cityFacts, cut, cutCI, fmt, models, realData } from './data';
+import { CITIES, fmt, mmss } from './data';
+import { CityProvider } from './city';
+import { useCity } from './cityContext';
 
-const APP = '/app';
+const appUrl = (city: string) => `/app?city=${city}`;
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 const pctRange = (ci?: [number, number]) => (ci ? `${Math.round(ci[0] * 100)}–${Math.round(ci[1] * 100)}%` : '');
 const pFmt = (p: number) => (p < 0.001 ? '< 0.001' : `= ${p.toFixed(3)}`);
 
-type Health = { mode: string; fleet: number; demand: string; eta_model: string; forecaster: string } | null;
+type Health = { mode: string; fleet: number; demand: string; city?: string; city_label?: string } | null;
 function useHealth(): Health | 'offline' | 'loading' {
   const [h, setH] = useState<Health | 'offline' | 'loading'>('loading');
   useEffect(() => {
@@ -41,7 +43,23 @@ function Wordmark() {
   );
 }
 
+function CitySwitch({ compact = false }: { compact?: boolean }) {
+  const { city, setCity } = useCity();
+  if (CITIES.length < 2) return null;
+  return (
+    <div role="radiogroup" aria-label="City" className={`inline-flex rounded-full bg-white p-1 shadow-[0_0_0_1px_#DADDE1] ${compact ? 'text-[13px]' : 'text-[14px]'}`}>
+      {CITIES.map((c) => (
+        <button key={c.name} type="button" role="radio" aria-checked={c.name === city.name} onClick={() => setCity(c.name)}
+          className={`rounded-full px-3.5 py-1.5 font-semibold transition ${c.name === city.name ? 'bg-ink text-white' : 'text-ink-2 hover:text-ink'}`}>
+          {c.short}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Nav() {
+  const { city } = useCity();
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     const on = () => setScrolled(window.scrollY > 12);
@@ -50,15 +68,16 @@ function Nav() {
   }, []);
   return (
     <header className={`sticky top-0 z-40 transition-colors duration-300 ${scrolled ? 'bg-paper/85 shadow-[0_1px_0_#DADDE1] backdrop-blur-md' : ''}`}>
-      <nav className="mx-auto flex max-w-page items-center justify-between gap-6 px-5 py-4 md:px-8" aria-label="Main">
-        <Wordmark />
-        <div className="hidden items-center gap-7 text-[15px] font-medium text-ink-2 md:flex">
+      <nav className="mx-auto flex max-w-page items-center justify-between gap-4 px-5 py-4 md:px-8" aria-label="Main">
+        <div className="flex items-center gap-5"><Wordmark /><div className="hidden sm:block"><CitySwitch compact /></div></div>
+        <div className="hidden items-center gap-7 text-[15px] font-medium text-ink-2 lg:flex">
           <a className="hover:text-ink" href="#how">How it works</a>
           <a className="hover:text-ink" href="#results">Results</a>
+          <a className="hover:text-ink" href="#reality">Reality check</a>
           <a className="hover:text-ink" href="#data">Real data</a>
           <a className="hover:text-ink" href="#tour">Tour</a>
         </div>
-        <a href={APP} className="btn-primary !px-4 !py-2.5 text-[14px]">Open control room <ArrowRight size={16} /></a>
+        <a href={appUrl(city.name)} className="btn-primary !px-4 !py-2.5 text-[14px]">Open control room <ArrowRight size={16} /></a>
       </nav>
     </header>
   );
@@ -67,22 +86,22 @@ function Nav() {
 function LiveBadge() {
   const h = useHealth();
   const engine = h !== 'loading' && h !== 'offline' && h?.mode === 'live' ? h : null;
-  const live = engine !== null;
   return (
     <span className="inline-flex items-center gap-2 rounded-full bg-white px-3.5 py-1.5 text-[13px] font-medium text-ink-2 shadow-[0_0_0_1px_#DADDE1]">
       <span className="relative flex h-2 w-2">
-        {live && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />}
-        <span className={`relative inline-flex h-2 w-2 rounded-full ${live ? 'bg-emerald-500' : 'bg-slate'}`} />
+        {engine && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />}
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${engine ? 'bg-emerald-500' : 'bg-slate'}`} />
       </span>
       {h === 'loading' ? 'Checking engine…'
-        : engine ? `Engine live · ${fmt(engine.fleet)} cars · ${engine.demand}`
-          : 'Runs in your browser on real NYC taxi demand'}
+        : engine ? `Engine live · ${engine.city_label?.split(' street')[0] ?? ''} · ${fmt(engine.fleet)} cars · ${engine.demand}`
+          : `Runs in your browser on real ${CITIES.map((c) => c.short).join(' and ')} data`}
     </span>
   );
 }
 
 function Hero() {
-  const steady = cut('steady');
+  const { city } = useCity();
+  const b = city.bench;
   return (
     <section className="relative overflow-hidden">
       <div className="grid-bg pointer-events-none absolute inset-0" aria-hidden />
@@ -97,21 +116,24 @@ function Hero() {
           </Reveal>
           <Reveal delay={0.1}>
             <p className="mt-6 max-w-[34rem] text-[18px] leading-relaxed text-ink-2">
-              ORCA is a real-time dispatch engine for ride-hailing fleets. It scores every car for every rider on drive time by
-              road, acceptance, GPS health and upcoming demand, then solves the whole city at once. On Manhattan’s real streets and
-              real taxi demand it cuts the average wait by <b className="text-ink">{pct(steady)}</b> against the standard nearest-car rule.
+              ORCA is a real-time dispatch engine for ride-hailing fleets. It scores every car for every rider on drive time by road,
+              acceptance, GPS health and upcoming demand, then solves the whole city at once. It runs on the real streets, buildings and riders
+              of {CITIES.map((c) => c.short).join(' and ')}
+              {b && <> and, in {city.short}, cuts the average wait by <b className="text-ink">{pct(b.cut('steady'))}</b> against the standard nearest-car rule</>}.
             </p>
           </Reveal>
-          <Reveal delay={0.15} className="mt-8 flex flex-wrap gap-3">
-            <a href={APP} className="btn-taxi text-[16px]">Launch the live control room <ArrowRight size={18} /></a>
-            <a href="#tour" className="btn-ghost text-[16px]"><Play size={16} fill="currentColor" /> Watch the 100-second tour</a>
+          <Reveal delay={0.15} className="mt-8 flex flex-wrap items-center gap-3">
+            <a href={appUrl(city.name)} className="btn-taxi text-[16px]">Launch the {city.short} control room <ArrowRight size={18} /></a>
+            <a href="#tour" className="btn-ghost text-[16px]"><Play size={16} fill="currentColor" /> Watch the tour</a>
           </Reveal>
+          <Reveal delay={0.18} className="mt-5 sm:hidden"><CitySwitch /></Reveal>
           <Reveal delay={0.2}>
             <dl className="mt-12 grid max-w-[34rem] grid-cols-3 gap-6 border-t border-line pt-6">
               {[
-                [`${Math.round(agg('steady', 'orca_learned', 'mean'))} s`, 'mean wait with ORCA'],
-                [`${Math.round(agg('steady', 'nearest', 'mean'))} s`, 'with nearest car'],
-                [fmt(cityFacts.intersections), 'real Manhattan intersections'],
+                ...(b ? [[`${Math.round(b.agg('steady', 'orca_learned', 'mean'))} s`, 'mean wait with ORCA'],
+                  [`${Math.round(b.agg('steady', 'nearest', 'mean'))} s`, 'with nearest car']] : []),
+                [fmt(city.facts?.intersections ?? 0), `real ${city.short} intersections`],
+                ...(b ? [] : [[fmt(city.facts?.buildings ?? 0), 'real buildings'], [String(city.facts?.zones ?? 0), 'official zones']]),
               ].map(([v, l]) => (
                 <div key={l}><dt className="sr-only">{l}</dt><dd className="num wide text-[30px] font-extrabold leading-none">{v}</dd>
                   <p className="mt-2 text-[13px] leading-snug text-ink-3">{l}</p></div>
@@ -133,10 +155,10 @@ function Hero() {
 }
 
 const signals = [
-  { icon: Route, t: 'Drive time by road', b: 'A gradient-boosted ETA model fed by live zone speeds, not straight-line distance.' },
+  { icon: Route, t: 'Drive time by road', b: 'A gradient-boosted ETA model on top of the fastest path through the real street network.' },
   { icon: Users, t: 'Will the driver accept?', b: 'A per-driver Beta-Bernoulli estimate learned online from every offer and decline.' },
   { icon: Satellite, t: 'Is the GPS fresh?', b: 'Cars that went silent are not offered rides they cannot hear about.' },
-  { icon: Radar, t: 'What is coming next', b: 'A Poisson demand forecaster keeps the last spare car in a zone about to get busy.' },
+  { icon: Radar, t: 'What is coming next', b: 'A Poisson demand forecaster over official zones keeps the last spare car where it will be needed.' },
 ];
 
 function How() {
@@ -158,7 +180,7 @@ function How() {
         <div className="mt-16 grid gap-10 md:grid-cols-3">
           {[
             { icon: Clock3, t: 'Batch every 3 seconds', b: 'Requests are gathered briefly and solved together with the Hungarian algorithm, so one rider’s best car is not taken by someone with other good options.' },
-            { icon: Workflow, t: 'Rebalance between batches', b: 'Idle cars drift toward zones the forecaster says will run short, before the requests arrive.' },
+            { icon: Workflow, t: 'Rebalance, and never let a rider time out', b: 'Idle cars drift toward zones forecast to run short, and a give-up guard prefers a car that arrives in time for riders who have waited long.' },
             { icon: ShieldCheck, t: 'A fair, head-to-head test', b: 'ORCA and the nearest-car rule see the same riders, traffic and incidents. Every difference comes from the decisions alone.' },
           ].map((s, i) => (
             <Reveal key={s.t} delay={i * 0.06} className="flex gap-4">
@@ -173,33 +195,47 @@ function How() {
 }
 
 function Results() {
-  const e = models.eta, d = models.demand;
+  const { city } = useCity();
+  const b = city.bench;
   return (
     <section id="results" className="scroll-mt-20">
       <div className="mx-auto max-w-page px-5 py-24 md:px-8">
-        <Reveal><p className="eyebrow">Results</p>
-          <h2 className="wide mt-3 max-w-3xl text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[48px]">
-            {pct(cut('steady'))} shorter waits on an ordinary day. {pct(cut('stress'))} when the city breaks.</h2>
-          <p className="mt-5 max-w-2xl text-[17px] leading-relaxed text-ink-2">
-            {benchConfig.minutes} simulated minutes per run, {fmt(benchConfig.fleet)} cars per dispatcher, {benchConfig.seeds.length} independent
-            seeds, both dispatchers on identical riders, traffic and drivers. The stress run injects a demand spike and a GPS outage at minute 20 and
-            a major accident at minute 40.{benchConfig.tuned_weights ? ' ORCA’s scoring weights were tuned on separate seeds the benchmark never uses.' : ''}
-          </p>
-          {cutCI('steady') && (
-            <p className="mt-3 text-[14px] text-ink-3">
-              95% confidence intervals over seeds: {pctRange(cutCI('steady'))} shorter waits on a steady day, {pctRange(cutCI('stress'))} under stress
-              {benchTests?.steady?.learned_vs_nearest != null &&
-                ` (paired Wilcoxon test, p ${pFmt(Math.max(benchTests.steady.learned_vs_nearest, benchTests.stress?.learned_vs_nearest ?? 0))})`}.
-              The dark mark on each bar is the interval of the mean.
-            </p>
-          )}</Reveal>
-        <Reveal delay={0.05} className="mt-12"><BenchmarkChart /></Reveal>
-        <Reveal delay={0.05} className="mt-6"><FullDayChart /></Reveal>
+        <Reveal className="flex flex-wrap items-end justify-between gap-4">
+          <p className="eyebrow">Results · {city.long}</p><CitySwitch compact />
+        </Reveal>
+        {!b ? (
+          <Reveal><p className="mt-6 text-[17px] text-ink-2">The {city.short} benchmark has not been run yet (python -m orca.bench --city {city.name}).</p></Reveal>
+        ) : (
+          <>
+            <Reveal>
+              <h2 className="wide mt-3 max-w-3xl text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[48px]">
+                {pct(b.cut('steady'))} shorter waits on an ordinary day. {pct(b.cut('stress'))} when the city breaks.</h2>
+              <p className="mt-5 max-w-2xl text-[17px] leading-relaxed text-ink-2">
+                {b.config.minutes} simulated minutes per run, {fmt(b.config.fleet)} cars per dispatcher, {b.config.seeds.length} independent seeds, both
+                dispatchers on identical riders, traffic and drivers. The stress run injects a demand spike and a GPS outage at minute 20 and a major
+                accident at minute 40.{b.config.tuned_weights ? ' ORCA’s scoring weights were tuned on separate seeds the benchmark never uses.' : ''}
+              </p>
+              {b.cutCI('steady') && (
+                <p className="mt-3 text-[14px] text-ink-3">
+                  95% confidence intervals over seeds: {pctRange(b.cutCI('steady'))} shorter waits on a steady day, {pctRange(b.cutCI('stress'))} under stress
+                  {b.tests?.steady?.learned_vs_nearest != null &&
+                    ` (paired Wilcoxon test, p ${pFmt(Math.max(b.tests.steady.learned_vs_nearest, b.tests.stress?.learned_vs_nearest ?? 0))})`}.
+                  The dark mark on each bar is the interval of the mean.
+                </p>
+              )}
+            </Reveal>
+            <Reveal delay={0.05} className="mt-12"><BenchmarkChart b={b} /></Reveal>
+            <Reveal delay={0.05} className="mt-6"><FullDayChart b={b} /></Reveal>
+          </>
+        )}
         <div className="mt-6 grid gap-6 md:grid-cols-2">
           {[
-            { icon: Gauge, t: 'Pickup ETA', n: e.n, rows: [[e.base?.model, e.base?.mae], [e.heur?.model, e.heur?.mae], ['Gradient boosting (ORCA)', e.ours?.mae]], unit: 's', what: 'mean absolute error, seconds' },
-            { icon: Activity, t: 'Rides per zone, next 5 minutes', n: d.n, rows: [[d.naive?.model, d.naive?.mae], [d.base?.model, d.base?.mae], ['Poisson gradient boosting (ORCA)', d.ours?.mae]], unit: '', what: 'mean absolute error, rides' },
-          ].map((m, i) => (
+            city.eta && { icon: Gauge, t: 'Pickup ETA on real streets', n: city.eta.n, unit: 's', what: 'mean absolute error, seconds',
+              rows: [[city.eta.heur?.model, city.eta.heur?.mae], ['Gradient boosting (ORCA)', city.eta.ours?.mae]] },
+            city.demand && { icon: Activity, t: `Rides per ${city.name === 'manhattan' ? 'taxi zone' : 'neighbourhood'}, next 5 minutes`, n: city.demand.n, unit: '',
+              what: 'mean absolute error, rides',
+              rows: [[city.demand.naive?.model, city.demand.naive?.mae], [city.demand.base?.model, city.demand.base?.mae], ['Poisson gradient boosting (ORCA)', city.demand.ours?.mae]] },
+          ].filter((m): m is NonNullable<typeof m> => Boolean(m)).map((m, i) => (
             <Reveal key={m.t} delay={i * 0.06} className="card p-6">
               <div className="flex items-center gap-3"><m.icon size={20} /><h3 className="text-[17px] font-bold">{m.t}</h3></div>
               <p className="mt-1 text-[13px] text-ink-3">{fmt(m.n)} examples, tested on data later in time than training · {m.what}</p>
@@ -221,36 +257,89 @@ function Results() {
   );
 }
 
+function RealityCheck() {
+  const nyc = CITIES.find((c) => c.name === 'manhattan');
+  const w = nyc?.waits, b = nyc?.bench;
+  if (!w || !b) return null;
+  const orca = b.agg('steady', 'orca_learned', 'mean'), near = b.agg('steady', 'nearest', 'mean');
+  const bars = [
+    { label: 'Uber & Lyft, real (Sept 2026)', v: w.mean_on_scene_s, tone: '#2D5BE3' },
+    { label: 'Nearest-car rule, simulated', v: near, tone: '#8B929B' },
+    { label: 'ORCA, simulated', v: orca, tone: '#FFC20A' },
+  ];
+  const max = Math.max(...bars.map((x) => x.v)) * 1.1;
+  return (
+    <section id="reality" className="scroll-mt-20 border-t border-line">
+      <div className="mx-auto grid max-w-page gap-12 px-5 py-24 md:grid-cols-[0.9fr_1.1fr] md:px-8">
+        <Reveal>
+          <p className="eyebrow">Reality check</p>
+          <h2 className="wide mt-3 text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[44px]">How long do real riders wait?</h2>
+          <p className="mt-5 text-[17px] leading-relaxed text-ink-2">
+            The TLC records, for every Uber and Lyft trip, when the rider asked and when the driver arrived. Across {fmt(w.trips)} Manhattan rides
+            in September 2026, the driver was on scene after {mmss(w.mean_on_scene_s)} on average ({mmss(w.on_scene_p90)} for the slowest
+            tenth). That anchors the simulation: its waits are the same order of magnitude as reality.
+          </p>
+          <p className="mt-4 flex items-start gap-2 rounded-xl bg-sky/70 p-4 text-[14px] leading-relaxed text-ink-2">
+            <Scale size={18} className="mt-0.5 shrink-0" />
+            <span>Not a like-for-like race: the platforms run thousands of drivers and pool rides, the simulation runs {fmt(b.config.fleet)} cars per
+              dispatcher on a sampled share of the demand. The comparison that matters is ORCA against the nearest-car rule on identical riders.</span>
+          </p>
+        </Reveal>
+        <Reveal delay={0.08} className="card p-6">
+          <p className="text-[17px] font-bold">Mean wait, request to car at the rider · Manhattan, weekday</p>
+          <div className="mt-6 space-y-5">
+            {bars.map((x, i) => (
+              <div key={x.label}>
+                <div className="mb-1.5 flex justify-between text-[14px]"><span className="text-ink-2">{x.label}</span><b className="num">{mmss(x.v)}</b></div>
+                <div className="h-3 overflow-hidden rounded-full bg-sky">
+                  <motion.div className="h-full rounded-full" style={{ background: x.tone }} initial={{ width: 0 }}
+                    whileInView={{ width: `${(x.v / max) * 100}%` }} viewport={{ once: true }} transition={{ duration: 0.9, delay: i * 0.1 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-5 text-[13px] text-ink-3">Real: {w.source}. Simulated: steady-demand benchmark, {b.config.seeds.length} seeds.</p>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
 function RealData() {
+  const { city } = useCity();
+  const f = city.facts, t = city.traffic, cal = city.calibration;
   return (
     <section id="data" className="scroll-mt-20 border-y border-line bg-white">
       <div className="mx-auto grid max-w-page gap-12 px-5 py-24 md:grid-cols-[0.9fr_1.1fr] md:px-8">
         <Reveal>
-          <p className="eyebrow">Real data</p>
+          <div className="flex flex-wrap items-center justify-between gap-3"><p className="eyebrow">Real data · {city.short}</p><CitySwitch compact /></div>
           <h2 className="wide mt-3 text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[44px]">Real streets, real buildings, real riders.</h2>
           <p className="mt-5 text-[17px] leading-relaxed text-ink-2">
-            Cars drive Manhattan’s actual street network from OpenStreetMap, one-way rules included, past {fmt(cityFacts.buildings ?? 0)} buildings
-            from NYC’s official footprints at their surveyed heights. Riders come from the NYC Taxi &amp; Limousine Commission trip records, and
-            street speeds are fitted to real trip times: the median simulated trip is within {Math.round(Math.abs(calibration.median_sim_s_after - calibration.median_real_s))} s
-            of the median real one.
+            Cars drive {city.short}’s actual street network from OpenStreetMap, one-way rules included, past {fmt(f?.buildings ?? 0)} buildings from
+            the city’s official footprints, each extruded from its real outline. Riders come from {city.dataLabel} trip records, and street speeds
+            come from those trips too, per zone and per hour{cal ? <>; fitted to real trip times, the median simulated trip matches the median real one
+            ({mmss(cal.median_real_s)})</> : null}.
           </p>
           <dl className="mt-8 grid grid-cols-2 gap-x-6 gap-y-7">
             {[
-              [fmt(realData.raw_trips), 'trips in the January 2015 TLC file'],
-              [fmt(realData.kept_trips), 'Manhattan weekday trips replayed'],
-              [`${fmt(cityFacts.street_km)} km`, `of drivable street, ${Math.round(cityFacts.one_way_share * 100)}% of it one-way`],
-              [String(realData.zones), 'official taxi zones, used for forecasting'],
+              ...(t ? [[fmt(t.kept_trips), `weekday trips, ${t.days} days`]] : []),
+              [`${fmt(f?.street_km ?? 0)} km`, `of drivable street, ${Math.round((f?.one_way_share ?? 0) * 100)}% one-way`],
+              [fmt(f?.buildings ?? 0), `buildings, tallest ${f?.tallest_m ?? 0} m`],
+              [String(f?.zones ?? 0), city.name === 'manhattan' ? 'official taxi zones' : 'official neighbourhoods'],
             ].map(([v, l]) => (
               <div key={l}><dd className="num wide text-[28px] font-extrabold leading-none">{v}</dd><dt className="mt-2 text-[14px] leading-snug text-ink-3">{l}</dt></div>
             ))}
           </dl>
-          <p className="mt-8 flex items-start gap-2 rounded-xl bg-sky/70 p-4 text-[14px] leading-relaxed text-ink-2">
+          {t?.services && (
+            <p className="mt-6 text-[14px] text-ink-3">Services replayed: {Object.entries(t.services).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ')}</p>
+          )}
+          <p className="mt-6 flex items-start gap-2 rounded-xl bg-sky/70 p-4 text-[14px] leading-relaxed text-ink-2">
             <Database size={18} className="mt-0.5 shrink-0" />
             <span>What is still simulated: individual car movement along the streets and driver behaviour (acceptance, response time). No public
-              dataset has live taxi GPS traces. Trips are placed within their real taxi zone, because the TLC publishes zones rather than exact points.</span>
+              dataset has live GPS traces. Trip records give zones or tract centres rather than exact points.</span>
           </p>
         </Reveal>
-        <div className="space-y-6"><Reveal delay={0.08}><HourlyChart /></Reveal><Reveal delay={0.1}><RealEtaCard /></Reveal></div>
+        <div className="space-y-6"><Reveal delay={0.08}><HourlyChart city={city} /></Reveal><Reveal delay={0.1}><RealEtaCard city={city} /></Reveal></div>
       </div>
     </section>
   );
@@ -263,10 +352,10 @@ function Tour() {
         <Reveal className="flex flex-wrap items-end justify-between gap-6">
           <div><p className="eyebrow">The tour</p>
             <h2 className="wide mt-3 text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[48px]">See it work in 100 seconds.</h2></div>
-          <p className="max-w-md text-[16px] text-ink-2">Narrated, with sound. Recorded straight from the control room’s guided tour. Turn your sound on.</p>
+          <p className="max-w-md text-[16px] text-ink-2">Narrated, with sound, recorded straight from the control room’s guided tour in Manhattan. Turn your sound on.</p>
         </Reveal>
         <Reveal delay={0.05} className="mt-10 overflow-hidden rounded-[24px] bg-ink shadow-[0_40px_80px_-40px_rgba(20,30,45,.6)]">
-          <video className="aspect-video w-full" controls preload="metadata" playsInline poster="/media/orca-tour-poster.jpg">
+          <video className="aspect-video w-full" controls preload="none" playsInline poster="/media/orca-tour-poster.jpg">
             <source src="/media/orca-tour.webm" type='video/webm; codecs="vp9, opus"' />
             <source src="/media/orca-tour.mp4" type="video/mp4" />
             <track kind="captions" src="/media/orca-tour.vtt" srcLang="en" label="English" default />
@@ -278,14 +367,16 @@ function Tour() {
 }
 
 function Stack() {
+  const { city } = useCity();
+  const total = (k: 'intersections' | 'buildings') => CITIES.reduce((a, c) => a + (c.facts?.[k] ?? 0), 0);
   const items = [
-    ['Python 3.12 · Starlette · Uvicorn', 'async API, Server-Sent Events at 10 Hz, Prometheus metrics'],
-    ['scikit-learn · SciPy · NumPy · pandas', 'gradient-boosted ETA and demand models, Hungarian matching'],
-    ['Apache Arrow / Parquet', 'ingest of the 12.7M-row TLC trip file'],
-    ['OpenStreetMap · NYC Open Data', `${fmt(cityFacts.intersections)} intersections, ${fmt(cityFacts.buildings ?? 0)} building footprints, own map projection`],
-    ['Hand-written WebGL2', `${fmt(cityFacts.buildings ?? 0)} instanced buildings, camera-following shadow map, up to 4,000 cars`],
+    ['Python 3.12 · Starlette · Uvicorn', 'async API, Server-Sent Events at 10 Hz, Prometheus metrics, hardened middleware'],
+    ['scikit-learn · SciPy · NumPy · pandas', 'gradient-boosted ETA and demand models, Hungarian matching, shortest paths'],
+    ['Apache Arrow / Parquet', 'ingest of 20M+ real trips a month'],
+    ['OpenStreetMap · city open data', `${fmt(total('intersections'))} intersections and ${fmt(total('buildings'))} building footprints in ${CITIES.length} cities, own map projections`],
+    ['Hand-written WebGL2', 'extruded real footprints, day and night lighting, camera-following shadow map, up to 4,000 cars'],
     ['React · TypeScript · Vite · Tailwind', 'this home page'],
-    ['Docker · SQLite trip ledger', 'one-command deploy, queryable trip history'],
+    ['GitHub Actions · Docker · Playwright', 'lint, unit, real-data, browser and visual-regression tests on every push'],
   ];
   return (
     <section className="border-t border-line bg-ink text-white">
@@ -301,31 +392,48 @@ function Stack() {
         </div>
         <Reveal className="mt-16 flex flex-col items-start justify-between gap-6 rounded-3xl bg-taxi p-8 text-ink md:flex-row md:items-center md:p-10">
           <div><h3 className="wide text-[28px] font-extrabold leading-tight md:text-[34px]">Run the city yourself.</h3>
-            <p className="mt-2 max-w-xl text-[16px] text-ink-2">Switch dispatchers, cause outages and accidents, and click any rider to see why ORCA chose that car.</p></div>
-          <a href={APP} className="btn-primary text-[16px]"><MapIcon size={18} /> Open the control room</a>
+            <p className="mt-2 max-w-xl text-[16px] text-ink-2">Pick a city, switch dispatchers, cause outages and accidents, and click any rider to see why ORCA chose that car.</p></div>
+          <div className="flex flex-wrap gap-3">
+            {CITIES.map((c) => (
+              <a key={c.name} href={appUrl(c.name)} className={c.name === city.name ? 'btn-primary text-[16px]' : 'btn-ghost text-[16px]'}>
+                <MapIcon size={18} /> {c.short}
+              </a>
+            ))}
+          </div>
         </Reveal>
       </div>
       <footer className="mx-auto flex max-w-page flex-wrap items-center justify-between gap-4 border-t border-white/10 px-5 py-8 text-[13px] text-white/50 md:px-8">
         <span className="flex items-center gap-2"><Sparkles size={14} /> ORCA real-time dispatch engine</span>
-        <span>Streets © OpenStreetMap contributors. Buildings: NYC Open Data. Trips: NYC Taxi &amp; Limousine Commission. Sound: original score.</span>
+        <span>Streets © OpenStreetMap contributors. {CITIES.map((c) => `${c.short}: ${c.credit}`).join(' ')} Sound: original score.</span>
       </footer>
     </section>
   );
 }
 
 export default function App() {
+  const initial = new URLSearchParams(location.search).get('city');
+  const [name, setName] = useState(CITIES.some((c) => c.name === initial) ? (initial as string) : CITIES[0]?.name);
+  const value = useMemo(() => ({
+    city: CITIES.find((c) => c.name === name) ?? CITIES[0],
+    setCity: (n: string) => {
+      setName(n);
+      const u = new URL(location.href); u.searchParams.set('city', n); history.replaceState(null, '', u);
+    },
+  }), [name]);
+  if (!CITIES.length) return <p className="p-8">No city has been built yet: run scripts/build_streets.py.</p>;
   return (
-    <>
+    <CityProvider value={value}>
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-white focus:p-2">Skip to content</a>
       <Nav />
       <main id="main">
         <Hero />
         <How />
         <Results />
+        <RealityCheck />
         <RealData />
         <Tour />
         <Stack />
       </main>
-    </>
+    </CityProvider>
   );
 }

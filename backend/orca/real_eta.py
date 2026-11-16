@@ -26,7 +26,6 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 
 from .models import ARTIFACTS
 
-REAL = Path(__file__).resolve().parents[1] / "data" / "nyc_tlc_2015-01_manhattan.parquet"
 FEATURES = ["pu_zone", "do_zone", "dist_line_m", "dist_zones_m", "same_zone", "hour", "minute_of_day_sin",
             "minute_of_day_cos", "weekday"]
 
@@ -53,8 +52,12 @@ def build(df: pd.DataFrame, centroids: pd.DataFrame) -> pd.DataFrame:
     })
 
 
-def train(args=None, path: Path = REAL, test_days: int = 4):
+def train(args=None, path: Path | None = None, test_days: int = 4):
+    from . import city as G
+    from . import cityspec
     t0 = time.time()
+    name = G.current().name
+    path = Path(path or (args.data if args is not None and getattr(args, "data", None) else cityspec.trips_file(name)))
     df = pd.read_parquet(path)
     df["dur"] = (df.tpep_dropoff_datetime - df.tpep_pickup_datetime).dt.total_seconds()
     df = df[df.dur.between(60, 2 * 3600)].reset_index(drop=True)
@@ -100,14 +103,14 @@ def train(args=None, path: Path = REAL, test_days: int = 4):
         print(f"  {r['model']:<44}{r['mae']:8.0f}s{r['median_abs_err']:8.0f}s{r['p90_abs_err']:8.0f}s{r['mape'] * 100:7.1f}%")
     # error by hour for the home page chart
     by_hour = pd.DataFrame({"h": Xte.hour.values, "m": np.abs(pred - yte), "b": np.abs(b3 - yte)}).groupby("h").mean()
-    meta = dict(task="eta_real", source="NYC TLC yellow taxi, January 2015, Manhattan weekdays", features=FEATURES,
+    meta = dict(task="eta_real", city=name, source=cityspec.get(name).data_note if name in cityspec.CITIES else str(path), features=FEATURES,
                 target="log trip duration", n_train=len(ytr), n_test=len(yte), train_days=[str(days[0]), str(days[-test_days - 1])],
                 test_days=[str(split), str(days[-1])], results=rows,
                 mae_by_hour=dict(orca=[round(float(v), 1) for v in by_hour.m], pair_hour=[round(float(v), 1) for v in by_hour.b]),
                 note="Positions inside a zone are reconstructed (the TLC publishes zone IDs), so features use zone-level geometry.",
                 trained_at=time.strftime("%Y-%m-%d %H:%M"))
     ARTIFACTS.mkdir(exist_ok=True)
-    joblib.dump(dict(model=model, meta=meta, centroids=centroids), ARTIFACTS / "eta_real.joblib")
-    (ARTIFACTS / "eta_real_metrics.json").write_text(json.dumps(meta, indent=2))
-    print(f"\nSaved artifacts/eta_real.joblib ({time.time() - t0:.0f}s)")
+    joblib.dump(dict(model=model, meta=meta, centroids=centroids), ARTIFACTS / f"eta_real_{name}.joblib")
+    (ARTIFACTS / f"eta_real_metrics_{name}.json").write_text(json.dumps(meta, indent=2))
+    print(f"\nSaved artifacts/eta_real_{name}.joblib ({time.time() - t0:.0f}s)")
     return meta

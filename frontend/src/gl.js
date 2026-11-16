@@ -2,7 +2,8 @@
 // ORCA renderer: a small purpose-built WebGL2 engine.
 // Instanced meshes, a soft shadow-mapped sun, hemisphere ambient with a cheap
 // ground-contact occlusion term, screen-space fat lines, a water surface and
-// a sky gradient. No 3D library: everything the city needs and nothing else.
+// a sky gradient. Large static meshes are split into tiles that are culled
+// against the view and drawn front to back. No 3D library.
 // =============================================================================
 
 // ---------------------------------------------------------------- math (column-major)
@@ -62,6 +63,45 @@ const M4 = {
     return [(m[0] * x + m[4] * y + m[8] * z + m[12]) / w, (m[1] * x + m[5] * y + m[9] * z + m[13]) / w, (m[2] * x + m[6] * y + m[10] * z + m[14]) / w, w];
   },
 };
+// The six planes of a view-projection matrix, each [a, b, c, d] with inside >= 0.
+function frustumPlanes(m) {
+  const row = (i) => [m[i], m[4 + i], m[8 + i], m[12 + i]], r3 = row(3), out = [];
+  for (let i = 0; i < 3; i++) { const r = row(i); out.push(r3.map((v, k) => v + r[k]), r3.map((v, k) => v - r[k])); }
+  return out;
+}
+function boxVisible(planes, lo, hi) {
+  for (const [a, b, c, d] of planes) if (a * (a > 0 ? hi[0] : lo[0]) + b * (b > 0 ? hi[1] : lo[1]) + c * (c > 0 ? hi[2] : lo[2]) + d < 0) return false;
+  return true;
+}
+// Reorder a static mesh's triangles by square ground tile (a counting sort); each tile keeps its index range and
+// bounding box. With a per-vertex `minor` flag, a tile's major triangles come first: drawing only `major` indices
+// shows the tile without its minor ones (distance LOD).
+function tileIndices(pos, idx, size, minor) {
+  const nt = idx.length / 3, bucket = new Int32Array(nt), ids = new Map();
+  for (let t = 0; t < nt; t++) {
+    const a = idx[3 * t] * 3, b = idx[3 * t + 1] * 3, c = idx[3 * t + 2] * 3;
+    const tx = Math.floor((pos[a] + pos[b] + pos[c]) / (3 * size)), tz = Math.floor((pos[a + 2] + pos[b + 2] + pos[c + 2]) / (3 * size));
+    const k = (tz + 1024) * 2048 + (tx + 1024);
+    let id = ids.get(k); if (id === undefined) { id = ids.size; ids.set(k, id); }
+    bucket[t] = id * 2 + (minor && minor[idx[3 * t]] ? 1 : 0);
+  }
+  const nb = ids.size * 2, count = new Int32Array(nb), start = new Int32Array(nb);
+  for (let t = 0; t < nt; t++) count[bucket[t]]++;
+  for (let i = 1; i < nb; i++) start[i] = start[i - 1] + count[i - 1];
+  const tiles = [];
+  for (let id = 0; id < nb / 2; id++) {
+    tiles.push({ first: start[2 * id] * 3, major: count[2 * id] * 3, count: (count[2 * id] + count[2 * id + 1]) * 3, lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] });
+  }
+  const out = new Uint32Array(idx.length), fill = start.slice();
+  for (let t = 0; t < nt; t++) {
+    const k = bucket[t], o = fill[k]++ * 3, T = tiles[k >> 1], lo = T.lo, hi = T.hi;
+    for (let j = 0; j < 3; j++) {
+      const v = idx[3 * t + j]; out[o + j] = v;
+      for (let q = 0; q < 3; q++) { const x = pos[v * 3 + q]; if (x < lo[q]) lo[q] = x; if (x > hi[q]) hi[q] = x; }
+    }
+  }
+  return { idx: out, tiles: tiles.filter((T) => T.count) };
+}
 const srgb = (hex) => {
   const n = parseInt(hex.replace('#', ''), 16), f = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
   return [f((n >> 16) & 255), f((n >> 8) & 255), f(n & 255)];
@@ -72,19 +112,20 @@ const srgb = (hex) => {
 class Geo {
   constructor() { this.pos = []; this.nor = []; this.col = []; this.mask = []; this.idx = []; }
   get count() { return this.pos.length / 3; }
+  vert(p, nx, ny, nz, c, mask) { this.pos.push(p[0], p[1], p[2]); this.nor.push(nx, ny, nz); this.col.push(c[0], c[1], c[2]); this.mask.push(mask); }
   quad(a, b, c, d, color, mask = 0) {  // a,b,c,d counter-clockwise seen from outside
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = d[0] - a[0], vy = d[1] - a[1], vz = d[2] - a[2];
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
     const o = this.count;
-    for (const p of [a, b, c, d]) { this.pos.push(...p); this.nor.push(nx, ny, nz); this.col.push(...color); this.mask.push(mask); }
+    this.vert(a, nx, ny, nz, color, mask); this.vert(b, nx, ny, nz, color, mask); this.vert(c, nx, ny, nz, color, mask); this.vert(d, nx, ny, nz, color, mask);
     this.idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
     return this;
   }
   tri(a, b, c, color, mask = 0) {
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1;
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
     const o = this.count;
-    for (const p of [a, b, c]) { this.pos.push(...p); this.nor.push(nx / l, ny / l, nz / l); this.col.push(...color); this.mask.push(mask); }
+    this.vert(a, nx, ny, nz, color, mask); this.vert(b, nx, ny, nz, color, mask); this.vert(c, nx, ny, nz, color, mask);
     this.idx.push(o, o + 1, o + 2);
     return this;
   }
@@ -141,22 +182,23 @@ class Geo {
 const VS_MESH = `#version 300 es
 layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor; layout(location=2) in vec3 aCol; layout(location=3) in float aMask;
 layout(location=4) in vec3 iOff; layout(location=5) in vec3 iScale; layout(location=6) in float iRot; layout(location=7) in vec4 iCol;
+layout(location=8) in float aId;
 uniform mat4 uVP; uniform mat4 uLVP;
-out vec3 vW; out vec3 vN; out vec3 vCol; out float vA; out vec4 vL; out vec3 vLoc; out vec3 vSc;
+out vec3 vW; out vec3 vN; out vec3 vCol; out float vA; out vec4 vL; out vec3 vLoc; out vec3 vSc; out float vId;
 void main(){
   float c = cos(iRot), s = sin(iRot);
   vec3 p = aPos * iScale;
   vec3 w = vec3(c*p.x + s*p.z, p.y, -s*p.x + c*p.z) + iOff;
   vec3 n = normalize(aNor / iScale);
   vN = vec3(c*n.x + s*n.z, n.y, -s*n.x + c*n.z);
-  vW = w; vCol = mix(aCol, iCol.rgb, aMask); vA = iCol.a; vL = uLVP * vec4(w, 1.0); vLoc = aPos; vSc = iScale;
+  vW = w; vCol = mix(aCol, iCol.rgb, aMask); vA = iCol.a; vL = uLVP * vec4(w, 1.0); vLoc = aPos; vSc = iScale; vId = aId;
   gl_Position = uVP * vec4(w, 1.0);
 }`;
 const FS_MESH = `#version 300 es
 precision highp float; precision highp sampler2DShadow;
-in vec3 vW; in vec3 vN; in vec3 vCol; in float vA; in vec4 vL; in vec3 vLoc; in vec3 vSc;
-uniform vec3 uSun, uSunCol, uSky, uGround, uCam, uFog; uniform vec2 uFogR;
-uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO; uniform int uPcf;
+in vec3 vW; in vec3 vN; in vec3 vCol; in float vA; in vec4 vL; in vec3 vLoc; in vec3 vSc; in float vId;
+uniform vec3 uSun, uSunCol, uSky, uGround, uCam, uFog, uGlow; uniform vec2 uFogR;
+uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO, uNight; uniform int uPcf;
 uniform sampler2DShadow uShadow;
 out vec4 outColor;
 float shadowAt(vec4 l){
@@ -169,15 +211,36 @@ float shadowAt(vec4 l){
   return s / n;
 }
 vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+float hash3(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
 void main(){
   vec3 col = vCol;
   if (uUnlit < 0.5) {
     vec3 n = normalize(vN);
     float ndl = max(dot(n, uSun), 0.0);
-    float sh = uShadowOn > 0.5 ? shadowAt(vL) : 1.0;
+    float sh = uShadowOn > 0.5 && ndl > 0.0 ? shadowAt(vL) : 1.0;           // faces turned from the sun need no lookup
     vec3 amb = mix(uGround, uSky, n.y * 0.5 + 0.5);
     float ao = mix(1.0 - uAO, 1.0, smoothstep(0.0, 3.5, vW.y + 0.2));
-    if (uFacade > 0.5) {
+    vec3 glowAdd = vec3(0.0);
+    if (uFacade > 1.5) {
+      // Real footprints: floors every 3.6 m (0.12 units), window bays along each wall in world space.
+      float wall = 1.0 - abs(n.y);
+      float d = distance(uCam, vW);
+      float fade = 1.0 - smoothstep(60.0, 260.0, d);                          // detail fades with distance
+      if (wall > 0.5 && (fade > 0.0 || uNight > 0.01)) {
+        vec2 t = normalize(vec2(-n.z, n.x) + 1e-5);
+        float fy = vW.y / 0.12, fb = dot(vW.xz, t) / 0.11;
+        float floorLine = smoothstep(0.10, 0.0, abs(fract(fy) - 0.5) - 0.42) * step(0.2, vW.y);
+        vec2 cellF = fract(vec2(fb, fy)) - 0.5;
+        float glass = step(abs(cellF.x), 0.34) * step(abs(cellF.y), 0.30) * wall * step(0.15, vW.y);
+        col *= 1.0 - wall * fade * (0.06 * floorLine) - glass * fade * 0.05;
+        if (uNight > 0.01) {
+          // At night some windows are lit: which ones depends on the building and the cell.
+          float lit = step(0.58, hash3(vec3(floor(fb), floor(fy), vId * 97.0)));
+          vec3 warm = mix(vec3(1.0, 0.78, 0.48), vec3(0.85, 0.9, 1.0), step(0.85, hash3(vec3(floor(fy), vId * 13.0, floor(fb)))));
+          glowAdd = uNight * glass * lit * warm * mix(0.9, 0.45, smoothstep(80.0, 700.0, d));
+        }
+      }
+    } else if (uFacade > 0.5) {
       // Engraved floor lines and faint window bays on walls; brighter rims where edges catch light.
       vec3 m = vLoc * vSc;
       float wall = 1.0 - abs(n.y);
@@ -189,7 +252,7 @@ void main(){
       float rim = 1.0 - smoothstep(0.0, 0.18, min(e2.x, e2.y));
       col *= 1.0 + 0.10 * rim;
     }
-    col = col * (amb * ao + uSunCol * ndl * sh);
+    col = col * (amb * ao + uSunCol * ndl * sh) + glowAdd * 2.2 + uGlow * uNight * 0.35;
   }
   float d = distance(uCam, vW);
   vec3 c = aces(col * uExposure);
@@ -248,7 +311,7 @@ const INST_FLOATS = 11;   // off(3) scale(3) rot(1) color(4)
 
 class Renderer {
   constructor(canvas, opts = {}) {
-    const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+    const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: !!opts.preserve, powerPreference: 'high-performance' });
     if (!gl) throw new Error('WebGL2 is not available');
     this.gl = gl; this.canvas = canvas; this.layers = []; this.lineLayers = []; this.time = 0;
     this.pMesh = this.program(VS_MESH, FS_MESH);
@@ -259,7 +322,7 @@ class Renderer {
     this.pSky = this.program(VS_SKY, FS_SKY);
     // unit quad (for planes / sky) and line corner quad
     this.quadVao = this.vao([{ loc: 0, size: 2, data: new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1]) }]);
-    this.shadowSize = opts.shadowSize || 2048; this.pcf = opts.pcf ?? 2;
+    this.shadowSize = opts.shadowSize || 2048; this.pcf = opts.pcf ?? 1;
     this.shadowTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, this.shadowSize, this.shadowSize);
@@ -271,16 +334,9 @@ class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.shadowTex, 0);
     gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
-    // Static casters (buildings, trees) are drawn once into their own depth map; each frame that map is
-    // copied and only moving casters (cars, pins) are drawn on top.
-    this.staticRb = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, this.staticRb);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, this.shadowSize, this.shadowSize);
-    this.staticFbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.staticFbo);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.staticRb);
-    gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
-    this.staticDirty = true;
+    // Only static things (buildings, bridges, trees) cast shadows, so the shadow map is redrawn only
+    // when the light's view changes: the sun moves, or the shadowed area follows the camera.
+    this.shadowKey = '';
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.light = { dir: [0, 1, 0], color: [1, 1, 1], sky: [0.5, 0.5, 0.5], ground: [0.3, 0.3, 0.3] };
     this.fog = [0.9, 0.9, 0.9]; this.fogRange = [600, 1600]; this.exposure = 1; this.ao = 0.35;
@@ -310,8 +366,10 @@ class Renderer {
     const gl = this.gl, v = gl.createVertexArray(); gl.bindVertexArray(v);
     const put = (loc, size, arr) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); };
     put(0, 3, geo.pos); put(1, 3, geo.nor); put(2, 3, geo.col); put(3, 1, geo.mask);
+    if (geo.ids) put(8, 1, geo.ids); else { gl.disableVertexAttribArray(8); gl.vertexAttrib1f(8, 0); }
+    const tiled = opts.tile ? tileIndices(geo.pos, geo.idx, opts.tile, geo.minor) : null, idx = tiled ? tiled.idx : geo.idx;
     const big = geo.count > 65535, ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, big ? new Uint32Array(geo.idx) : new Uint16Array(geo.idx), gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, big ? Uint32Array.from(idx) : Uint16Array.from(idx), gl.STATIC_DRAW);
     const data = new Float32Array(max * INST_FLOATS), ibuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, ibuf); gl.bufferData(gl.ARRAY_BUFFER, data.byteLength, opts.dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
     const S = INST_FLOATS * 4;
@@ -319,8 +377,9 @@ class Renderer {
       gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, S, off * 4); gl.vertexAttribDivisor(loc, 1);
     });
     gl.bindVertexArray(null);
-    const layer = { vao: v, ibuf, data, max, n: 0, elems: geo.idx.length, itype: big ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
-      cast: !!opts.cast, dynamic: !!opts.dynamic, unlit: !!opts.unlit, facade: !!opts.facade, alpha: !!opts.alpha, shadowed: opts.shadowed !== false,
+    const layer = { vao: v, ibuf, data, max, n: 0, elems: geo.idx.length, itype: big ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, bpe: big ? 4 : 2,
+      tiles: tiled && tiled.tiles, lod: opts.lod || 0,
+      cast: !!opts.cast, dynamic: !!opts.dynamic, unlit: !!opts.unlit, facade: opts.facade ? +opts.facade : 0, glow: opts.glow || [0, 0, 0], alpha: !!opts.alpha, shadowed: opts.shadowed !== false,
       order: opts.order || 0, visible: true, dirty: true, depthWrite: opts.depthWrite !== false,
       set(i, x, y, z, sx, sy, sz, rot, r, g, b, a = 1) {
         const o = i * INST_FLOATS, d = this.data;
@@ -386,62 +445,79 @@ class Renderer {
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.shadowTex); gl.uniform1i(u.uShadow, 0);
     }
   }
+  // Draw a layer: tiled static meshes draw only the tiles inside `planes` (and nearer than `far`),
+  // front to back from `eye`; everything else is one instanced draw.
+  drawLayer(l, planes, eye, far) {
+    const gl = this.gl; gl.bindVertexArray(l.vao);
+    if (!l.tiles) { gl.drawElementsInstanced(gl.TRIANGLES, l.elems, l.itype, 0, l.n); return; }
+    const vis = [];
+    for (const t of l.tiles) {
+      if (!boxVisible(planes, t.lo, t.hi)) continue;
+      if (eye) {
+        const dx = Math.max(t.lo[0] - eye[0], 0, eye[0] - t.hi[0]), dz = Math.max(t.lo[2] - eye[2], 0, eye[2] - t.hi[2]);
+        t.d = dx * dx + dz * dz; if (t.d > far * far) continue;
+      }
+      vis.push(t);
+    }
+    if (eye) vis.sort((a, b) => a.d - b.d);
+    const lod2 = l.lod * l.lod;               // beyond `lod` units only a tile's major triangles are drawn
+    for (const t of vis) { const n = eye && l.lod && t.d > lod2 ? t.major : t.count; if (n) gl.drawElements(gl.TRIANGLES, n, l.itype, t.first * l.bpe); }
+    this.stats.tiles += vis.length;
+  }
   render(cam) {
     const gl = this.gl, L = this.light;
+    this.stats = { tiles: 0, shadow: false };
     for (const l of this.layers) this.upload(l, INST_FLOATS);
     for (const l of this.lineLayers) this.upload(l, 11);
-    // light camera: orthographic, looking along the sun direction at the city centre
-    const c = cam.lightCenter, R = cam.lightRadius;
-    const eye = [c[0] + L.dir[0] * 600, c[1] + L.dir[1] * 600, c[2] + L.dir[2] * 600];
+    // light camera: orthographic, looking along the sun at the area around the camera. The sun direction is
+    // quantised (about 0.3 degrees) so the shadow map is redrawn only when the light really moved.
+    const c = cam.lightCenter, R = cam.lightRadius, q = (v) => Math.round(v * 200) / 200;
+    const dir = L.dir.map(q), dl = Math.hypot(...dir), key = `${c[0]},${c[2]},${R},${dir}`;
+    const eye = [c[0] + (dir[0] / dl) * 600, c[1] + (dir[1] / dl) * 600, c[2] + (dir[2] / dl) * 600];
     const lvp = M4.mul(M4.ortho(-R, R, -R, R, 200, 1100), M4.lookAt(eye, c, [0, 1, 0]));
-    // shadow pass: cached static casters + per-frame dynamic casters
-    const S = this.shadowSize, casters = (dyn) => {
-      for (const l of this.layers) if (l.cast && l.visible && l.n && !!l.dynamic === dyn) { gl.bindVertexArray(l.vao); gl.drawElementsInstanced(gl.TRIANGLES, l.elems, l.itype, 0, l.n); }
-    };
-    gl.viewport(0, 0, S, S); gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
-    gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
-    gl.useProgram(this.pDepth.p); gl.uniformMatrix4fv(this.pDepth.u.uVP, false, lvp);
-    if (this.staticDirty) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.staticFbo); gl.clear(gl.DEPTH_BUFFER_BIT); casters(false); this.staticDirty = false;
+    if (key !== this.shadowKey) {
+      this.shadowKey = key; this.stats.shadow = true;
+      const S = this.shadowSize, planes = frustumPlanes(lvp);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo); gl.viewport(0, 0, S, S);
+      gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND); gl.clear(gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
+      gl.useProgram(this.pDepth.p); gl.uniformMatrix4fv(this.pDepth.u.uVP, false, lvp);
+      for (const l of this.layers) if (l.cast && l.visible && l.n) this.drawLayer(l, planes, null, 0);
+      gl.disable(gl.POLYGON_OFFSET_FILL);
     }
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.staticFbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.shadowFbo);
-    gl.blitFramebuffer(0, 0, S, S, 0, 0, S, S, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
-    casters(true);
-    gl.disable(gl.POLYGON_OFFSET_FILL);
-    // main pass
+    // main pass: opaque meshes first (front to back), so the sky and water only shade what is left uncovered
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LEQUAL); gl.disable(gl.BLEND);
     gl.clearColor(this.fog[0], this.fog[1], this.fog[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    // sky
-    gl.depthMask(false); gl.useProgram(this.pSky.p); gl.uniform3fv(this.pSky.u.uTop, this.skyTop); gl.uniform3fv(this.pSky.u.uBot, this.fog);
-    gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.depthMask(true);
-    // water
-    if (this.water) {
-      const P = this.pWater, u = P.u; gl.useProgram(P.p);
-      gl.uniformMatrix4fv(u.uVP, false, cam.vp); gl.uniform4fv(u.uRect, this.water.rect); gl.uniform1f(u.uY, this.water.y);
-      gl.uniform1f(u.uTime, this.time); gl.uniform3fv(u.uCam, cam.eye); gl.uniform3fv(u.uFog, this.fog); gl.uniform2fv(u.uFogR, this.fogRange);
-      gl.uniform3fv(u.uDeep, this.water.deep); gl.uniform3fv(u.uShallow, this.water.shallow); gl.uniform3fv(u.uSun, L.dir); gl.uniform4fv(u.uCity, this.water.city);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-    }
-    // opaque meshes
+    const planes = frustumPlanes(cam.vp), far = this.fogRange[1] + 40;
     gl.useProgram(this.pMesh.p); this.meshUniforms(this.pMesh, cam.vp, lvp, cam.eye);
     const u = this.pMesh.u;
+    gl.uniform1f(u.uNight, this.night || 0);
     const drawMesh = (l) => {
-      gl.uniform1f(u.uUnlit, l.unlit ? 1 : 0); gl.uniform1f(u.uFacade, l.facade ? 1 : 0); gl.uniform1f(u.uShadowOn, l.shadowed ? 1 : 0);
-      gl.bindVertexArray(l.vao); gl.drawElementsInstanced(gl.TRIANGLES, l.elems, l.itype, 0, l.n);
+      gl.uniform1f(u.uUnlit, l.unlit ? 1 : 0); gl.uniform1f(u.uFacade, l.facade); gl.uniform3fv(u.uGlow, l.glow); gl.uniform1f(u.uShadowOn, l.shadowed ? 1 : 0);
+      this.drawLayer(l, planes, cam.eye, far);
     };
-    gl.disable(gl.BLEND);
     for (const l of this.layers) if (!l.alpha && l.visible && l.n) drawMesh(l);
+    // water, then the sky at the far plane (depth-tested, so both skip covered pixels)
+    if (this.water) {
+      const P = this.pWater, w = P.u; gl.useProgram(P.p);
+      gl.uniformMatrix4fv(w.uVP, false, cam.vp); gl.uniform4fv(w.uRect, this.water.rect); gl.uniform1f(w.uY, this.water.y);
+      gl.uniform1f(w.uTime, this.time); gl.uniform3fv(w.uCam, cam.eye); gl.uniform3fv(w.uFog, this.fog); gl.uniform2fv(w.uFogR, this.fogRange);
+      gl.uniform3fv(w.uDeep, this.water.deep); gl.uniform3fv(w.uShallow, this.water.shallow); gl.uniform3fv(w.uSun, L.dir); gl.uniform4fv(w.uCity, this.water.city);
+      gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+    gl.depthMask(false); gl.useProgram(this.pSky.p); gl.uniform3fv(this.pSky.u.uTop, this.skyTop); gl.uniform3fv(this.pSky.u.uBot, this.fog);
+    gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
     // translucent: heat wash, rings, then lines
-    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
-    for (const pl of this.planes) if (pl.visible) {
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    for (const pl of this.planes) if (pl.visible && pl.alpha > 0.01) {
       const P = this.pHeat; gl.useProgram(P.p); gl.uniformMatrix4fv(P.u.uVP, false, cam.vp);
       gl.uniform4fv(P.u.uRect, pl.rect); gl.uniform1f(P.u.uY, pl.y); gl.uniform1f(P.u.uAlpha, pl.alpha);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, pl.tex.tex); gl.uniform1i(P.u.uTex, 1);
       gl.bindVertexArray(this.quadVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
-    gl.useProgram(this.pMesh.p); this.meshUniforms(this.pMesh, cam.vp, lvp, cam.eye);
+    gl.useProgram(this.pMesh.p);
     for (const l of this.layers) if (l.alpha && l.visible && l.n) { if (l.depthWrite) gl.depthMask(true); drawMesh(l); gl.depthMask(false); }
     gl.useProgram(this.pLine.p); gl.uniformMatrix4fv(this.pLine.u.uVP, false, cam.vp); gl.uniform2f(this.pLine.u.uRes, this.canvas.width / this.dpr, this.canvas.height / this.dpr);
     for (const l of this.lineLayers) if (l.visible && l.n) {

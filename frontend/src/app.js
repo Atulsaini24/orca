@@ -3,13 +3,26 @@
 // Bundled after sim.js (engine), gl.js (renderer) and city.js (model).
 // =============================================================================
 const CITY0 = city(), WX = CITY0.WX, WZ = CITY0.WZ, W = Math.max(WX, WZ), ZN = CITY0.N, MAX_AGENTS = 4000, MAX_REQ = 5000;
-const STREETS = CITY0.name === 'manhattan';
-// Camera targets at real places (by taxi zone) in Manhattan, or fractions of the grid city.
+const STREETS = CITY0.name !== 'grid';
+const CITY_SHORT = STREETS ? CITY0.short : 'the grid city';
+// Camera targets at real places, named by zone. The tour is written for Manhattan; other cities map its shots
+// onto equivalent places of their own.
+const PLACE_ALIAS = {
+  chicago: { 'Midtown North': 'River North', 'Midtown Center': 'Loop', 'Murray Hill': 'Streeterville', 'Times Sq/Theatre District': 'Loop',
+    'Union Sq': 'West Loop', 'Midtown East': 'Magnificent Mile' },
+};
 const place = (name, fx, fz) => {
-  if (STREETS) { const i = CITY0.zones.findIndex((z) => z.name === name); if (i >= 0) { const [x, z] = CITY0.zoneCenter(i); return [x, 0, z]; } }
+  if (STREETS) {
+    const want = (PLACE_ALIAS[CITY0.name] || {})[name] || name;
+    const i = CITY0.zones.findIndex((z) => z.name === want);
+    if (i >= 0) { const [x, z] = CITY0.zoneCenter(i); return [x, 0, z]; }
+    return [WX / 2, 0, WZ / 2];
+  }
   return [W * fx, 0, W * fz];
 };
 const $ = (s) => document.querySelector(s);
+const textCache = new Map();
+function setText(sel, t) { if (textCache.get(sel) !== t) { textCache.set(sel, t); $(sel).textContent = t; } }   // per-frame text: touch the DOM only on change
 const QS = new URLSearchParams(location.search);
 const CAPTURE = QS.has('capture');
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches && !CAPTURE;
@@ -38,7 +51,7 @@ class DemoSource extends Emitter {
     w.demandMult = this.demand;
     w.listeners.push((e) => { e.seq = ++this.seq; });
     w.log('sys', `Engine started in this browser with ${fmtInt(this.fleet)} cars per dispatcher.`);
-    if (REAL_ALL && REAL_ALL.city === CITY0.name) w.log('data', `Replaying real NYC taxi demand: ${REAL_ALL.source}. Hourly rate and traffic speed are measured; ${fmtInt(REAL_ALL.n)} sampled trips give the pickup and dropoff spots.`);
+    if (REAL_ALL && REAL_ALL.city === CITY0.name) w.log('data', `Replaying real ${CITY_SHORT} ride demand: ${REAL_ALL.source}. Hourly rate and traffic speed are measured; ${fmtInt(REAL_ALL.n)} sampled trips give the pickup and dropoff spots.`);
     for (let i = 0; i < 540; i++) this.sim.step(1);
   }
   start() { this.emit('status', 'demo'); this.emit('summary', this.summary()); }
@@ -80,7 +93,7 @@ class DemoSource extends Emitter {
       heat: w.heat, heatScale: 1, heat_w: w.HEAT_W, heat_h: w.HEAT_H,
       notable: rec ? { ...rec, zone_name: zoneName(rec.zone), timeline: this.timeline(rec.id) } : null,
       events: w.events.slice(-40).map((e) => ({ seq: e.seq || 0, clock: e.clock, type: e.type, msg: e.msg })),
-      engine: { speed: this.speed, paused: this.paused, fleet: sm.agents.length, demand: (REAL || (REAL_ALL && REAL_ALL.city === CITY0.name)) ? 'real NYC TLC taxi trips' : 'synthetic city demand', eta_model: 'stand-in', forecaster: 'EWMA with trend', solver: 'greedy' },
+      engine: { speed: this.speed, paused: this.paused, fleet: sm.agents.length, demand: (REAL || (REAL_ALL && REAL_ALL.city === CITY0.name)) ? `real ${CITY_SHORT} trips` : 'synthetic city demand', eta_model: 'stand-in', forecaster: 'EWMA with trend', solver: 'greedy' },
     };
   }
   async explain(id) {
@@ -151,7 +164,11 @@ async function pickSource() {
     const r = await fetch('/api/health', { signal: ctl.signal, cache: 'no-store' }); clearTimeout(to);
     if (r.ok) {
       const h = await r.json();
-      if (h && h.city && h.city !== CITY0.name && !QS.has('city')) { location.search = `?city=${h.city}`; return new Promise(() => {}); }
+      if (h && h.city && h.city !== CITY0.name) {
+        // The server simulates another city: follow it, unless this city was asked for; then run it in the browser.
+        if (!QS.has('city')) { location.search = `?city=${h.city}`; return new Promise(() => {}); }
+        return new DemoSource();
+      }
       if (h && h.mode === 'live') return new LiveSource(h);
     }
   } catch (e) { /* no server: run the demo */ }
@@ -162,7 +179,7 @@ async function pickSource() {
 if (!/^https?:$/.test(location.protocol)) $('#homeLink').removeAttribute('href');   // opened as a file: no home page
 const canvas = $('#gl'), stage = $('.stage');
 let R;
-try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, pcf: 1 } : {}); } catch (e) {
+try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, preserve: true } : {}); } catch (e) {
   $('#fatal').style.display = 'grid';
   $('#fatal').textContent = 'This browser cannot start WebGL2, so the city cannot be drawn. Try a recent Chrome, Edge, Firefox or Safari.';
   throw e;
@@ -170,11 +187,36 @@ try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, pcf: 1 } : {}); } c
 const DPR = CAPTURE ? 1 : Math.min(devicePixelRatio || 1, 2);
 const sunDir = (() => { const v = [-0.62, 0.5, 0.48], l = Math.hypot(...v); return v.map((x) => x / l); })();
 R.light = { dir: sunDir, color: [2.9, 2.72, 2.45], sky: [0.44, 0.50, 0.60], ground: [0.32, 0.30, 0.29] };
+const DAY = { fog: [0.905, 0.922, 0.94], sky: [0.80, 0.85, 0.91], amb: [0.44, 0.50, 0.60], gnd: [0.32, 0.30, 0.29], exp: 0.62 };
+const NIGHT = { fog: [0.11, 0.13, 0.19], sky: [0.05, 0.07, 0.13], amb: [0.10, 0.12, 0.20], gnd: [0.05, 0.05, 0.07], exp: 0.95 };
+const mixv = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+let lightMode = QS.get('light') || 'clock';                 // 'clock' follows the city clock; 'day' / 'night' pin it
+function updateDaylight(cityClock) {
+  const h = lightMode === 'day' ? 13 : lightMode === 'night' ? 22.5 : ((cityClock || 0) / 3600) % 24;
+  const ang = ((h - 6) / 12) * Math.PI;                       // sunrise 06:00, noon overhead-ish, sunset 18:00
+  const elev = Math.sin(ang), az = ang;
+  const e = Math.max(0.06, elev);
+  const dir = [-Math.cos(az) * 0.8, e, 0.45 + 0.2 * Math.sin(az)], l = Math.hypot(...dir);
+  R.light.dir = dir.map((v) => v / l);
+  const night = clamp01((0.12 - elev) / 0.32), dusk = clamp01(1 - Math.abs(elev - 0.08) / 0.2) * (1 - night);
+  const sunCol = mixv([2.9, 2.72, 2.45], [3.0, 1.75, 1.05], dusk);
+  R.light.color = sunCol.map((v) => v * (1 - night * 0.92));
+  R.light.sky = mixv(DAY.amb, NIGHT.amb, night); R.light.ground = mixv(DAY.gnd, NIGHT.gnd, night);
+  R.fog = mixv(mixv(DAY.fog, [0.93, 0.80, 0.70], dusk * 0.5), NIGHT.fog, night);
+  R.skyTop = mixv(mixv(DAY.sky, [0.62, 0.62, 0.78], dusk * 0.6), NIGHT.sky, night);
+  R.exposure = DAY.exp + (NIGHT.exp - DAY.exp) * night;
+  R.night = night;
+  if (R.water) { R.water.deep = mixv([0.60, 0.70, 0.77], [0.05, 0.07, 0.11], night); R.water.shallow = mixv([0.70, 0.79, 0.84], [0.08, 0.10, 0.15], night); }
+}
 R.fog = [0.905, 0.922, 0.94]; R.skyTop = [0.80, 0.85, 0.91]; R.fogRange = STREETS ? [900, 2600] : [560, 1500]; R.exposure = 0.62; R.ao = 0.42;
+performance.mark('orca-city-start');
 buildCity(R);
+performance.measure('orca-city-build', 'orca-city-start');
 
-const cars = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, cast: true, order: 4 });
-const pins = R.mesh(pinGeometry(), 1500, { dynamic: true, cast: true, order: 4 });
+const carsNear = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, order: 4 });
+const carsFar = R.mesh(carGeometryFar(), MAX_AGENTS, { dynamic: true, order: 4 });
+const CAR_FAR = 240;                                // beyond this camera distance cars use the simple model
+const pins = R.mesh(pinGeometry(), 1500, { dynamic: true, order: 4 });
 const rings = R.mesh(new Geo().ring(1.25, 1.95, 40, [1, 1, 1]), MAX_REQ, { dynamic: true, unlit: true, alpha: true, order: 6, depthWrite: false });
 const pops = R.mesh(new Geo().ring(0.86, 1.0, 48, [1, 1, 1]), 400, { dynamic: true, unlit: true, alpha: true, order: 7, depthWrite: false });
 const marker = R.mesh(new Geo().ring(3.2, 4.0, 56, [1, 1, 1]), 1, { dynamic: true, unlit: true, alpha: true, order: 8, depthWrite: false });
@@ -184,7 +226,8 @@ const discs = R.mesh(new Geo().ring(0, 1, 72, [1, 1, 1]), 24, { dynamic: true, u
 const exLines = R.lines(64, { order: 3, depth: false });
 const HCELL = W / 54, HW = Math.ceil(WX / HCELL), HH = Math.ceil(WZ / HCELL);
 const heatPix = new Uint8Array(HW * HH * 4), heatTex = R.heatTexture(HW, HH);
-R.planes.push({ tex: heatTex, rect: new Float32Array([0, 0, HW * HCELL, HH * HCELL]), y: 0.48, alpha: 0.9, visible: true });
+const heatPlane = { tex: heatTex, rect: new Float32Array([0, 0, HW * HCELL, HH * HCELL]), y: 0.48, alpha: 0.9, visible: true };
+R.planes.push(heatPlane);
 
 const STATE_COLORS = ['#737B86', '#7FB0C8', '#FF7A00', '#FFC20A', '#2D5BE3', '#E5352B'].map(srgb);
 const C_WAIT0 = srgb('#15171A'), C_WAIT1 = srgb('#E5352B'), C_OFFER = srgb('#FF7A00'), C_ASSIGNED = srgb('#C79200'), C_P1 = srgb('#E5352B');
@@ -206,7 +249,18 @@ const VIEWS = {
 let viewW = 1, viewH = 1;
 function resize() {
   viewW = stage.clientWidth; viewH = stage.clientHeight;
-  R.resize(viewW, viewH, DPR); cam.aspect = viewW / viewH; sizeChart();
+  R.resize(viewW, viewH, dprNow); cam.aspect = viewW / viewH; sizeChart();
+}
+// Dynamic resolution: render below the screen's pixel ratio while frames run slow (over 21 ms for a second),
+// and step back up after several fast seconds. Each fall waits longer before the next climb, so it settles.
+const DPR_MIN = Math.min(DPR, Math.max(0.75, DPR * 0.55));
+let dprNow = DPR, slowT = 0, fastT = 0, holdUntil = 0, holdLen = 8;
+function adaptResolution(dt) {
+  if (CAPTURE || document.hidden) return;
+  if (dt > 0.021) { slowT += dt; fastT = 0; } else { slowT = Math.max(0, slowT - dt * 0.5); if (dt < 0.0185) fastT += dt; }
+  if (slowT > 1 && dprNow > DPR_MIN) {
+    dprNow = Math.max(DPR_MIN, +(dprNow - 0.2).toFixed(2)); slowT = 0; fastT = 0; holdUntil = clock + holdLen; holdLen = Math.min(120, holdLen * 2); resize();
+  } else if (fastT > 4 && dprNow < DPR && clock > holdUntil) { dprNow = Math.min(DPR, +(dprNow + 0.1).toFixed(2)); fastT = 0; resize(); }
 }
 
 // ----------------------------------------------------------------------------- live frame state + drawing
@@ -239,7 +293,8 @@ let clock = 0;
 function drawFrame(dt) {
   const f = curF; if (!f) return;
   CAR_K = STREETS ? Math.max(0.32, Math.min(1.25, cam.dist / 380)) : 1.25;
-  const A = f.agents, n = f.n, P = prevF ? prevF.agents : null;
+  const A = f.agents, n = f.n, P = prevF ? prevF.agents : null, far = cam.dist > CAR_FAR, cars = far ? carsFar : carsNear;
+  (far ? carsNear : carsFar).commit(0);
   const alpha = P ? clamp01((clock - recvAt) / 0.105) : 1;
   const turn = 1 - Math.exp(-dt * 14);
   jobLines.reset();
@@ -286,7 +341,7 @@ function drawFrame(dt) {
     pops.set(ne++, e.x, 0.6, e.z, r, 1, r, 0, e.col[0], e.col[1], e.col[2], (1 - k) * 0.9);
   }
   pops.commit(ne);
-  $('#clock').textContent = hhmm(f.clock);
+  setText('#clock', hhmm(f.clock));
 }
 
 // ----------------------------------------------------------------------------- incidents and short zones (with shockwaves)
@@ -466,7 +521,8 @@ function updateCursor() {
   cursorLbl.className = 'lbl' + (state === 'hover' ? ' yellow' : '');
   cursorLbl.textContent = state === 'hover' ? `Inspect request ${hoverReq[0]}${hoverReq[4] ? ', urgent' : ''}` : state === 'drag' ? 'Rotate' : state === 'pan' ? 'Move' : '';
 }
-setInterval(() => { const deg = (-cam.yaw * 180) / Math.PI; $('#compass svg').style.transform = `rotate(${deg}deg)`; }, 50);
+const compass = $('#compass svg'); let compassDeg = null;
+function updateCompass() { const deg = Math.round((-cam.yaw * 180) / Math.PI); if (deg !== compassDeg) { compassDeg = deg; compass.style.transform = `rotate(${deg}deg)`; } }
 
 // ----------------------------------------------------------------------------- console: scoreboard (tweened), grid, chart
 const GRID_ROWS = [
@@ -489,7 +545,7 @@ function tweenBoard(dt) {
   if (tw.a == null) return;
   const k = 1 - Math.exp(-dt * 5);
   tw.a += (tw.ta - tw.a) * k; tw.b += (tw.tb - tw.b) * k;
-  $('#w-orca').textContent = mmss(tw.a); $('#w-near').textContent = mmss(tw.b);
+  setText('#w-orca', mmss(tw.a)); setText('#w-near', mmss(tw.b));
 }
 const chart = $('#chart'), cg = chart.getContext('2d');
 function sizeChart() { const r = chart.getBoundingClientRect(); const d = Math.min(devicePixelRatio || 1, 2); chart.width = Math.max(1, r.width * d); chart.height = Math.max(1, r.height * d); chart.dpr = d; if (summary) drawChart(summary); }
@@ -586,7 +642,7 @@ function zoneSvg(id) {
     }
     paths.push(`<path data-z="${zi}" d="${d}"><title>${CITY0.zoneName(zi)}</title></path>`);
   }
-  return `<svg class="zsvg" id="${id}" viewBox="0 0 ${(WX * s).toFixed(1)} ${(WZ * s).toFixed(1)}" role="img" aria-label="Map of Manhattan's taxi zones">${paths.join('')}</svg>`;
+  return `<svg class="zsvg" id="${id}" viewBox="0 0 ${(WX * s).toFixed(1)} ${(WZ * s).toFixed(1)}" role="img" aria-label="Map of ${CITY0.cityLabel}: ${CITY0.zoneLabel}">${paths.join('')}</svg>`;
 }
 function zoneColor(v, mx) {
   if (v == null) return '#E9EBEE';
@@ -598,7 +654,7 @@ function renderZones(S) {
   if (!S.zones) { $('#p-zn').innerHTML = '<p class="muted">Zone statistics will appear after the first pickups.</p>'; return; }
   if (!zonesBuilt) {
     const cells = (id) => STREETS ? zoneSvg(id) : `<div class="zmap" id="${id}">${Array.from({ length: ZN }, (_, i) => `<span data-z="${i}"></span>`).join('')}</div>`;
-    $('#p-zn').innerHTML = `<p class="muted" style="margin:0 0 12px">Average wait in each of the ${ZN} ${STREETS ? 'official TLC taxi zones of Manhattan' : 'zones'} since the city started, on the same colour scale. North is at the top.</p>
+    $('#p-zn').innerHTML = `<p class="muted" style="margin:0 0 12px">Average wait in each of the ${ZN} ${STREETS ? `${CITY0.zoneLabel} of ${CITY_SHORT}` : 'zones'} since the city started, on the same colour scale. North is at the top.</p>
       <div class="zgrids"><div><h4>ORCA</h4>${cells('zm-a')}</div><div><h4>Nearest car</h4>${cells('zm-b')}</div></div>
       <div class="zscale"><span>0:00</span><i></i><span id="zmax">5:00</span></div>
       <div class="hist"><h4>How long riders waited</h4><div class="hrow" id="hrow"></div><div class="hax"><span>0 min</span><span>3 min</span><span>6+ min</span></div>
@@ -607,7 +663,7 @@ function renderZones(S) {
   }
   const all = [...S.zones.smart, ...S.zones.base].filter((v) => v != null), mx = Math.max(120, ...all);
   $('#zmax').textContent = mmss(mx);
-  for (const [id, arr, other, name] of [['#zm-a', S.zones.smart, S.zones.base, 'ORCA'], ['#zm-b', S.zones.base, S.zones.smart, 'Nearest']]) {
+  for (const [id, arr, name] of [['#zm-a', S.zones.smart, 'ORCA'], ['#zm-b', S.zones.base, 'Nearest']]) {
     $(id).querySelectorAll('[data-z]').forEach((c, i) => { c.style[STREETS ? 'fill' : 'background'] = zoneColor(arr[i], mx); if (!STREETS) c.title = `${zoneName(i)}: ${arr[i] == null ? 'no pickups yet' : mmss(arr[i])} with ${name}`; });
   }
   const ha = S.hist.smart, hb = S.hist.base, ta = ha.reduce((a, b) => a + b, 0) || 1, tb = hb.reduce((a, b) => a + b, 0) || 1;
@@ -694,7 +750,7 @@ $('#fleet').onchange = async (e) => {
   await src.reset(n); lastSeq = -1; pinned = null; shownId = null; prevF = curF = null; angleInit = false; born.clear(); lastStatus.clear(); knownFx.clear();
 };
 $('#mode').onclick = () => toast(src.kind === 'live' ? 'Live: streaming from the Python ORCA server with the trained ETA and demand models.'
-  : 'In-browser engine: the dispatch engine runs inside this page on a sample of real NYC taxi trips. Start the Python server to stream from the full backend.');
+  : `In-browser engine: the dispatch engine runs inside this page on a sample of real ${CITY_SHORT} trips. Start the Python server to stream from the full backend.`);
 function closeWelcome() { $('#welcome').hidden = true; try { sessionStorage.setItem('orca-welcome', '1'); } catch (e) { /* ignore */ } }
 try { if (sessionStorage.getItem('orca-welcome') === '1') $('#welcome').hidden = true; } catch (e) { /* storage unavailable */ }
 $('#w-ok').onclick = closeWelcome;
@@ -705,7 +761,7 @@ function setStatus(s) { $('#mode').classList.toggle('live', s === 'live'); $('#m
 // ----------------------------------------------------------------------------- guided tour (plays like a video)
 // Each chapter: duration, caption, camera move, and what the app does on entry.
 const TOUR = [
-  { dur: 8, t: 'This is ORCA', b: STREETS ? 'Manhattan’s real streets, 1,200 cars, and ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : REAL_ALL ? 'A live city of 1,200 cars, with ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : 'A live city of 1,200 cars. Every few seconds someone asks for a ride, and a dispatcher has to decide which car goes. ORCA makes that decision.',
+  { dur: 8, t: 'This is ORCA', b: STREETS ? `${CITY_SHORT}’s real streets, 1,200 cars, and ride requests replayed from real ${CITY0.name === 'manhattan' ? 'New York taxi and Uber / Lyft' : 'Uber, Lyft and Via'} trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.` : REAL_ALL ? 'A live city of 1,200 cars, with ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : 'A live city of 1,200 cars. Every few seconds someone asks for a ride, and a dispatcher has to decide which car goes. ORCA makes that decision.',
     cam: { t: place('Midtown Center', 0.5, 0.52), yaw: 0.35, pitch: 0.95, dist: STREETS ? 560 : 420 }, orbit: 0.035 },
   { dur: 9, t: 'Two dispatchers, one city', b: 'Every request goes to two dispatchers at once. The usual rule sends the nearest car. ORCA decides differently. They share the same requests, traffic and drivers, so any difference comes from the decisions alone.',
     cam: { t: place('Murray Hill', 0.5, 0.5), yaw: 0.7, pitch: 0.78, dist: STREETS ? 380 : 330 }, spot: '#board', orbit: 0.02 },
@@ -742,6 +798,8 @@ function syncMusic() {
 $('#tVoice').setAttribute('aria-pressed', voice); $('#tMusic').setAttribute('aria-pressed', music);
 $('#tMusic').onclick = () => { music = !music; $('#tMusic').setAttribute('aria-pressed', music); syncMusic(); };
 $('#tTrack').innerHTML = TOUR.map((c, i) => `<div class="sg" data-i="${i}" style="flex:${c.dur}" title="${c.t}"><b></b></div>`).join('');
+const tourBars = [...document.querySelectorAll('#tTrack .sg b')];
+const TOUR_START = TOUR.map((_, k) => TOUR.slice(0, k).reduce((a, c) => a + c.dur, 0));
 $('#tTrack').addEventListener('click', (e) => { const s = e.target.closest('.sg'); if (s) seekChapter(+s.dataset.i); });
 $('#tPlay').onclick = () => tourTogglePlay();
 $('#tClose').onclick = () => endTour();
@@ -822,24 +880,38 @@ function tourTick(dt) {
     const arr = pendingFly === 'outage' ? summary.fx.outages : summary.fx.spikes, o = arr.at(-1);
     if (o) { cam.flyTo({ t: [o[0], 0, o[1]], yaw: cam.yaw + 0.4, pitch: 0.95, dist: pendingFly === 'outage' ? 230 : 210 }, 2.2); pendingFly = null; }
   }
-  document.querySelectorAll('#tTrack .sg').forEach((s, k) => {
-    let st = 0; for (let j = 0; j < k; j++) st += TOUR[j].dur;
-    const p = clamp01((tourT - st) / TOUR[k].dur);
-    s.querySelector('b').style.width = p * 100 + '%';
-  });
-  $('#tTime').textContent = `${mmss(tourT)} / ${mmss(TOUR_TOTAL)}`;
+  tourBars.forEach((b, k) => { const w = Math.round(clamp01((tourT - TOUR_START[k]) / TOUR[k].dur) * 1000) / 10 + '%'; if (b.style.width !== w) b.style.width = w; });
+  setText('#tTime', `${mmss(tourT)} / ${mmss(TOUR_TOTAL)}`);
   if (c.do === 'result' && summary) { const t = resultText(); if ($('#capB').textContent !== t) $('#capB').textContent = t; }
   syncMusic();
 }
 
 // ----------------------------------------------------------------------------- main loop (and a deterministic capture mode for recording video)
+// ----------------------------------------------------------------------------- choosing a city
+(function citySwitcher() {
+  const cities = window.ORCA_CITIES || [];
+  if (cities.length < 2 || CAPTURE) return;
+  const sel = document.createElement('select');
+  sel.className = 'citysel shadow'; sel.setAttribute('aria-label', 'City');
+  sel.innerHTML = cities.map((c) => `<option value="${c.name}"${c.name === CITY0.name ? ' selected' : ''}>${c.short}</option>`).join('');
+  sel.onchange = async () => {
+    const to = sel.value;
+    // An operator switches the server's city; anyone else gets that city run in their browser.
+    if (src && src.kind === 'live') await src.post('/api/reset', { city: to });
+    location.search = `?city=${to}`;
+  };
+  const host = $('.masthead');
+  host.insertBefore(sel, host.querySelector('.clock'));
+})();
+
 function followShadows() {
   const q = 30, rad = Math.max(140, Math.min(480, Math.round((cam.dist * 0.75) / q) * q));
   const c = [Math.round(cam.t[0] / q) * q, 0, Math.round(cam.t[2] / q) * q];
   if (c[0] !== cam.lightCenter[0] || c[2] !== cam.lightCenter[2] || rad !== cam.lightRadius) {
-    cam.lightCenter = c; cam.lightRadius = rad; R.staticDirty = true;
+    cam.lightCenter = c; cam.lightRadius = rad;
   }
 }
+let isNight = null;
 function step(dt, draw = true) {
   clock += dt;
   src.tick(dt);
@@ -847,9 +919,11 @@ function step(dt, draw = true) {
   keyboardCam(dt);
   cam.update(dt);
   if (STREETS) followShadows();
+  updateDaylight(curF ? curF.clock : summary ? summary.clock : CFG.START_CLOCK);
+  heatPlane.alpha = 0.9 * clamp01((cam.dist - 110) / 300);          // the demand wash is for the overview, not close-ups
+  const night = (R.night || 0) > 0.55; if (night !== isNight) { isNight = night; document.body.classList.toggle('night', night); }
   drawFrame(dt); drawFx(); drawExplain();
-  if (!touring) { /* gentle idle drift is off: the user owns the camera */ }
-  tweenBoard(dt); updateCursor();
+  tweenBoard(dt); updateCursor(); updateCompass();
   R.time = clock;
   if (draw) R.render(cam);
 }
@@ -868,8 +942,9 @@ resize();
     document.title = 'capture-ready';
     return;
   }
+  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => dprNow };   // frame-cost probes (tools/perf_probe.py)
   cam.flyTo(VIEWS.home, reduceMotion ? 0.001 : 3.4);   // the one orchestrated entrance: plan view settles into the model
   let last = performance.now();
-  const loop = (now) => { requestAnimationFrame(loop); const dt = Math.min(0.1, (now - last) / 1000); last = now; step(dt); };
+  const loop = (now) => { requestAnimationFrame(loop); const raw = (now - last) / 1000, dt = Math.min(0.1, raw); last = now; step(dt); adaptResolution(raw); };
   requestAnimationFrame(loop);
 })();

@@ -1,0 +1,19 @@
+{
+  "intersections": 3914,
+  "segments": 9930,
+  "zones": 25,
+  "street_km": 819,
+  "one_way_share": 0.292,
+  "width_km": 8.2,
+  "length_km": 13.6,
+  "source": "OpenStreetMap contributors (ODbL), drivable ways; zones: official Chicago neighbourhoods",
+  "city": "chicago",
+  "label": "Chicago, downtown core",
+  "buildings": 55784,
+  "footprints": 110186,
+  "tallest_m": 396,
+  "median_height_m": 11,
+  "buildings_over_150m": 102,
+  "real_outline_share": 0.998,
+  "buildings_source": "City of Chicago, Building Footprints (syp8-uezg)"
+}

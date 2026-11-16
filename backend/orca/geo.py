@@ -64,3 +64,39 @@ class Frame:
         u = de * math.cos(a) - dn * math.sin(a)          # across the island (avenues are constant u)
         v = de * math.sin(a) + dn * math.cos(a)          # along the island, uptown positive
         return u / self.unit_m, -v / self.unit_m         # world x, z (north = -z, as in the grid city)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Transverse Mercator (Snyder 1987, eqs. 8-9 to 8-10), for state-plane zones such as Illinois East.
+def _tm_forward(lon, lat, lat0, lon0, k0, fe, fn):
+    e2 = 2 * F - F * F
+    ep2 = e2 / (1 - e2)
+    phi, lam = np.radians(np.asarray(lat, dtype=float)), np.radians(np.asarray(lon, dtype=float))
+    phi0, lam0 = math.radians(lat0), math.radians(lon0)
+
+    def M(p):
+        return A * ((1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256) * p
+                    - (3 * e2 / 8 + 3 * e2 ** 2 / 32 + 45 * e2 ** 3 / 1024) * np.sin(2 * p)
+                    + (15 * e2 ** 2 / 256 + 45 * e2 ** 3 / 1024) * np.sin(4 * p)
+                    - (35 * e2 ** 3 / 3072) * np.sin(6 * p))
+    N = A / np.sqrt(1 - e2 * np.sin(phi) ** 2)
+    T = np.tan(phi) ** 2
+    C = ep2 * np.cos(phi) ** 2
+    Aa = (lam - lam0) * np.cos(phi)
+    x = k0 * N * (Aa + (1 - T + C) * Aa ** 3 / 6 + (5 - 18 * T + T * T + 72 * C - 58 * ep2) * Aa ** 5 / 120)
+    y = k0 * (M(phi) - M(phi0) + N * np.tan(phi) * (Aa ** 2 / 2 + (5 - T + 9 * C + 4 * C * C) * Aa ** 4 / 24
+                                                   + (61 - 58 * T + T * T + 600 * C - 330 * ep2) * Aa ** 6 / 720))
+    return fe + x, fn + y
+
+
+def to_il_east(lon, lat):
+    """Longitude / latitude in degrees -> Illinois State Plane East (EPSG:3435) in metres."""
+    return _tm_forward(lon, lat, 36 + 40 / 60, -(88 + 20 / 60), 0.999975, 984250.0 * FT, 0.0)
+
+
+# Each city: its working projection (shapefile frame) and the angle of its street grid from true north.
+PROJECTIONS = {"manhattan": (to_state_plane, 29.0), "chicago": (to_il_east, 0.0)}
+
+
+def project(city: str, lon, lat):
+    return PROJECTIONS[city][0](lon, lat)

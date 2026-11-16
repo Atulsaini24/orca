@@ -26,11 +26,11 @@ import numpy as np
 from scipy.stats import wilcoxon
 
 from . import config as C
-from .runs import REAL_DATA, SCENARIOS, RunSpec, bootstrap_ci, run_many
+from .runs import SCENARIOS, RunSpec, bootstrap_ci, run_many
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 LABELS = {"nearest": "Nearest car", "orca_heuristic": "ORCA, heuristic models", "orca_learned": "ORCA, learned models",
-          "orca_untuned": "ORCA, learned, hand-set weights"}
+          "orca_untuned": "ORCA, learned, hand-set weights", "orca_no_guard": "ORCA, learned, no give-up guard"}
 
 
 def summarise(rows: list[dict], scen: str, pol: str) -> dict:
@@ -55,22 +55,33 @@ def paired_p(rows, scen, a, b) -> float | None:
     return float(wilcoxon(d).pvalue)
 
 
+def paired_p_lost(rows, scen, a, b) -> float | None:
+    """Wilcoxon signed-rank test on riders lost per seed, policy a vs b."""
+    rs = [r for r in rows if r["scenario"] == scen and a in r and b in r]
+    d = np.array([r[a]["lost"] - r[b]["lost"] for r in rs])
+    if len(d) < 5 or np.allclose(d, 0):
+        return None
+    return float(wilcoxon(d).pvalue)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--minutes", type=int, default=45)
     ap.add_argument("--seeds", type=int, nargs="+", default=list(range(1, 11)))
     ap.add_argument("--fleet", type=int, default=1200)
     ap.add_argument("--demand", choices=["tlc", "synthetic"], default="tlc")
-    ap.add_argument("--data", default=str(REAL_DATA))
+    ap.add_argument("--data", default=None, help="trip file (default: the city's own)")
+    ap.add_argument("--city", default=None, help="city to benchmark (default: the first built real city)")
     ap.add_argument("--day-seeds", type=int, nargs="*", default=[1, 2], help="seeds for the full 24-hour run")
     ap.add_argument("--no-day", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
     a = ap.parse_args()
     t0 = time.time()
     from . import city as G
-    city = G.use()
+    city = G.use(a.city)
     tuned = bool(C.TUNED) and C.TUNED != C.DEFAULTS
-    base = dict(minutes=a.minutes, fleet=a.fleet, demand=a.demand, data=a.data)
+    # every worker process must run the same city as this one: pass it explicitly
+    base = dict(minutes=a.minutes, fleet=a.fleet, demand=a.demand, data=a.data, city=city.name)
     specs: list[RunSpec] = []
     for scen in SCENARIOS:
         for s in a.seeds:
@@ -78,8 +89,11 @@ def main():
             specs.append(RunSpec(seed=s, scenario=scen, use_learned=False, tag=f"{scen}/heuristic", **base))
             if tuned:
                 specs.append(RunSpec(seed=s, scenario=scen, use_learned=True, params=dict(C.DEFAULTS), tag=f"{scen}/untuned", **base))
+            # ablation: the tuned policy with the give-up guard switched off (riders cancel at 15 min)
+            specs.append(RunSpec(seed=s, scenario=scen, use_learned=True, params={**C.DEFAULTS, **C.TUNED, "DEADLINE_W": 0.0},
+                                 tag=f"{scen}/noguard", **base))
     day = [] if a.no_day else [RunSpec(seed=s, minutes=24 * 60, start_hour=0.0, hourly=True, tag="day/learned",
-                                       fleet=a.fleet, demand=a.demand, data=a.data) for s in a.day_seeds]
+                                       fleet=a.fleet, demand=a.demand, data=a.data, city=city.name) for s in a.day_seeds]
     print(f"{len(specs)} benchmark runs + {len(day)} full-day runs on {a.workers or 'all-but-one'} cores", flush=True)
     res = run_many(day + specs, workers=a.workers)
     day_res, res = res[: len(day)], res[len(day):]
@@ -88,15 +102,16 @@ def main():
     for spec, r in zip(specs, res):
         row = rows.setdefault((spec.scenario, spec.seed), dict(scenario=spec.scenario, seed=spec.seed))
         kind = spec.tag.split("/")[1]
-        row[{"learned": "orca_learned", "heuristic": "orca_heuristic", "untuned": "orca_untuned"}[kind]] = r["orca"]
+        row[{"learned": "orca_learned", "heuristic": "orca_heuristic", "untuned": "orca_untuned", "noguard": "orca_no_guard"}[kind]] = r["orca"]
         if kind == "learned":
             row["nearest"] = r["nearest"]
     rows_l = sorted(rows.values(), key=lambda r: (r["scenario"], r["seed"]))
-    pols = ["nearest", "orca_heuristic", "orca_learned"] + (["orca_untuned"] if tuned else [])
+    pols = ["nearest", "orca_heuristic", "orca_learned"] + (["orca_untuned"] if tuned else []) + ["orca_no_guard"]
     summary = {scen: {p: summarise(rows_l, scen, p) for p in pols} for scen in SCENARIOS}
     tests = {scen: dict(learned_vs_heuristic=paired_p(rows_l, scen, "orca_learned", "orca_heuristic"),
                         tuned_vs_untuned=paired_p(rows_l, scen, "orca_learned", "orca_untuned") if tuned else None,
-                        learned_vs_nearest=paired_p(rows_l, scen, "orca_learned", "nearest")) for scen in SCENARIOS}
+                        learned_vs_nearest=paired_p(rows_l, scen, "orca_learned", "nearest"),
+                        guard_lost=paired_p_lost(rows_l, scen, "orca_learned", "orca_no_guard")) for scen in SCENARIOS}
     full_day = None
     if day_res:
         hours = range(24)
@@ -117,7 +132,10 @@ def main():
                            weights=dict(C.TUNED) if tuned else dict(C.DEFAULTS)),
                rows=rows_l, summary=summary, tests=tests, full_day=full_day, seconds=round(time.time() - t0))
     DOCS.mkdir(exist_ok=True)
-    (DOCS / "benchmark.json").write_text(json.dumps(out, indent=2))
+    out["config"]["city"] = city.name
+    (DOCS / f"benchmark_{city.name}.json").write_text(json.dumps(out, indent=2))
+    if city.name == "manhattan":                      # the primary city also keeps the plain names
+        (DOCS / "benchmark.json").write_text(json.dumps(out, indent=2))
     write_md(out, pols)
     plot(out, pols)
     print(f"Wrote docs/benchmark.json, .md, .png ({time.time() - t0:.0f}s)")
@@ -133,14 +151,20 @@ def fmt_p(p):
     return "n/a" if p is None else ("< 0.001" if p < 0.001 else f"{p:.3f}")
 
 
+def _note(c):
+    from . import cityspec
+    spec = cityspec.CITIES.get(c.get("city"))
+    return spec.data_note if spec else "real trip records"
+
+
 def write_md(out, pols):
     c = out["config"]
     md = ["# Benchmark", "",
           f"{c['minutes']} simulated minutes per run after a 5-minute warm-up, {c['fleet']} cars per dispatcher, "
           f"{len(c['seeds'])} seeds ({c['seeds'][0]}-{c['seeds'][-1]}). Both dispatchers see identical requests, traffic, "
           "incidents and drivers on every seed.",
-          ("Demand replays real NYC TLC yellow-taxi trips (January 2015 Manhattan weekdays) at the real hourly rate; "
-           "citywide road speed follows the real median taxi speed for each hour." if c["demand"] == "tlc"
+          (f"Demand replays real weekday trips ({_note(c)}) at the real hourly rate; road speed follows the real "
+           "median trip speed for each zone and hour." if c["demand"] == "tlc"
            else "Demand comes from the procedural demand model."),
           "The stress scenario injects a demand spike and a GPS outage at minute 20 and an accident at minute 40.",
           f"ORCA's scoring weights are {'tuned by `orca.tune` on seeds 101-109, which the benchmark never uses' if c['tuned_weights'] else 'the hand-set defaults'}.",
@@ -156,7 +180,9 @@ def write_md(out, pols):
         t = out["tests"][scen]
         md += ["", f"Paired Wilcoxon signed-rank tests over seeds: learned vs heuristic models p = {fmt_p(t['learned_vs_heuristic'])}"
                    + (f"; tuned vs hand-set weights p = {fmt_p(t['tuned_vs_untuned'])}" if t["tuned_vs_untuned"] is not None else "")
-                   + f"; ORCA vs nearest p = {fmt_p(t['learned_vs_nearest'])}.", ""]
+                   + f"; ORCA vs nearest p = {fmt_p(t['learned_vs_nearest'])}"
+                   + (f"; riders lost with vs without the give-up guard p = {fmt_p(t.get('guard_lost'))}" if t.get("guard_lost") is not None else "")
+                   + ".", ""]
     fd = out["full_day"]
     if fd:
         o, n = fd["totals"]["orca"], fd["totals"]["nearest"]
@@ -167,7 +193,11 @@ def write_md(out, pols):
                "| Hour | " + " | ".join(f"{h:02d}" for h in range(0, 24, 3)) + " |", "|---|" + "---:|" * 8,
                "| ORCA | " + " | ".join(f"{fd['orca'][h]:.0f}s" if fd["orca"][h] else "–" for h in range(0, 24, 3)) + " |",
                "| Nearest | " + " | ".join(f"{fd['nearest'][h]:.0f}s" if fd["nearest"][h] else "–" for h in range(0, 24, 3)) + " |", ""]
-    (DOCS / "benchmark.md").write_text("\n".join(md))
+    name = out["config"].get("city", "grid")
+    text = "\n".join(md) + "\n"
+    (DOCS / f"benchmark_{name}.md").write_text(text, encoding="utf-8", newline="\n")
+    if name == "manhattan":
+        (DOCS / "benchmark.md").write_text(text, encoding="utf-8", newline="\n")
 
 
 def plot(out, pols):
@@ -180,7 +210,8 @@ def plot(out, pols):
         return
     fd = out["full_day"]
     fig, axes = plt.subplots(1, 3 if fd else 2, figsize=(15 if fd else 10, 3.8), gridspec_kw=dict(width_ratios=[1, 1, 1.4] if fd else [1, 1]))
-    colors = {"nearest": "#8A9099", "orca_heuristic": "#E8B400", "orca_learned": "#1D1F23", "orca_untuned": "#C9CDD3"}
+    colors = {"nearest": "#8A9099", "orca_heuristic": "#E8B400", "orca_learned": "#1D1F23", "orca_untuned": "#C9CDD3",
+              "orca_no_guard": "#6B3CF0"}
     for ax, scen in zip(axes, ("steady", "stress")):
         S = out["summary"][scen]
         xs = np.arange(len(pols))
@@ -202,7 +233,10 @@ def plot(out, pols):
         ax.legend(frameon=False)
         ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(DOCS / "benchmark.png", dpi=160)
+    name = out["config"].get("city", "grid")
+    fig.savefig(DOCS / f"benchmark_{name}.png", dpi=160)
+    if name == "manhattan":
+        fig.savefig(DOCS / "benchmark.png", dpi=160)
 
 
 if __name__ == "__main__":

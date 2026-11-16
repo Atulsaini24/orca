@@ -20,9 +20,11 @@ const CFG = {
   ZONE_CAP: 60,        // maximum zone supply cost (s)
   URGENT_W: 0.55,      // urgent requests' cost multiplier
   WAIT_W: 0.25,        // cost credit per second already waited
+  DEADLINE_W: 1.0,     // give-up penalty weight (riders cancel after ABANDON seconds)
   START_CLOCK: 7 * 3600 + 30 * 60,
 };
 CFG.W = (CFG.GRID - 1) * CFG.CELL;
+if (typeof CITY_TUNED !== 'undefined') Object.assign(CFG, CITY_TUNED);   // weights tuned for this city (orca.tune)
 CFG.ZSIZE = CFG.W / CFG.ZONES;
 
 function mulberry32(a) {
@@ -61,12 +63,12 @@ function poisson(rng, lam) {
 }
 
 // ---------------------------------------------------------------------------
-// Real demand: a sample of NYC TLC trips (tlc_data.js, from scripts/prepare_tlc.py)
+// Real demand: a sample of the city's real trips (data/<city>/trips.js, from scripts/prepare_trips.py)
 // replayed at the real hour-by-hour rate, plus real Manhattan speed by hour.
 // ---------------------------------------------------------------------------
 function decodeTLC(d) {
   if (!d || !d.b64) return null;
-  const bin = typeof atob === 'function' ? atob(d.b64) : Buffer.from(d.b64, 'base64').toString('binary');
+  const bin = atob(d.b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   const n = d.n, sec = new Uint32Array(bytes.buffer, 0, n), q = new Uint16Array(bytes.buffer, 4 * n, 4 * n), res = d.res || 100;
@@ -111,7 +113,7 @@ class World {
     return 1 + 0.35 * Math.exp(-((h - 8.75) ** 2) / (2 * 0.8 ** 2)) + 0.12 * Math.sin(this.t / 900);
   }
   rate() {
-    if (REAL) {   // real NYC rate for this hour, scaled so the busiest hour is 1.25x what the fleet is built for
+    if (REAL) {   // the real rate for this hour, scaled so the busiest hour is 1.25x what the fleet is built for
       const peakRate = this.city.name === 'grid' ? 1.25 * this.fleet * 0.00118 : 0.8 * this.fleet / (REAL.peakTrip + 300);
       const keep = peakRate / REAL.peak;
       return (keep * hourly(REAL.tph, this.clock()) / 3600) * this.demandMult * (1 + this.spikeBoost);
@@ -135,7 +137,8 @@ class World {
       const dx = x - b.x, dz = z - b.z;
       m *= 1 - b.s * Math.exp(-(dx * dx + dz * dz) / (2 * b.r * b.r));
     }
-    return Math.max(0.22, m * this.trafficFactor());
+    const local = REAL && this.city.zoneHour ? this.city.traffic(x, z, this.clock()) : this.trafficFactor();
+    return Math.max(0.22, m * local);
   }
   step(dt) {
     this.t += dt;
@@ -488,7 +491,9 @@ class Dispatcher {
         const eta = this.etaHat(a.rx, a.rz, rs.r.x, rs.r.z);
         const p = this.pHat(a, eta, rs), zc = this.zoneCost(a);
         const cost = eta + (1 - p) * CFG.REOFFER + zc;
-        const adj = cost * (rs.r.p1 ? CFG.URGENT_W : 1) - Math.min(wait, 300) * CFG.WAIT_W;
+        const slack = CFG.ABANDON - (wait + eta + 30);                    // the rider gives up at ABANDON: see dispatch.py
+        const adj = cost * (rs.r.p1 ? CFG.URGENT_W : 1) - Math.min(wait, 300) * CFG.WAIT_W
+          + (CFG.DEADLINE_W > 0 ? (CFG.DEADLINE_W * 600) / (1 + Math.exp(slack / 40)) : 0);
         const c = { a, eta, p, zc, cost, age: t - a.lastPing, rx: a.rx, rz: a.rz };
         rs._cands.push(c); pairs.push([adj, rs, c]);
       }
@@ -599,8 +604,4 @@ class Simulation {
     const reqs = this.world.step(dt);
     this.smart.step(dt, reqs); this.base.step(dt, reqs);
   }
-}
-
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { CFG, Simulation, zoneName, zoneOf, isArterial, REAL_ALL };
 }
