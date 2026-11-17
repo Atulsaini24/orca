@@ -11,5 +11,5 @@ Manhattan, New York: 1,200 electric cars per dispatcher over a 12-hour shift fro
 
 Means over seeds, 95% bootstrap interval for the mean wait in brackets. "Car-hours charging" counts driving to a station, queueing and charging. No car ran out of charge in any run.
 
-Left to themselves, drivers all head for the nearest fast charger and queue 25 minutes on average. ORCA sends each car to the station that returns it to service soonest, counting the cars already plugged in, queued and on their way: the queue drops to 1.6 minutes and the fleet spends 43% fewer car-hours charging. Early top-ups keep batteries fuller but take cars off the road; on this shift they do not shorten waits, so they are off by default.
+Left to themselves, drivers all head for the nearest fast charger and queue 24.9 minutes on average. ORCA sends each car to the station that returns it to service soonest, counting the cars already plugged in, queued and on their way, and the charging time at that station's power: the queue drops to 1.6 minutes and the fleet spends 43% fewer car-hours charging. Early top-ups keep batteries fuller but take cars off the road; on this shift they do not shorten waits, so they are off by default.
 

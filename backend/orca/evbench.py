@@ -93,10 +93,13 @@ def write_md(out):
     md += ["", "Means over seeds, 95% bootstrap interval for the mean wait in brackets. \"Car-hours charging\" counts driving to a "
                "station, queueing and charging. No car ran out of charge in any run." if all(S[p]["stranded"]["value"] == 0 for p in S)
            else "", "",
-           f"Left to themselves, drivers all head for the nearest fast charger and queue {o['queue_wait']['value'] / 60:.0f} minutes "
+           f"Left to themselves, drivers all head for the nearest fast charger and queue {o['queue_wait']['value'] / 60:.1f} minutes "
            f"on average. ORCA sends each car to the station that returns it to service soonest, counting the cars already "
-           f"plugged in, queued and on their way: the queue drops to {sm['queue_wait']['value'] / 60:.1f} minutes and the fleet "
-           f"spends {(1 - sm['charge_hours']['value'] / o['charge_hours']['value']) * 100:.0f}% fewer car-hours charging. "
+           f"plugged in, queued and on their way, and the charging time at that station's power: "
+           + (f"the queue drops to {sm['queue_wait']['value'] / 60:.1f} minutes" if sm["queue_wait"]["value"] < o["queue_wait"]["value"]
+              else f"with fast plugs plentiful it accepts a longer queue ({sm['queue_wait']['value'] / 60:.1f} minutes) at faster or "
+                   f"closer stations")
+           + f" and the fleet spends {(1 - sm['charge_hours']['value'] / o['charge_hours']['value']) * 100:.0f}% fewer car-hours charging. "
            f"Early top-ups keep batteries fuller but take cars off the road; on this shift they do not shorten waits, so they "
            f"are off by default.", ""]
     (DOCS / f"ev_{c['city']}.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
