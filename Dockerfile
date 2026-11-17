@@ -24,7 +24,7 @@ WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
-COPY docs/benchmark_*.json /app/docs/
+COPY docs/benchmark_*.json docs/pooling_*.json docs/ev_*.json docs/rl_*.json docs/scale.json docs/loadtest.json /app/docs/
 COPY backend/artifacts/*.json /app/backend/artifacts/
 COPY --from=data /app/backend/artifacts/*.json /app/backend/artifacts/
 RUN npm run build

@@ -82,6 +82,20 @@ export const scenarios = [
   { key: 'stress', label: 'Demand spike + GPS outage + accident' },
 ] as const;
 
+// Beyond dispatch: one headline per study, from the benchmark files in docs/ (absent until that study is run)
+const studies = import.meta.glob(['../../docs/{pooling,ev,rl}_manhattan.json', '../../docs/{scale,loadtest}.json'],
+  { eager: true, import: 'default' }) as Record<string, unknown>;
+const study = <T,>(name: string) => studies[`../../docs/${name}.json`] as T | undefined;
+type Ci = { value: number; ci: [number, number] };
+export const BEYOND = {
+  pooling: study<{ headline: { ref_wait: number; fleet_needed: number; cars_saved: number; cars_saved_ci: [number, number] } | null;
+    config: { demand_for: number; pool: { POOL_OPT_IN: number } } }>('pooling_manhattan'),
+  ev: study<{ config: { stations: number; hours: number }; summary: Record<string, { queue_wait: Ci; charge_hours: Ci; stranded: Ci }> }>('ev_manhattan'),
+  rl: study<{ scenarios: Record<string, { rules: { mean: number }; learned: { mean: number }; off: { mean: number } }> }>('rl_manhattan'),
+  scale: study<{ fleets: { fleet: number; ms_per_sim_s: number; realtime: number }[]; previous: Record<string, [number, number]> }>('scale'),
+  load: study<{ rows: { viewers: number; fps_mean: number }[] }>('loadtest'),
+};
+
 export const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
 export const fmtM = (n: number) => `${(n / 1e6).toFixed(1)}M`;
 export const mmss = (s: number) => { const r = Math.max(0, Math.round(s)); return `${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}`; };

@@ -47,6 +47,41 @@ SOURCES = {
 }
 
 
+def osm_source(name: str) -> dict:
+    """Any other city: building footprints from OpenStreetMap, height from height or building:levels tags."""
+    return dict(path=ROOT / "data" / "osm" / f"{name}_buildings.json", api="overpass", query=None,
+                label="OpenStreetMap contributors (ODbL), building footprints")
+
+
+def download_osm(spec, src):
+    """Overpass: every building way in the city's box, with geometry; written in the same row format as the others."""
+    from orca.osm import bbox_filter, query
+    data = query(f'[out:json][timeout:600][maxsize:1073741824];way["building"]{bbox_filter(spec.bbox)};out tags geom;', timeout=900)
+    rows = []
+    for el in data["elements"]:
+        g = el.get("geometry")
+        if not g or len(g) < 4:
+            continue
+        t = el.get("tags", {})
+        h = None
+        for k in ("height", "building:height"):
+            try:
+                h = float(str(t.get(k, "")).replace("m", "").strip())
+                break
+            except ValueError:
+                pass
+        if h is None:
+            try:
+                h = float(t["building:levels"]) * 3.2 + 1.5
+            except (KeyError, ValueError):
+                h = None
+        rows.append(dict(the_geom=dict(type="Polygon", coordinates=[[[p["lon"], p["lat"]] for p in g]]), height_m=h,
+                         year=t.get("start_date", "")[:4]))
+    src["path"].parent.mkdir(parents=True, exist_ok=True)
+    src["path"].write_text(json.dumps(rows))
+    print(f"downloaded {len(rows):,} building footprints from OpenStreetMap")
+
+
 def download(src):
     with urllib.request.urlopen(f"{src['api']}?{urllib.parse.urlencode(src['query'])}", timeout=900) as r:
         src["path"].write_bytes(r.read())
@@ -54,6 +89,9 @@ def download(src):
 
 
 def height_m(city: str, row: dict) -> float:
+    if "height_m" in row:                                   # OpenStreetMap: tagged height, else about three storeys
+        h = row["height_m"]
+        return float(h) if h and 2 < h < 600 else 9.0
     if city == "manhattan":
         h = float(row.get("height_roof") or 0) * FT_M
         return h if h > 0 else 10.0
@@ -63,7 +101,7 @@ def height_m(city: str, row: dict) -> float:
 
 def year(row: dict) -> int:
     try:
-        return int(float(row.get("construction_year") or row.get("year_built") or 0))
+        return int(float(row.get("construction_year") or row.get("year_built") or row.get("year") or 0))
     except ValueError:
         return 0
 
@@ -122,11 +160,12 @@ def main():
     ap.add_argument("--city", default="manhattan", choices=list(cityspec.CITIES))
     ap.add_argument("--download", action="store_true")
     a = ap.parse_args()
-    spec, src = cityspec.get(a.city), SOURCES[a.city]
+    spec = cityspec.get(a.city)
+    src = SOURCES.get(a.city) or osm_source(a.city)
     if a.download or not src["path"].exists():
         if not src["api"]:
             sys.exit(f"{src['path']} missing: run scripts/download_chicago.py --only buildings")
-        download(src)
+        download_osm(spec, src) if src["api"] == "overpass" else download(src)
     d = np.load(spec.streets)
     f = d["frame"]
     frame, x_off, z_off, WX, WZ, unit = (Frame(float(f[0]), float(f[1]), float(f[2]), float(f[3])),

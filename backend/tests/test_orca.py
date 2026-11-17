@@ -1,6 +1,7 @@
 """Correctness tests for routing, dispatch invariants, matching, data loading and the API."""
 import itertools
 import json
+import math
 import random
 import struct
 import subprocess
@@ -128,6 +129,8 @@ def test_street_cruising_and_eta_tree():
 def test_routes_follow_the_hour_and_go_around_accidents(name):
     from orca.routing_report import route_time
     city, rng = G.use(name), random.Random(3)
+    if city.zone_hour is None:
+        pytest.skip(f"{name} has no real traffic profile (built without trip records)")
     try:
         city.set_conditions(17 * 3600 + 60.0, [])
         assert city.traffic_routing
@@ -727,3 +730,42 @@ def test_event_stream_on_real_redis():
     r = redis.Redis.from_url(os.environ["ORCA_TEST_REDIS"])
     assert r.xlen(stream) == 300
     r.delete(stream)
+
+
+# ---------------------------------------------------------------------------- any city on demand
+def test_local_projection_matches_great_circle_distances():
+    from orca.geo import to_local
+    lat0, lon0 = 42.37, -71.11
+    e, n = to_local([-71.11, -71.05, -71.11], [42.37, 42.37, 42.42], lat0, lon0)
+    hav = lambda la1, lo1, la2, lo2: 2 * 6371008.8 * math.asin(math.sqrt(
+        math.sin(math.radians(la2 - la1) / 2) ** 2 + math.cos(math.radians(la1)) * math.cos(math.radians(la2)) * math.sin(math.radians(lo2 - lo1) / 2) ** 2))
+    assert e[0] == n[0] == 0
+    assert math.hypot(e[1], n[1]) == pytest.approx(hav(lat0, lon0, 42.37, -71.05), rel=3e-3)
+    assert math.hypot(e[2], n[2]) == pytest.approx(hav(lat0, lon0, 42.42, -71.11), rel=3e-3)
+
+
+@pytest.mark.parametrize("deg", [0.0, 12.5, 29.0, -20.0, 44.0])
+def test_street_grid_angle_is_found(deg):
+    from orca.newcity import grid_angle
+    rng = np.random.default_rng(0)
+    a = math.radians(deg)
+    x0, y0 = rng.uniform(0, 5000, 4000), rng.uniform(0, 5000, 4000)
+    along = rng.integers(0, 2, 4000) * (math.pi / 2) + a + rng.normal(0, 0.03, 4000)   # two perpendicular street families
+    ln = rng.uniform(40, 200, 4000)
+    got = grid_angle(x0, y0, x0 + ln * np.sin(along), y0 + ln * np.cos(along))
+    assert abs((got - deg + 45) % 90 - 45) < 1.5
+
+
+def test_zones_cover_the_streets_and_take_place_names():
+    from orca.newcity import make_zones
+    rng = np.random.default_rng(1)
+    e, n = rng.uniform(0, 3000, 5000), rng.uniform(0, 2000, 5000)
+    keep = ~((e > 2000) & (n > 1000))                                 # a lake in one corner: no streets
+    places = [(450.0, 450.0, "Old Town", 0), (1500.0, 1500.0, "Harbour", 2)]
+    z = make_zones(e[keep], n[keep], places, 1000.0, 25, "Testville")
+    names = [x["name"] for x in z]
+    assert len(z) == 5 and "Old Town" in names and "Harbour" in names
+    assert len(set(names)) == len(names)
+    for x in z:
+        (x0, y0), (x1, _), (_, y1) = x["rings"][0][:3]
+        assert x1 - x0 == pytest.approx(1000.0) and y1 - y0 == pytest.approx(1000.0)

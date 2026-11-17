@@ -98,5 +98,24 @@ def to_il_east(lon, lat):
 PROJECTIONS = {"manhattan": (to_state_plane, 29.0), "chicago": (to_il_east, 0.0)}
 
 
+def to_local(lon, lat, lat0: float, lon0: float):
+    """Longitude / latitude -> metres east / north of (lat0, lon0) on the WGS84 ellipsoid (local equirectangular).
+
+    Uses the meridional and prime-vertical radii of curvature at lat0; across a 15 km city the distortion
+    stays under 0.05%, well below what the simulation resolves.
+    """
+    e2 = 2 * F - F * F
+    s = math.sin(math.radians(lat0))
+    w = math.sqrt(1 - e2 * s * s)
+    m_rad, n_rad = A * (1 - e2) / w ** 3, A / w
+    e = np.radians(np.asarray(lon, dtype=float) - lon0) * n_rad * math.cos(math.radians(lat0))
+    n = np.radians(np.asarray(lat, dtype=float) - lat0) * m_rad
+    return e, n
+
+
 def project(city: str, lon, lat):
+    """Project with a city's projection: a named state plane, or "local:<lat0>,<lon0>" for any other city."""
+    if city.startswith("local:"):
+        lat0, lon0 = (float(v) for v in city[6:].split(","))
+        return to_local(lon, lat, lat0, lon0)
     return PROJECTIONS[city][0](lon, lat)

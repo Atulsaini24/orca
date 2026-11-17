@@ -368,6 +368,11 @@ function buildStreetCity(R, C) {
     up(land, [-far, y, last[1]], [last[0], y, last[1]], [last[0], y, WZ + far], outside);
     up(land, [-far, y, last[1]], [last[0], y, WZ + far], [-far, y, WZ + far], outside);
   }
+  if (C.surround === 'land') {                                // an inland city (orca.newcity): ground all around
+    const far = 2400, y = -0.35;
+    up(land, [-far, y, -far], [WX + far, y, -far], [WX + far, y, WZ + far], outside);
+    up(land, [-far, y, -far], [WX + far, y, WZ + far], [-far, y, WZ + far], outside);
+  }
   const landMesh = R.mesh(land, 1, { order: 0, tile: TILE }); landMesh.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); landMesh.commit(1);
   R.water = { rect: new Float32Array([-1600, -1600, 3200 + WX, 3200 + WZ]), y: -2.4, city: new Float32Array([WX / 2, WZ / 2, WX / 2, WZ / 2]),
     deep: [0.60, 0.70, 0.77], shallow: [0.70, 0.79, 0.84] };

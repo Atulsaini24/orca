@@ -5,7 +5,7 @@ import {
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import HeroMap from './components/HeroMap';
 import { BenchmarkChart, FullDayChart, HourlyChart, RealEtaCard } from './components/Charts';
-import { CITIES, fmt, mmss } from './data';
+import { BEYOND, CITIES, fmt, mmss } from './data';
 import { CityProvider } from './city';
 import { useCity } from './cityContext';
 
@@ -366,15 +366,67 @@ function Tour() {
   );
 }
 
+function Beyond() {
+  const { pooling, ev, rl, scale, load } = BEYOND;
+  const cards: { icon: ReactNode; t: string; big: string; b: string }[] = [];
+  const h = pooling?.headline;
+  if (pooling && h && h.cars_saved != null) {
+    cards.push({ icon: <Users size={20} />, t: 'Shared rides', big: `${Math.round(h.cars_saved * 100)}% fewer cars`,
+      b: `With ${Math.round(pooling.config.pool.POOL_OPT_IN * 100)}% of riders accepting a shared ride, ${fmt(h.fleet_needed)} cars keep the ${Math.round(h.ref_wait)} s wait of ${fmt(pooling.config.demand_for)} solo cars (95% interval ${Math.round(h.cars_saved_ci[0] * 100)}–${Math.round(h.cars_saved_ci[1] * 100)}%).` });
+  }
+  if (ev) {
+    const o = ev.summary.orca_naive, s = ev.summary.orca_smart;
+    cards.push({ icon: <Gauge size={20} />, t: 'Electric fleet', big: `${(o.queue_wait.value / 60).toFixed(0)} → ${(s.queue_wait.value / 60).toFixed(1)} min`,
+      b: `Queue at the charger over a ${ev.config.hours}-hour shift on ${ev.config.stations} real public stations, when ORCA plans charging; ${Math.round((1 - s.charge_hours.value / o.charge_hours.value) * 100)}% fewer car-hours spent charging.` });
+  }
+  const big = scale?.fleets.find((f) => f.fleet === 10000);
+  if (big) {
+    const prev = scale?.previous['10000'];
+    cards.push({ icon: <Activity size={20} />, t: 'Speed and scale', big: `${fmt(big.fleet)} cars, ${Math.round(big.realtime)}× real time`,
+      b: `Numba-compiled kernels over a structure-of-arrays fleet: ${big.ms_per_sim_s.toFixed(1)} ms per simulated second${prev ? `, ${(prev[0] / big.ms_per_sim_s).toFixed(0)}× faster than before` : ''}.` });
+  }
+  if (rl) {
+    const sc = Object.values(rl.scenarios);
+    const kept = sc.map((x) => (x.off.mean - x.learned.mean) / (x.off.mean - x.rules.mean));
+    cards.push({ icon: <Workflow size={20} />, t: 'Learned policy', big: `${Math.round(Math.min(...kept) * 100)}–${Math.round(Math.max(...kept) * 100)}% of the gain`,
+      b: 'A value network trained by fitted TD learning repositions idle cars. It recovers most of what hand-written rules achieve, but does not beat them, so the rules stay on.' });
+  }
+  const l = load?.rows.find((r) => r.viewers === 400);
+  if (l) cards.push({ icon: <Radar size={20} />, t: 'Load', big: `${l.viewers} viewers`,
+    b: `One server process streams the live city to ${l.viewers} people at once, ${l.fps_mean.toFixed(1)} frames per second each.` });
+  if (!cards.length) return null;
+  return (
+    <section id="beyond" className="scroll-mt-20 border-t border-line">
+      <div className="mx-auto max-w-page px-5 py-24 md:px-8">
+        <Reveal><p className="eyebrow">Beyond dispatch · Manhattan</p>
+          <h2 className="wide mt-3 max-w-3xl text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[48px]">Shared rides, electric cars, ten thousand at once.</h2>
+          <p className="mt-5 max-w-2xl text-[17px] leading-relaxed text-ink-2">Each study runs on real demand with paired seeds and 95% intervals; the full tables are in the repository's docs folder.</p></Reveal>
+        <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {cards.map((c, i) => (
+            <Reveal key={c.t} delay={i * 0.05} className="rounded-2xl border border-line bg-white p-6">
+              <p className="flex items-center gap-2 text-[14px] font-semibold text-ink-2">{c.icon}{c.t}</p>
+              <p className="num mt-3 text-[30px] font-extrabold leading-tight">{c.big}</p>
+              <p className="mt-2 text-[14.5px] leading-relaxed text-ink-2">{c.b}</p>
+            </Reveal>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Stack() {
   const { city } = useCity();
   const total = (k: 'intersections' | 'buildings') => CITIES.reduce((a, c) => a + (c.facts?.[k] ?? 0), 0);
   const items = [
-    ['Python 3.12 · Starlette · Uvicorn', 'async API, Server-Sent Events at 10 Hz, Prometheus metrics, hardened middleware'],
-    ['scikit-learn · SciPy · NumPy · pandas', 'gradient-boosted ETA and demand models, Hungarian matching, shortest paths'],
+    ['Python 3.12 · Starlette · Uvicorn', 'async API, Server-Sent Events at 10 Hz with packed binary frames, hardened middleware'],
+    ['Numba · NumPy', 'compiled kernels for the fleet, routing, k-nearest search and shared-ride planning'],
+    ['scikit-learn · SciPy · pandas', 'gradient-boosted ETA and demand models, exact Hungarian and sparse LAPJV matching, shortest paths'],
+    ['Redis Streams · PostgreSQL · SQLAlchemy', 'domain events from a non-blocking batched writer; the trip ledger on SQLite or PostgreSQL'],
+    ['Prometheus · Grafana · OpenTelemetry', 'latency histograms, alert rules, a provisioned dashboard, traces to Jaeger'],
     ['Apache Arrow / Parquet', 'ingest of 20M+ real trips a month'],
     ['OpenStreetMap · city open data', `${fmt(total('intersections'))} intersections and ${fmt(total('buildings'))} building footprints in ${CITIES.length} cities, own map projections`],
-    ['Hand-written WebGL2', 'extruded real footprints, day and night lighting, camera-following shadow map, up to 4,000 cars'],
+    ['Hand-written WebGL2', 'extruded real footprints, day and night lighting, camera-following shadow map, up to 10,000 cars'],
     ['React · TypeScript · Vite · Tailwind', 'this home page'],
     ['GitHub Actions · Docker · Playwright', 'lint, unit, real-data, browser and visual-regression tests on every push'],
   ];
@@ -429,6 +481,7 @@ export default function App() {
         <Hero />
         <How />
         <Results />
+        <Beyond />
         <RealityCheck />
         <RealData />
         <Tour />

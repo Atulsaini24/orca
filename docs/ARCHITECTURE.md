@@ -1,13 +1,17 @@
 # Architecture
 
 ```
-                         ┌──────────────────────────── one process today ─────────────────────────────┐
- real trip replay ───────┼─▶ World ──requests──▶ NearestDispatcher ──┐                                  │
- (or synthetic demand)   │     │ real traffic by zone and hour,       ├─▶ Engine ─▶ Starlette ─▶ middleware ─┼─▶ browser
-                         │     │ incidents                            │   snapshots   SSE/REST   (security) │   WebGL2 control room
- City: a registered real │     └────────────────▶ OrcaDispatcher ─────┘                                  │   React home page
- city or the test grid   │     GPS pings ──▶ FeatureStore ──▶ ETA / acceptance / demand models              │
-                         └────────────────────────────────────────────────────────────────────────────────┘
+                         ┌──────────────────────────────── ORCA process ─────────────────────────────────┐
+ real trip replay ───────┼─▶ World ──requests──▶ NearestDispatcher ──┐                                     │
+ (or synthetic demand)   │     │ real traffic by zone and hour,       ├─▶ Engine ─▶ Starlette ─▶ middleware ──┼─▶ browser
+                         │     │ incidents, routing conditions        │   snapshots   SSE/REST   (security)   │   WebGL2 control room
+ City: Manhattan,        │     └────────────────▶ OrcaDispatcher ─────┘      │                               │   React home page
+ Chicago, any city built │     Fleet arrays ──Numba kernels──▶ FeatureStore ──▶ ETA / acceptance / demand  │
+ by orca.newcity, or the │     shared rides · charging network · learned repositioning (optional)         │
+ test grid               └──────────────┬──────────────────┬──────────────────┬─────────────────────────────┘
+                                        ▼                  ▼                  ▼
+                                 Redis Streams      SQLite / PostgreSQL   /metrics → Prometheus → Grafana
+                                 (domain events)    (trip ledger)          OTLP traces → Jaeger
 ```
 
 Both dispatchers run on one world: identical riders, traffic, incidents and drivers. Every
@@ -40,8 +44,9 @@ Center and Lincoln Park Zoo in their correct Chicago neighbourhoods.
 with two implementations, one active per process (`city.use(name)`, `ORCA_CITY`, `--city`):
 
 * **`StreetCity`** (`orca/streets.py`, and `frontend/src/cities.js` for the browser): a real street
-  network. Fastest paths by free-flow time (Dijkstra on the reversed graph, cached per destination,
-  under 1 ms); parallel segments between the same intersections keep the fastest. Riders are picked up
+  network. Fastest paths by the hour's travel time (Dijkstra on the reversed graph, cached per
+  destination in float32, 0.4 ms); parallel segments between the same intersections keep the fastest.
+  Walking a tree (a route, the road distance of many candidates) runs in compiled kernels. Riders are picked up
   only at intersections touching an ordinary street, never on an expressway.
 * **`GridCity`**: a 28 × 28 synthetic grid with 7 × 7 zones, for unit tests and as a fallback.
 
@@ -61,6 +66,18 @@ OpenStreetMap parks ─────────┘     · project to the city's 
                                          (Douglas-Peucker, 3 m) → frontend/data/<city>/buildings.js
 ```
 
+### Any city on demand
+
+`python -m orca.newcity --name cambridge --place "Cambridge, Massachusetts"` builds a city that has no
+official data at all: the box from Nominatim (at most 8 km a side), roads, parks and place names from
+OpenStreetMap, a local projection around the box centre (`geo.to_local`, the ellipsoid's radii of
+curvature at that latitude), the street-grid angle found from the roads (the length-weighted dominant
+bearing, folded to 90°), zones of about 1 km that contain streets and are named after the OpenStreetMap
+suburb or neighbourhood inside them, 3D buildings from OpenStreetMap footprints and height tags, and the
+public chargers. The spec and zones are stored in `artifacts/cities/`, where `cityspec` registers them,
+so the regular builders, the engine and the control room treat the city like the others. Without trip
+records it runs synthetic demand and a flat traffic profile.
+
 ### Traffic: per zone and per hour
 
 `scripts/prepare_trips.py` measures speed (trip distance over duration) from each city's own trips:
@@ -68,6 +85,12 @@ the citywide median for every hour, and a zone × hour table from short trips (�
 to both their zones and shrunk toward the city value (150 pseudo-trips) so thin zones stay stable.
 Cars move at the base speed × the road class factor × the speed of the zone they are in at that hour,
 so Midtown at 6 pm is slower than Harlem at 6 pm. Accidents slow a local area on top of it.
+
+Routes follow the same conditions: edge weights use the hour's speed of each edge's zone and slow down
+near live accidents (`StreetCity.set_conditions`, rebuilt only when the hour or the accidents change),
+so drivers navigate like with a traffic-aware app. Because speeds are known per zone rather than per
+street, the hourly effect on routes is small (a quarter of routes change at 17:00, saving 0.5% on
+average); routes through an accident save 7-10% (`docs/routing.md`, `python -m orca.routing_report`).
 
 ### Calibration against reality
 
@@ -105,13 +128,62 @@ TLC taxi-zone shapefile ──────────────┼─▶ scri
    position, ignoring how old that position is.
 3. **ORCA** holds it until the next 3-second batch. For each waiting request it takes the K nearest
    idle cars with fresh GPS, predicts each one's drive time by road, scores every pair and solves the
-   batch with `scipy.optimize.linear_sum_assignment`. Above 150 waiting requests it falls back to a
-   greedy pass so a burst can never stall the loop.
+   batch exactly: the dense Hungarian method up to 150 waiting requests, sparse LAPJV
+   (`min_weight_full_bipartite_matching`, one "wait for the next batch" column per request so a full
+   matching always exists) above, which decides 5,000 requests in 225 ms.
 4. The driver answers after 4-11 s. A decline or a 20 s silence sends the request back to the queue.
 5. Riders cancel after 15 minutes without pickup.
 
 Driver decisions are a deterministic hash of (car, request, attempt), so both dispatchers face
 identical drivers. Idle cars cruise by turning onto a random outgoing street at each intersection.
+
+## Engine core: arrays and compiled kernels
+
+The fleet is a structure of arrays (`dispatch.Fleet`): positions, headings, states, batteries,
+odometers, and every car's route in one shared arena (compacted when full). One Numba kernel
+(`kernels.step_fleet`) advances all cars per tick: GPS pings and the observed-speed features they feed,
+random loss of signal, driving along the route under local traffic and accidents, energy use, and the
+list of cars that reached the end of their route. Python handles only events: offers and answers,
+arrivals at stops, cruising and rebalancing. The spatial index is a counting sort into buckets with
+an exact k-nearest search; ETA features for a whole batch come from one tree walk per destination.
+
+| Cars per dispatcher | Before (one Python object per car) | Now | Faster than real time |
+|---:|---:|---:|---:|
+| 1,200 | 14.7 ms per simulated second | 2.4 ms | 414x |
+| 10,000 | 139 ms | 11.2 ms | 89x |
+| 20,000 | – | 23.7 ms | 42x |
+
+Both dispatchers run on every tick, so the engine moves twice the fleet. Details: `docs/scale.md`.
+
+## Shared rides
+
+Every car follows an ordered plan of stops (pick up A, pick up B, drop A, drop B, ...); without pooling
+the plan is [pickup, drop-off]. With `pool=True`, a rider who accepts sharing can also be inserted into a
+busy car: `kernels.best_insertion` tries every pickup and drop-off position in the plan, keeps it only
+if every stop stays on time (pickup before the rider would give up, every ride within 1.5x the direct
+drive plus 2 minutes) and the load within three riders, and scores it as the new rider's wait plus 0.3x
+the delay it causes everyone already aboard. These insertions compete with the idle cars in the same
+exact assignment. On Manhattan, with the demand fixed, ORCA with shared rides keeps the mean wait of
+1,200 solo cars with about 1,083 cars (10% fewer, 95% interval 5-13%) when half the riders opt in
+(`docs/pooling_manhattan.md`).
+
+## Electric fleet
+
+With `ev="smart"` or `"naive"`, cars drain a 75 kWh battery at 0.18 kWh/km, charge at the city's real
+public stations from OpenStreetMap (`orca/chargers.py`) with limited plugs and queues, and are offered
+only rides they can finish with charge to spare (`orca/charging.py`). Drivers left alone go to the
+nearest fast charger at 20%; ORCA sends each car to the station that returns it to service soonest,
+counting the cars plugged in, queued and on their way. Over a 12-hour Manhattan shift that cuts the
+charger queue from 25 to 1.6 minutes and the car-hours spent charging by 43% (`docs/ev_manhattan.md`).
+
+## Learned repositioning
+
+`orca/rl.py` learns V(s), a car's discounted future rides from becoming idle in state s (zone, time,
+live supply and forecast demand nearby), by fitted TD(0) with a target network on a small NumPy MLP,
+over four rounds of policy iteration on training seeds. Idle cars move to the neighbouring zone whose
+value beats theirs by more than the drive costs. On held-out seeds it recovers 39-97% of the gain the
+hand-written rebalancer has over no repositioning but does not beat it, so the rules stay the default
+(`docs/rl_manhattan.md`, with the two variants that were tried and dropped).
 
 ## Score
 
@@ -150,6 +222,14 @@ full 24-hour day. Results are means over seeds with 95% percentile-bootstrap int
 per-seed reduction against nearest-car dispatch, and Wilcoxon signed-rank tests for the ablations
 (learned vs heuristic models, tuned vs hand-set weights, give-up guard on vs off for riders lost).
 
+## What-if mode
+
+From the control room: incidents placed where you click (`{"cmd": "accident", "x": .., "z": ..}`), 200
+drivers logging off for 30 minutes in both fleets at once (`"logoff"`; the same cars, each after its
+current ride), and restarts with shared rides or an electric fleet (`/api/reset` with `pool`, `ev`).
+Frames stream as packed binary arrays (`?enc=b64`: uint16 positions, uint8 codes), 2.3x smaller than
+JSON and cheap to encode, so the view follows fleets of up to 10,000 cars.
+
 ## Serving and security
 
 `orca/security.py` is pure ASGI middleware (it never buffers the SSE stream):
@@ -159,7 +239,28 @@ per-seed reduction against nearest-car dispatch, and Wilcoxon signed-rank tests 
   Bearer $ORCA_ADMIN_TOKEN` when a token is set, or come from loopback in local development.
 * **Limits.** Per-client token buckets, a 4 KB body limit, caps on concurrent SSE streams.
 * **Headers.** Content-Security-Policy (no `eval`), nosniff, frame and referrer policies, request ids.
-* **Observability.** JSON access log, Prometheus counters per route and status class at `/metrics`.
+* **Observability.** JSON access log; `/metrics` with dispatch gauges, counters per route and status
+  class, and histograms for matching latency and engine advances; OpenTelemetry spans for every engine
+  advance and matching batch when `ORCA_OTLP_ENDPOINT` is set.
+
+## Production stack
+
+`docker compose --profile stack --env-file deploy/stack.env up` runs ORCA with:
+
+* **Redis Streams** (`orca/events.py`): every request, assignment, pickup, drop-off, cancellation and
+  incident, written by a background thread in pipelined batches (bounded queue, back-off, counted
+  failures: a slow broker never stalls the simulation). `tools/stream_consumer.py` is a downstream
+  consumer group computing live KPIs. Without Redis, `/api/events?after=` serves the same events.
+* **PostgreSQL** for the trip ledger (`orca/ledger.py`, SQLAlchemy Core: one code path for SQLite and
+  PostgreSQL; dialect-specific aggregation done in NumPy so both give identical answers).
+* **Prometheus** with alert rules (`deploy/alerts.yml`: server down, p95 wait, slow matching, engine
+  behind real time, event stream failing) and a provisioned **Grafana** dashboard
+  (`deploy/grafana/dashboards/orca.json`).
+* **Jaeger** for traces.
+
+CI runs the ledger and event-stream tests against real PostgreSQL and Redis service containers.
+`tools/loadtest.py` measures concurrent viewers: 400 at once each still receive 8.4 frames per
+second from one process (`docs/loadtest.md`).
 
 ## Delivery
 
@@ -176,7 +277,8 @@ per-seed reduction against nearest-car dispatch, and Wilcoxon signed-rank tests 
 
 At real scale the single process would split along the same seams:
 
-* **Ingest**: GPS pings and requests into Kafka (or Redpanda), partitioned by zone.
+* **Ingest**: GPS pings and requests into Kafka (or Redpanda), partitioned by zone; the domain events
+  already leave through a stream (Redis Streams today).
 * **Routing**: a contraction-hierarchy or OSRM service; per-request trees are cheap at 4,000 nodes but
   not on a metro-area graph.
 * **Location index**: H3 cells in Redis, replacing the bucket grid.

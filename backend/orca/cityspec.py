@@ -28,7 +28,7 @@ class CitySpec:
     name: str
     label: str
     short: str
-    projection: str                    # key into orca.geo.PROJECTIONS
+    projection: str                    # key into orca.geo.PROJECTIONS, or "local:<lat0>,<lon0>"
     grid_angle: float                  # degrees east of north of the street grid
     bbox: tuple                        # south, west, north, east (degrees) for OpenStreetMap roads
     zone_label: str
@@ -63,7 +63,10 @@ class CitySpec:
 
     # ---- zones: {zone id: (list of rings in projected metres, name)}
     def zones(self) -> dict:
-        return ZONE_LOADERS[self.name]()
+        if self.name in ZONE_LOADERS:
+            return ZONE_LOADERS[self.name]()
+        d = json.loads((CUSTOM / f"{self.name}_zones.json").read_text())       # built by orca.newcity
+        return {int(z["id"]): ([np.asarray(r, dtype=float) for r in z["rings"]], z["name"]) for z in d["zones"]}
 
 
 def _manhattan_zones() -> dict:
@@ -131,6 +134,24 @@ CITIES = {
         "City of Chicago: Transportation Network Providers (Uber, Lyft, Via) trips, September 2026",
         "City of Chicago TNP trip records", tags={"surround": "lake-east"}),
 }
+
+
+CUSTOM = ARTIFACTS / "cities"         # cities built with `python -m orca.newcity` (spec + zones as JSON)
+
+
+def _load_custom():
+    if not CUSTOM.is_dir():
+        return
+    for p in sorted(CUSTOM.glob("*.json")):
+        if p.name.endswith("_zones.json"):
+            continue
+        d = json.loads(p.read_text())
+        CITIES.setdefault(d["name"], CitySpec(d["name"], d["label"], d["short"], d["projection"], float(d["grid_angle"]),
+                                              tuple(d["bbox"]), d["zone_label"], d["data_note"], d["demand_source"],
+                                              tags=d.get("tags", {})))
+
+
+_load_custom()
 
 
 def get(name: str) -> CitySpec:
