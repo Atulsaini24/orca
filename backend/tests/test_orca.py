@@ -391,7 +391,7 @@ def test_electric_fleet_charges_and_never_runs_empty(city, policy):
         busy = (f.state == PICKUP) | (f.state == TRIP)
         assert (f.soc[busy] > 0.02).all(), "rides go only to cars with charge enough to finish them"
     fr = json.loads(json.dumps(e.frame("smart")))
-    assert 0 <= min(fr["agents"]["b"]) and max(fr["agents"]["b"]) <= 100
+    assert min(fr["agents"]["b"]) >= 0 and max(fr["agents"]["b"]) <= 100
     s = json.loads(json.dumps(e.summary()))
     assert len(s["fx"]["chargers"]["smart"]) == e.smart.ev.ns
 
@@ -527,3 +527,54 @@ def test_worker_processes_run_the_requested_city():
     specs = [RunSpec(seed=1, minutes=1, warm=5, demand="synthetic", city=c) for c in CITIES[1:]]
     res = run_many(specs + specs[::-1], workers=2, progress=False)
     assert [r["spec"]["city"] for r in res] == [s.city for s in specs + specs[::-1]]
+
+
+# ---------------------------------------------------------------------------- learned repositioning
+def test_value_network_gradients_match_finite_differences():
+    from orca import rl
+    rng = np.random.default_rng(0)
+    net = rl.ValueNet(5, seed=1)
+    z, X, y = rng.integers(0, 5, 16), rng.normal(size=(16, rl.N_FEAT)), rng.normal(5, 0.3, 16)
+    _, g = net.grads(z, X, y)
+    for k in ("W1", "W2", "w3", "E", "b1"):
+        idx = tuple(rng.integers(0, s) for s in net.p[k].shape)
+        old = net.p[k][idx]
+        net.p[k][idx] = old + 1e-6
+        up = net.grads(z, X, y)[0]
+        net.p[k][idx] = old - 1e-6
+        down = net.grads(z, X, y)[0]
+        net.p[k][idx] = old
+        assert g[k][idx] == pytest.approx((up - down) / 2e-6, rel=1e-3, abs=1e-7)
+
+
+def test_fitted_td_learns_a_known_value():
+    from orca import rl
+    rng = np.random.default_rng(2)
+    n = 3000
+    z = rng.integers(0, 2, n)                        # zone 1 gets a ride every 5 minutes, zone 0 every 20, forever
+    dt = np.where(z == 1, 300.0, 1200.0)
+    X = np.zeros((n, rl.N_FEAT))
+    net = rl.ValueNet(2, seed=0)
+    rl.fit_td(net, dict(z0=z, X0=X, z1=z, X1=X, dt=dt, alive=np.ones(n, bool), reward=np.ones(n)), rounds=40, epochs=3, lr=5e-3)
+    want = [1 / (1 - rl.GAMMA ** (dt_ / 60)) for dt_ in (1200.0, 300.0)]
+    got = net(np.array([0, 1]), np.zeros((2, rl.N_FEAT)))
+    assert got[0] == pytest.approx(want[0], rel=0.1) and got[1] == pytest.approx(want[1], rel=0.1)
+
+
+@pytest.mark.skipif("manhattan" not in CITIES, reason="street network not built")
+def test_repositioning_modes():
+    from orca import rl
+    if not rl.net_path("manhattan").exists():
+        pytest.skip("no trained repositioning model (python -m orca.rl train)")
+    for mode in ("learned", "off"):
+        e = Engine(seed=8, fleet=400, use_learned=False, city="manhattan", rebalance=mode)
+        moved = []
+        for _ in range(600):
+            before = int(np.count_nonzero(e.smart.f.rebal))
+            e.step(1.0)
+            moved.append(int(np.count_nonzero(e.smart.f.rebal)) - before)
+        if mode == "off":
+            assert not e.smart.f.rebal.any()
+        else:
+            assert e.smart.learned.moves > 0
+            assert max(moved) <= int(np.ceil(400 * 0.015))     # never more than the round's budget

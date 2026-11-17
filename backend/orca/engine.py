@@ -20,11 +20,12 @@ REQ_CODE = {"waiting": 0, "offered": 1, "assigned": 2}
 class Engine:
     def __init__(self, seed: int = 7, fleet: int = 1200, demand: str = "synthetic", data: str | None = None,
                  zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:",
-                 city: str | None = None, pool: bool = False, demand_fleet: int | None = None, ev: str | None = None):
+                 city: str | None = None, pool: bool = False, demand_fleet: int | None = None, ev: str | None = None,
+                 rebalance: str = "rules", rl_net: str | None = None, rl_explore: float = 0.0, rl_log: bool = False):
         from . import city as G
         self.city = G.use(city)
         self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned,
-                           city=self.city.name, pool=pool, ev=ev)
+                           city=self.city.name, pool=pool, ev=ev, rebalance=rebalance)
         tlc = None
         if demand == "tlc":
             from .demand import TLCReplay
@@ -36,7 +37,8 @@ class Engine:
         self.ledger = Ledger(db, run=f"seed{seed}-fleet{fleet}-{int(time.time())}")
         # ev: None (petrol), "smart" (ORCA plans charging) or "naive" (ORCA dispatches, drivers charge as they like);
         # nearest-car dispatch always leaves charging to the drivers
-        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool, ev=ev)
+        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool, ev=ev,
+                                    rebalance=rebalance, rl_net=rl_net, rl_explore=rl_explore, rl_log=rl_log)
         self.base = NearestDispatcher(self.world, spec, ledger=self.ledger, ev="naive" if ev else None)
         self.speed = 20.0
         self.paused = False

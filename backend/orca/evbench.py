@@ -64,7 +64,7 @@ def main():
     out = dict(config=dict(city=city.name, label=city.city_label, seeds=a.seeds, hours=a.hours, start=a.start, fleet=a.fleet,
                            battery_kwh=C.EV_BATTERY_KWH, kwh_per_km=C.EV_KWH_PER_KM, soc0=list(C.EV_SOC0), low=C.EV_LOW,
                            target=C.EV_TARGET,
-                           stations=int(len(st["x"])) if st else 0, fast_stations=int(st["dc"].sum()) if st else 0,
+                           stations=len(st["x"]) if st else 0, fast_stations=int(st["dc"].sum()) if st else 0,
                            fast_plugs=int(st["plugs"][st["dc"]].sum()) if st else 0, plugs=int(st["plugs"].sum()) if st else 0),
                summary=summary, seconds=round(time.time() - t0))
     DOCS.mkdir(exist_ok=True)

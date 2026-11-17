@@ -203,6 +203,7 @@ class Dispatcher:
         self.unit_km = getattr(self.city, "frame", {}).get("unit_m", 30.0) / 1000
         self._view = _View()
         self.ev = None                             # electric fleet: charging policy "naive" or "smart"
+        self.rl_rec = None                         # orca.rl transition recorder (training runs only)
         if ev:
             from .charging import ChargingNetwork
             self.ev = ChargingNetwork(self, ev)
@@ -280,6 +281,9 @@ class Dispatcher:
     def on_minute(self):
         pass
 
+    def on_idle(self, i: int):
+        """A car finished its plan and is free again."""
+
     def dispatch(self, dt):
         raise NotImplementedError
 
@@ -314,6 +318,7 @@ class Dispatcher:
                 self.ev.go_charge(i)
             else:
                 self.set_idle(i, 5 + self.rng.random() * 20)
+                self.on_idle(i)
             return
         s = stops[0]
         f.state[i] = PICKUP if s.kind == PICK else TRIP
@@ -538,9 +543,23 @@ class OrcaDispatcher(Dispatcher):
     label = "ORCA"
 
     def __init__(self, world, fleet_spec, telemetry=None, use_learned=True, ledger=None, pool: bool = False,
-                 ev: str | None = None):
+                 ev: str | None = None, rebalance: str = "rules", rl_net: str | None = None, rl_explore: float = 0.0,
+                 rl_log: bool = False):
         super().__init__(world, fleet_spec, telemetry, ledger, ev=ev)
         self.pool = pool
+        # repositioning of idle cars: "rules" (forecast deficits), "learned" (orca.rl value network) or "off"
+        self.rebalance_mode, self.learned, self.rl_rec = rebalance, None, None
+        if rebalance == "learned":
+            from pathlib import Path
+
+            from . import rl
+            net = rl.ValueNet.load(Path(rl_net) if rl_net else rl.net_path(self.city.name))
+            if net is None:
+                raise FileNotFoundError(f"no learned repositioning model for {self.city.name}: python -m orca.rl train")
+            self.learned = rl.LearnedRebalancer(self, net, rl_explore, seed=world.seed)
+        if rl_log:
+            from . import rl
+            self.rl_rec = rl.Recorder(self)
         if pool:
             self.label = "ORCA shared"
             self.pcell_start = np.zeros(self.BN * self.BN + 1, dtype=np.int64)
@@ -565,6 +584,10 @@ class OrcaDispatcher(Dispatcher):
 
     def on_minute(self):
         self.forecaster.update(self.world.clock())
+
+    def on_idle(self, i: int):
+        if self.rl_rec is not None:
+            self.rl_rec.on_idle(i)
 
     def dispatch(self, dt):
         self.batch_timer += dt
@@ -836,10 +859,19 @@ class OrcaDispatcher(Dispatcher):
         self.deficit_zones = [d[0] for d in deficit[:8]]
         if self.ev is not None and self.ev.policy == "smart":
             self.ev.top_up(self.z_idle, np.asarray(fc, dtype=float) * C.COVER)
-        if not deficit:
+        if self.rebalance_mode == "off":
             return
         free = np.flatnonzero(self.idle_fresh() & ~f.rebal)
         zones = self.city.zone_of_many(f.rx[free], f.rz[free])
+        if self.learned is not None:
+            moved = self.learned.step(free, zones, np.asarray(fc, dtype=float) * C.COVER)
+            t = self.world.t
+            if moved >= 12 and t - self.last_rebal_log > 420:
+                self.last_rebal_log = t
+                self.world.log("rebal", f"ORCA's learned policy moved {moved} idle cars toward busier zones")
+            return
+        if not deficit:
+            return
         by_zone: list[list[int]] = [[] for _ in range(N)]
         for i, z in zip(free.tolist(), zones.tolist()):
             by_zone[z].append(i)

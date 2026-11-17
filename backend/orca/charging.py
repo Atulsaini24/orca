@@ -114,8 +114,7 @@ class ChargingNetwork:
 
     # ---- every tick ---------------------------------------------------------------------------
     def step(self, dt: float):
-        from .dispatch import IDLE
-        from .dispatch import CHARGE, PLUGGED
+        from .dispatch import CHARGE, IDLE, PLUGGED
         d, f = self.d, self.d.f
         self.m["charge_s"] += float(np.count_nonzero((f.state == CHARGE) | (f.state == PLUGGED))) * dt
         on = np.flatnonzero(self.plugged)

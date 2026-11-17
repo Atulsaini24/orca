@@ -34,6 +34,10 @@ class RunSpec:
     pool: bool = False                  # ORCA offers shared rides
     demand_fleet: int | None = None     # size demand for this many cars (None = fleet): fleet sweeps keep riders fixed
     ev: str | None = None               # electric fleet: ORCA's charging policy, "smart" or "naive"
+    rebalance: str = "rules"            # ORCA's repositioning: "rules", "learned" (orca.rl) or "off"
+    rl_net: str | None = None           # value network file (default: the city's trained one)
+    rl_explore: float = 0.0             # share of random repositioning moves (training only)
+    rl_log: bool = False                # return the idle-to-idle transitions (training only)
     start_hour: float | None = None     # simulated clock at the start; None = config.START_CLOCK
     warm: int = 300
     hourly: bool = False                # also return mean wait per clock hour
@@ -64,7 +68,7 @@ def run(spec: RunSpec) -> dict:
     data = spec.data or (str(cityspec.trips_file(G.current().name)) if cityspec.trips_file(G.current().name) else None)
     e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand if data else "synthetic",
                data=data if spec.demand == "tlc" else None, city=spec.city, pool=spec.pool, demand_fleet=spec.demand_fleet,
-               ev=spec.ev)
+               ev=spec.ev, rebalance=spec.rebalance, rl_net=spec.rl_net, rl_explore=spec.rl_explore, rl_log=spec.rl_log)
     e.warm_up(spec.warm)
     for d in (e.smart, e.base):
         d.m["all"].clear()
@@ -87,9 +91,11 @@ def run(spec: RunSpec) -> dict:
                 hourly[name].setdefault(h, []).extend(new)
     out = dict(spec=dict(seed=spec.seed, minutes=spec.minutes, scenario=spec.scenario, use_learned=spec.use_learned, city=G.current().name,
                          params=spec.params, tag=spec.tag, start_hour=spec.start_hour, pool=spec.pool, fleet=spec.fleet,
-                         demand_fleet=spec.demand_fleet, ev=spec.ev))
+                         demand_fleet=spec.demand_fleet, ev=spec.ev, rebalance=spec.rebalance))
     for name, d in (("orca", e.smart), ("nearest", e.base)):
         out[name] = _stats(d)
+    if spec.rl_log:
+        out["rl"] = e.smart.rl_rec.arrays()
     if spec.hourly:
         out["hourly"] = {name: {h: dict(mean=float(np.mean(v)), n=len(v)) for h, v in sorted(hh.items()) if v}
                          for name, hh in hourly.items()}
