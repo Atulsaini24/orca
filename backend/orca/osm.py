@@ -1,6 +1,7 @@
 """Small OpenStreetMap Overpass client: one query, several public endpoints, retries with backoff."""
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -23,7 +24,7 @@ def query(q: str, timeout: int = 300, rounds: int = 3, raw: bool = False):
                 with urllib.request.urlopen(req, timeout=timeout) as r:
                     body = r.read()
                 return body if raw else json.loads(body)
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ConnectionError) as exc:
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError, json.JSONDecodeError, ConnectionError) as exc:
                 errors.append(f"{url}: {exc}")
         time.sleep(5 * (attempt + 1))
     raise RuntimeError("Overpass query failed on every endpoint:\n  " + "\n  ".join(errors[-len(ENDPOINTS):]))

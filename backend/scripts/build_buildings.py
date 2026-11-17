@@ -54,11 +54,32 @@ def osm_source(name: str) -> dict:
 
 
 def download_osm(spec, src):
-    """Overpass: every building way in the city's box, with geometry; written in the same row format as the others."""
+    """Overpass: every building way in the city's box, with geometry; written in the same row format as the others.
+
+    Fetched in tiles of about 2 km (public Overpass servers time out on a whole city at once); buildings that
+    cross a tile edge come back twice and are kept once.
+    """
+    import math
+
     from orca.osm import bbox_filter, query
-    data = query(f'[out:json][timeout:600][maxsize:1073741824];way["building"]{bbox_filter(spec.bbox)};out tags geom;', timeout=900)
+    s_, w_, n_, e_ = spec.bbox
+    ny = max(1, math.ceil((n_ - s_) * 111.32 / 2))
+    nx = max(1, math.ceil((e_ - w_) * 111.32 * math.cos(math.radians((s_ + n_) / 2)) / 2))
+    elements = {}
+    for i in range(ny):
+        for j in range(nx):
+            tile = (s_ + (n_ - s_) * i / ny, w_ + (e_ - w_) * j / nx, s_ + (n_ - s_) * (i + 1) / ny, w_ + (e_ - w_) * (j + 1) / nx)
+            cache = src["path"].with_name(f"{spec.name}_buildings_tile{i}_{j}.json")    # a retry resumes where it stopped
+            if cache.exists():
+                part = json.loads(cache.read_text())
+            else:
+                part = query(f'[out:json][timeout:180];way["building"]{bbox_filter(tile)};out tags geom;', timeout=300)
+                cache.write_text(json.dumps(part))
+            for el in part["elements"]:
+                elements[el["id"]] = el
+            print(f"  tile {i * nx + j + 1}/{nx * ny}: {len(elements):,} buildings so far", flush=True)
     rows = []
-    for el in data["elements"]:
+    for el in elements.values():
         g = el.get("geometry")
         if not g or len(g) < 4:
             continue
