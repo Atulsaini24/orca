@@ -204,23 +204,28 @@ class World {
     this.events.push(e); if (this.events.length > 200) this.events.shift();
     for (const f of this.listeners) f(e);
   }
-  triggerSpike() {
-    const [sx, sz] = this.innerPoint(0.2);
+  spot(at) {
+    if (!at) return this.innerPoint(0.2);
+    const c = this.city;
+    return c.snap(Math.min(c.WX, Math.max(0, at[0])), Math.min(c.WZ, Math.max(0, at[1])));
+  }
+  triggerSpike(at) {
+    const [sx, sz] = this.spot(at);
     const h = { x: sx, z: sz, vx: 0, vz: 0, s: 16, w: 3.2,
       until: this.t + 600, spike: true, boost: 0.55 };
     this.hotspots.push(h);
     this.log('spike', `Demand spike near ${zoneName(zoneOf(h.x, h.z))}: +55% city demand for 10 min`);
     return h;
   }
-  triggerOutage() {
-    const [ox, oz] = this.innerPoint(0.2);
+  triggerOutage(at) {
+    const [ox, oz] = this.spot(at);
     const o = { id: ++this.outageSeq, x: ox, z: oz, r: 55, until: this.t + 420 };
     this.outages.push(o);
     this.log('outage', `Network outage around ${zoneName(zoneOf(o.x, o.z))}: cars inside stop reporting GPS`);
     return o;
   }
-  triggerAccident() {
-    const [bx, bz] = this.innerPoint(0.2);
+  triggerAccident(at) {
+    const [bx, bz] = this.spot(at);
     const b = { x: bx, z: bz, vx: 0, vz: 0, r: 20, s: 0.78,
       until: this.t + 900, accident: true };
     this.blobs.push(b);

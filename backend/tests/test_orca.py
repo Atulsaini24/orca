@@ -239,6 +239,44 @@ def test_snapshots_are_json(engine):
     assert "orca_wait_seconds" in engine.prometheus()
 
 
+def test_packed_frames_match_json_frames(engine):
+    import base64
+    f, p = engine.frame("smart"), engine.frame("smart", packed=True)["agents"]
+    q, n = p["q"], p["n"]
+    u16 = lambda k: np.frombuffer(base64.b64decode(p[k]), dtype="<u2")
+    u8 = lambda k: np.frombuffer(base64.b64decode(p[k]), dtype=np.uint8)
+    assert n == len(f["agents"]["x"])
+    assert np.allclose(u16("x") / q, f["agents"]["x"], atol=0.6 / q + 0.01) and np.allclose(u16("z") / q, f["agents"]["z"], atol=0.6 / q + 0.01)
+    tx = u16("tx")
+    none = np.array(f["agents"]["tx"]) < 0
+    assert ((tx == 65535) == none).all() and np.allclose(tx[~none] / q, np.array(f["agents"]["tx"])[~none], atol=0.6 / q + 0.01)
+    assert (u8("s") == f["agents"]["s"]).all() and (u8("h") == f["agents"]["h"]).all()
+    assert len(json.dumps(p)) < 0.6 * len(json.dumps(f["agents"]))
+
+
+def test_incidents_where_clicked_and_drivers_logging_off():
+    e = Engine(seed=9, fleet=300, use_learned=False, city="grid")
+    e.warm_up(120)
+    assert e.command({"cmd": "accident", "x": 40.0, "z": 200.0})["ok"]
+    b = e.world.blobs[-1]
+    assert b.accident and abs(b.x - 40) <= 10 and abs(b.z - 200) <= 10
+    assert e.command({"cmd": "outage", "x": 9999, "z": -5})["ok"]                 # clamped into the city
+    o = e.world.outages[-1]
+    assert 0 <= o.x <= e.city.WX and 0 <= o.z <= e.city.WZ
+    assert not e.command({"cmd": "spike", "x": "left"})["ok"]
+    assert e.command({"cmd": "logoff", "value": 50, "minutes": 5})["ok"]
+    for _ in range(240):
+        e.step(1.0)
+    for d in (e.smart, e.base):
+        check_plans(d)
+        off = d.stats()["off_duty"]
+        assert 20 <= off <= 50 and np.array_equal(np.flatnonzero(d.f.off_until > 0), np.flatnonzero(e.smart.f.off_until > 0))
+    for _ in range(400):
+        e.step(1.0)
+    assert e.smart.stats()["off_duty"] == 0 and e.base.stats()["off_duty"] == 0     # back after five minutes
+    assert "s" in e.frame("smart")["agents"]
+
+
 def test_commands(engine):
     assert engine.command({"cmd": "speed", "value": 999})["ok"] and engine.speed == 120
     assert engine.command({"cmd": "demand", "value": 1.3})["ok"] and engine.world.demand_mult == 1.3
@@ -515,6 +553,20 @@ def test_api_end_to_end():
         assert requests.get(base + "/", allow_redirects=True).ok                   # home page, or redirect to /app
         assert requests.get(base + "/media/../server.py").status_code == 404
         assert requests.get(base + "/media/secrets.txt").status_code == 404
+        # what if: an incident where the operator clicked, drivers logging off, shared rides and an electric fleet
+        assert requests.post(base + "/api/command", json={"cmd": "accident", "x": 50, "z": 60}).json()["ok"]
+        assert requests.post(base + "/api/command", json={"cmd": "accident", "x": "here"}).status_code == 400
+        assert requests.post(base + "/api/command", json={"cmd": "logoff", "value": 40, "minutes": 10}).json()["ok"]
+        r = requests.post(base + "/api/reset", json={"fleet": 300, "pool": True, "ev": "smart"}).json()
+        assert r["ok"] and r["pool"] and r["ev"] == "smart"
+        assert requests.post(base + "/api/reset", json={"ev": "diesel"}).status_code == 400
+        assert requests.get(base + "/api/health").json()["pool"] is True
+        with requests.get(base + "/api/stream?view=smart&enc=b64", stream=True, timeout=5) as r:
+            for line in r.iter_lines(decode_unicode=True):
+                if line.startswith("data:") and '"type":"frame"' in line:
+                    a = json.loads(line[5:])["agents"]
+                    break
+        assert isinstance(a["x"], str) and a["n"] == 300 and {"o", "b"} <= set(a)
     finally:
         proc.terminate()
         proc.wait(5)

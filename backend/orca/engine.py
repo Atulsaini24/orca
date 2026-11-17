@@ -1,6 +1,7 @@
 """The engine: one world, two dispatchers on identical inputs, plus snapshots for clients."""
 from __future__ import annotations
 
+import base64
 import math
 import time
 
@@ -12,8 +13,9 @@ from .dispatch import IDLE, NearestDispatcher, OrcaDispatcher, make_fleet
 from .world import World
 
 # client car codes: 0 idle, 1 repositioning, 2 offer sent, 3 to pickup, 4 rider on board, 5 no GPS,
-# 6 driving to a charger, 7 charging; indexed here by fleet state (idle, offered, pickup, trip, charge, plugged)
-STATE_CODE = np.array([0, 2, 3, 4, 6, 7])
+# 6 driving to a charger, 7 charging, 8 off duty; indexed here by fleet state (idle, offered, pickup, trip, charge,
+# plugged, off)
+STATE_CODE = np.array([0, 2, 3, 4, 6, 7, 8])
 REQ_CODE = {"waiting": 0, "offered": 1, "assigned": 2}
 
 
@@ -85,8 +87,8 @@ class Engine:
         c = cmd.get("cmd")
         w = self.world
 
-        def number(default, lo, hi):
-            v = cmd.get("value", default)
+        def number(default, lo, hi, key="value"):
+            v = cmd.get(key, default)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
                 raise ValueError
             return float(max(lo, min(hi, v)))
@@ -97,41 +99,67 @@ class Engine:
             if c == "demand":
                 w.demand_mult = number(1, 0.3, 2.0)
                 return {"ok": True}
+            # an incident where the operator clicked ({"x": .., "z": ..} in world units), else somewhere central
+            at = (number(0, 0, self.city.WX, "x"), number(0, 0, self.city.WZ, "z")) if "x" in cmd or "z" in cmd else None
+            if c == "logoff":
+                return self.log_off(int(number(200, 1, self.smart.n // 2)), number(30, 5, 180, "minutes"))
         except ValueError:
-            return {"ok": False, "error": f"'{c}' needs a numeric value"}
+            return {"ok": False, "error": f"'{c}' needs numeric values"}
         if c == "pause":
             v = cmd.get("value", not self.paused)
             if not isinstance(v, bool):
                 return {"ok": False, "error": "'pause' needs true or false"}
             self.paused = v
         elif c == "spike":
-            w.trigger_spike()
+            w.trigger_spike(at)
         elif c == "outage":
-            w.trigger_outage()
+            w.trigger_outage(at)
         elif c == "accident":
-            w.trigger_accident()
+            w.trigger_accident(at)
         else:
             return {"ok": False, "error": f"Unknown command '{c}'"}
+        return {"ok": True}
+
+    def log_off(self, n: int, minutes: float) -> dict:
+        """The same n drivers log off in both fleets for some minutes, each once their current ride is done."""
+        w = self.world
+        ids = np.random.default_rng(w.seed * 7919 + w.event_seq).choice(self.smart.n, size=n, replace=False)
+        for d in (self.smart, self.base):
+            d.f.off_until[ids] = w.t + minutes * 60
+        w.log("logoff", f"{n:,} drivers log off for {minutes:.0f} min after their current ride, in both fleets")
         return {"ok": True}
 
     # ---- snapshots ------------------------------------------------------------------
     def disp(self, view: str):
         return self.smart if view == "smart" else self.base
 
-    def frame(self, view: str) -> dict:
-        """Fast-changing state, sent about 10 times a second."""
+    def frame(self, view: str, packed: bool = False) -> dict:
+        """Fast-changing state, sent about 10 times a second.
+
+        packed: car arrays as base64 little-endian binary (positions as uint16 in 1/q units, codes as uint8),
+        about 2.3x smaller than JSON numbers and much cheaper to encode, for fleets of many thousands.
+        """
         d, t = self.disp(view), self.world.t
         f = d.f
         code = STATE_CODE[f.state]
         code[(f.state == IDLE) & f.rebal] = 1
         code[f.offline_until >= t] = 5
         heading = np.rint(np.arctan2(f.hx, f.hz) / math.tau * 256).astype(np.int64) & 255   # 0-255 = full turn
-        agents = dict(x=np.round(f.x, 2).tolist(), z=np.round(f.z, 2).tolist(), h=heading.tolist(), s=code.tolist(),
-                      tx=np.round(f.tgt_x, 2).tolist(), tz=np.round(f.tgt_z, 2).tolist())
+        cols = dict(x=f.x, z=f.z, h=heading, s=code, tx=f.tgt_x, tz=f.tgt_z)
         if d.pool:
-            agents["o"] = f.load.tolist()                  # riders on board
+            cols["o"] = f.load                             # riders on board
         if d.ev is not None:
-            agents["b"] = np.clip(np.rint(f.soc * 100), 0, 100).astype(np.int64).tolist()    # battery, %
+            cols["b"] = np.clip(np.rint(f.soc * 100), 0, 100)    # battery, %
+        if packed:
+            q = min(20.0, 65000.0 / max(self.city.WX, self.city.WZ))
+            pos = lambda v, none=False: np.where(v < 0, 65535, np.rint(np.clip(v, 0, None) * q)).astype("<u2") if none \
+                else np.rint(v * q).astype("<u2")
+            enc = dict(x=pos(f.x), z=pos(f.z), tx=pos(f.tgt_x, True), tz=pos(f.tgt_z, True))
+            agents = {k: base64.b64encode(enc[k] if k in enc else np.asarray(v).astype(np.uint8)).decode() for k, v in cols.items()}
+            agents["q"], agents["n"] = q, len(f.x)
+        else:
+            agents = {k: (np.round(v, 2) if k in ("x", "z", "tx", "tz") else np.asarray(v).astype(np.int64)).tolist()
+                      for k, v in cols.items()}
         reqs = [[rs.r.id, rs.r.x, rs.r.z, REQ_CODE.get(rs.status, 0), 1 if rs.r.p1 else 0, round(t - rs.r.t, 1)]
                 for rs in d.active]
         return dict(type="frame", t=round(t, 2), clock=self.world.clock(), view=view, agents=agents, reqs=reqs)

@@ -69,6 +69,7 @@ a.wordmark:not([href]){pointer-events:none}
 .key{position:absolute;left:24px;top:70px;display:flex;flex-wrap:wrap;gap:5px 14px;max-width:540px;font-size:12.5px;color:var(--ink-2);pointer-events:none;
   padding:8px 10px;background:rgba(251,251,250,.78);border-radius:6px}
 .key span{display:inline-flex;align-items:center;gap:6px}
+.key span[hidden]{display:none}
 .key i{width:11px;height:7px;border-radius:2px;display:inline-block}
 .key i.ring{width:10px;height:10px;border-radius:50%;background:none!important;box-shadow:inset 0 0 0 2px currentColor}
 
@@ -94,6 +95,8 @@ a.wordmark:not([href]){pointer-events:none}
 .incident:hover{box-shadow:0 0 0 1.5px #000,0 8px 22px rgba(30,40,55,.12)}
 .incident:active{transform:translateY(1px)}
 .incident i{width:10px;height:10px;border-radius:2px}
+.incident[aria-pressed="true"]{box-shadow:0 0 0 2px #000}
+canvas.placing{cursor:crosshair}
 .row{display:flex;gap:8px;align-items:center}
 .slider{display:flex;align-items:center;gap:10px;background:#fff;border-radius:6px;padding:9px 12px}
 .slider output{font-weight:700;font-size:13.5px;min-width:44px;text-align:right}
@@ -297,6 +300,10 @@ body.capture .spot{outline-offset:6px}
     <span><i style="background:var(--taxi)"></i>Going to pickup</span>
     <span><i style="background:var(--blue)"></i>Rider on board</span>
     <span><i style="background:var(--red)"></i>No GPS</span>
+    <span class="k-pool" hidden><i style="background:#0E9FA0"></i>Sharing a ride</span>
+    <span class="k-ev" hidden><i style="background:#12A150"></i>Going to charge</span>
+    <span class="k-ev" hidden><i style="background:#3DDC84"></i>Charging</span>
+    <span class="k-ev" hidden><i class="ring" style="border-color:#12A150"></i>Charging station</span>
     <span style="color:#000"><i class="ring"></i>Waiting rider</span>
     <span style="color:var(--red)"><i class="ring"></i>Urgent</span>
   </div>
@@ -333,7 +340,7 @@ body.capture .spot{outline-offset:6px}
         <button type="button" data-view="smart" class="y" aria-pressed="true">ORCA</button>
         <button type="button" data-view="base" aria-pressed="false">Nearest car</button>
       </div></div>
-    <div class="ctl"><span class="lab">Cause an incident</span>
+    <div class="ctl"><span class="lab">Cause an incident, then click where</span>
       <div class="row">
         <button class="incident shadow" type="button" data-cmd="spike"><i style="background:var(--violet)"></i>Demand spike</button>
         <button class="incident shadow" type="button" data-cmd="outage"><i style="background:var(--red)"></i>GPS outage</button>
@@ -342,7 +349,13 @@ body.capture .spot{outline-offset:6px}
     <div class="ctl"><label for="demand">Demand</label>
       <div class="slider shadow"><input type="range" id="demand" min="0.6" max="1.6" step="0.05" value="1"><output id="demandV" class="num">1.00×</output></div></div>
     <div class="ctl"><label for="fleet">Cars per dispatcher</label>
-      <div class="slider shadow"><input type="range" id="fleet" min="400" max="3000" step="100" value="1200"><output id="fleetV" class="num">1,200</output></div></div>
+      <div class="slider shadow"><input type="range" id="fleet" min="400" max="10000" step="200" value="1200"><output id="fleetV" class="num">1,200</output></div></div>
+    <div class="ctl" id="whatif" hidden><span class="lab">What if</span>
+      <div class="row">
+        <button class="incident shadow" type="button" id="logoff"><i style="background:#737B86"></i>200 drivers log off</button>
+        <button class="incident shadow" type="button" id="poolT" aria-pressed="false"><i style="background:#0E9FA0"></i>Shared rides</button>
+        <button class="incident shadow" type="button" id="evT" aria-pressed="false"><i style="background:#12A150"></i>Electric fleet</button>
+      </div></div>
   </div>
 
   <div id="tour" aria-live="polite">

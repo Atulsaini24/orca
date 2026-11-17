@@ -303,21 +303,24 @@ class World:
             f(e)
         return e
 
-    def _spot(self):
-        return self.inner_point(0.2)
+    def _spot(self, at=None):
+        """A road point for an incident: where the operator clicked, or somewhere away from the edges."""
+        if at is None:
+            return self.inner_point(0.2)
+        return self.city.snap(clamp(float(at[0]), 0, self.city.WX), clamp(float(at[1]), 0, self.city.WZ))
 
-    def trigger_spike(self):
-        x, z = self._spot()
+    def trigger_spike(self, at=None):
+        x, z = self._spot(at)
         self.spikes.append(Hotspot(x, z, 0, 0, 16, 1.0, self.t + 600, True, 0.55))
         self.log("spike", f"Demand spike near {zone_name(zone_of(x, z))}: 55% more requests citywide for 10 min")
 
-    def trigger_outage(self):
-        x, z = self._spot()
+    def trigger_outage(self, at=None):
+        x, z = self._spot(at)
         self.outage_seq += 1
         self.outages.append(Outage(self.outage_seq, x, z, 55, self.t + 420))
         self.log("outage", f"Network outage around {zone_name(zone_of(x, z))}: cars inside stop reporting GPS")
 
-    def trigger_accident(self):
-        x, z = self._spot()
+    def trigger_accident(self, at=None):
+        x, z = self._spot(at)
         self.blobs.append(Blob(x, z, 0, 0, 20, 0.78, self.t + 900, True))
         self.log("accident", f"Major accident near {zone_name(zone_of(x, z))}: road speed down about 75%")

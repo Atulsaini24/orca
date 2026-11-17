@@ -69,6 +69,7 @@ a.wordmark:not([href]){pointer-events:none}
 .key{position:absolute;left:24px;top:70px;display:flex;flex-wrap:wrap;gap:5px 14px;max-width:540px;font-size:12.5px;color:var(--ink-2);pointer-events:none;
   padding:8px 10px;background:rgba(251,251,250,.78);border-radius:6px}
 .key span{display:inline-flex;align-items:center;gap:6px}
+.key span[hidden]{display:none}
 .key i{width:11px;height:7px;border-radius:2px;display:inline-block}
 .key i.ring{width:10px;height:10px;border-radius:50%;background:none!important;box-shadow:inset 0 0 0 2px currentColor}
 
@@ -94,6 +95,8 @@ a.wordmark:not([href]){pointer-events:none}
 .incident:hover{box-shadow:0 0 0 1.5px #000,0 8px 22px rgba(30,40,55,.12)}
 .incident:active{transform:translateY(1px)}
 .incident i{width:10px;height:10px;border-radius:2px}
+.incident[aria-pressed="true"]{box-shadow:0 0 0 2px #000}
+canvas.placing{cursor:crosshair}
 .row{display:flex;gap:8px;align-items:center}
 .slider{display:flex;align-items:center;gap:10px;background:#fff;border-radius:6px;padding:9px 12px}
 .slider output{font-weight:700;font-size:13.5px;min-width:44px;text-align:right}
@@ -297,6 +300,10 @@ body.capture .spot{outline-offset:6px}
     <span><i style="background:var(--taxi)"></i>Going to pickup</span>
     <span><i style="background:var(--blue)"></i>Rider on board</span>
     <span><i style="background:var(--red)"></i>No GPS</span>
+    <span class="k-pool" hidden><i style="background:#0E9FA0"></i>Sharing a ride</span>
+    <span class="k-ev" hidden><i style="background:#12A150"></i>Going to charge</span>
+    <span class="k-ev" hidden><i style="background:#3DDC84"></i>Charging</span>
+    <span class="k-ev" hidden><i class="ring" style="border-color:#12A150"></i>Charging station</span>
     <span style="color:#000"><i class="ring"></i>Waiting rider</span>
     <span style="color:var(--red)"><i class="ring"></i>Urgent</span>
   </div>
@@ -333,7 +340,7 @@ body.capture .spot{outline-offset:6px}
         <button type="button" data-view="smart" class="y" aria-pressed="true">ORCA</button>
         <button type="button" data-view="base" aria-pressed="false">Nearest car</button>
       </div></div>
-    <div class="ctl"><span class="lab">Cause an incident</span>
+    <div class="ctl"><span class="lab">Cause an incident, then click where</span>
       <div class="row">
         <button class="incident shadow" type="button" data-cmd="spike"><i style="background:var(--violet)"></i>Demand spike</button>
         <button class="incident shadow" type="button" data-cmd="outage"><i style="background:var(--red)"></i>GPS outage</button>
@@ -342,7 +349,13 @@ body.capture .spot{outline-offset:6px}
     <div class="ctl"><label for="demand">Demand</label>
       <div class="slider shadow"><input type="range" id="demand" min="0.6" max="1.6" step="0.05" value="1"><output id="demandV" class="num">1.00×</output></div></div>
     <div class="ctl"><label for="fleet">Cars per dispatcher</label>
-      <div class="slider shadow"><input type="range" id="fleet" min="400" max="3000" step="100" value="1200"><output id="fleetV" class="num">1,200</output></div></div>
+      <div class="slider shadow"><input type="range" id="fleet" min="400" max="10000" step="200" value="1200"><output id="fleetV" class="num">1,200</output></div></div>
+    <div class="ctl" id="whatif" hidden><span class="lab">What if</span>
+      <div class="row">
+        <button class="incident shadow" type="button" id="logoff"><i style="background:#737B86"></i>200 drivers log off</button>
+        <button class="incident shadow" type="button" id="poolT" aria-pressed="false"><i style="background:#0E9FA0"></i>Shared rides</button>
+        <button class="incident shadow" type="button" id="evT" aria-pressed="false"><i style="background:#12A150"></i>Electric fleet</button>
+      </div></div>
   </div>
 
   <div id="tour" aria-live="polite">
@@ -619,23 +632,28 @@ class World {
     this.events.push(e); if (this.events.length > 200) this.events.shift();
     for (const f of this.listeners) f(e);
   }
-  triggerSpike() {
-    const [sx, sz] = this.innerPoint(0.2);
+  spot(at) {
+    if (!at) return this.innerPoint(0.2);
+    const c = this.city;
+    return c.snap(Math.min(c.WX, Math.max(0, at[0])), Math.min(c.WZ, Math.max(0, at[1])));
+  }
+  triggerSpike(at) {
+    const [sx, sz] = this.spot(at);
     const h = { x: sx, z: sz, vx: 0, vz: 0, s: 16, w: 3.2,
       until: this.t + 600, spike: true, boost: 0.55 };
     this.hotspots.push(h);
     this.log('spike', `Demand spike near ${zoneName(zoneOf(h.x, h.z))}: +55% city demand for 10 min`);
     return h;
   }
-  triggerOutage() {
-    const [ox, oz] = this.innerPoint(0.2);
+  triggerOutage(at) {
+    const [ox, oz] = this.spot(at);
     const o = { id: ++this.outageSeq, x: ox, z: oz, r: 55, until: this.t + 420 };
     this.outages.push(o);
     this.log('outage', `Network outage around ${zoneName(zoneOf(o.x, o.z))}: cars inside stop reporting GPS`);
     return o;
   }
-  triggerAccident() {
-    const [bx, bz] = this.innerPoint(0.2);
+  triggerAccident(at) {
+    const [bx, bz] = this.spot(at);
     const b = { x: bx, z: bz, vx: 0, vz: 0, r: 20, s: 0.78,
       until: this.t + 900, accident: true };
     this.blobs.push(b);
@@ -2445,7 +2463,7 @@ function buildStreetCity(R, C) {
 // ORCA control room: data sources, live drawing, input, console and guided tour.
 // Bundled after sim.js (engine), gl.js (renderer) and city.js (model).
 // =============================================================================
-const CITY0 = city(), WX = CITY0.WX, WZ = CITY0.WZ, W = Math.max(WX, WZ), ZN = CITY0.N, MAX_AGENTS = 4000, MAX_REQ = 5000;
+const CITY0 = city(), WX = CITY0.WX, WZ = CITY0.WZ, W = Math.max(WX, WZ), ZN = CITY0.N, MAX_AGENTS = 10000, MAX_REQ = 5000;
 const STREETS = CITY0.name !== 'grid';
 const CITY_SHORT = STREETS ? CITY0.short : 'the grid city';
 // Camera targets at real places, named by zone. The tour is written for Manhattan; other cities map its shots
@@ -2550,9 +2568,10 @@ class DemoSource extends Emitter {
     if (c.cmd === 'speed') this.speed = c.value;
     else if (c.cmd === 'pause') this.paused = c.value;
     else if (c.cmd === 'demand') { this.demand = c.value; w.demandMult = c.value; }
-    else if (c.cmd === 'spike') w.triggerSpike();
-    else if (c.cmd === 'outage') w.triggerOutage();
-    else if (c.cmd === 'accident') w.triggerAccident();
+    else if (c.cmd === 'spike') w.triggerSpike(at(c));
+    else if (c.cmd === 'outage') w.triggerOutage(at(c));
+    else if (c.cmd === 'accident') w.triggerAccident(at(c));
+    else return { ok: false, error: 'Only the Python server runs this. Start it with make run.' };
     return { ok: true };
   }
   setView(v) { this.view = v; }
@@ -2560,13 +2579,33 @@ class DemoSource extends Emitter {
   async models() { return window.ORCA_REPORT; }
 }
 
+const at = (c) => (c.x != null && c.z != null ? [c.x, c.z] : null);
+// Packed frame (server ?enc=b64): positions as uint16 in 1/q world units (65535 = none), codes as uint8.
+function b64bytes(s) { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function unpackAgents(a) {
+  const n = a.n, inv = 1 / a.q;
+  const pos = (s, none) => {
+    const v = new Uint16Array(b64bytes(s).buffer), f = new Float32Array(n);
+    for (let i = 0; i < n; i++) f[i] = none && v[i] === 65535 ? -1 : v[i] * inv;
+    return f;
+  };
+  const out = { x: pos(a.x), z: pos(a.z), tx: pos(a.tx, true), tz: pos(a.tz, true), h: b64bytes(a.h), s: b64bytes(a.s) };
+  if (a.o) out.o = b64bytes(a.o);
+  if (a.b) out.b = b64bytes(a.b);
+  return out;
+}
+
 class LiveSource extends Emitter {
   constructor(health) { super(); this.kind = 'live'; this.health = health; this.view = 'smart'; this.speed = health.speed; this.paused = false; }
   start() { this.connect(); }
   connect() {
     if (this.es) this.es.close();
-    this.es = new EventSource(`/api/stream?view=${this.view}`);
-    this.es.addEventListener('frame', (e) => { const f = JSON.parse(e.data); f.n = f.agents.x.length; this.emit('frame', f); });
+    this.es = new EventSource(`/api/stream?view=${this.view}&enc=b64`);
+    this.es.addEventListener('frame', (e) => {
+      const f = JSON.parse(e.data);
+      if (typeof f.agents.x === 'string') f.agents = unpackAgents(f.agents);
+      f.n = f.agents.x.length; this.emit('frame', f);
+    });
     this.es.addEventListener('summary', (e) => { const s = JSON.parse(e.data); s.heatScale = 1 / (s.heat_scale || 10); this.emit('summary', s); });
     this.es.onopen = () => this.emit('status', 'live');
     this.es.onerror = () => this.emit('status', 'reconnecting');
@@ -2587,7 +2626,7 @@ class LiveSource extends Emitter {
   }
   command(c) { if (c.cmd === 'speed') this.speed = c.value; if (c.cmd === 'pause') this.paused = c.value; return this.post('/api/command', c); }
   async explain(id) { return (await fetch(`/api/explain/${id}`)).json(); }
-  reset(fleet) { return this.post('/api/reset', { fleet }); }
+  reset(fleet, opts = {}) { return this.post('/api/reset', { fleet, ...opts }); }
   async models() { try { return await (await fetch('/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
 }
 
@@ -2673,7 +2712,9 @@ const heatPix = new Uint8Array(HW * HH * 4), heatTex = R.heatTexture(HW, HH);
 const heatPlane = { tex: heatTex, rect: new Float32Array([0, 0, HW * HCELL, HH * HCELL]), y: 0.48, alpha: 0.9, visible: true };
 R.planes.push(heatPlane);
 
-const STATE_COLORS = ['#737B86', '#7FB0C8', '#FF7A00', '#FFC20A', '#2D5BE3', '#E5352B'].map(srgb);
+// 0 free, 1 repositioning, 2 offer sent, 3 to pickup, 4 rider on board, 5 no GPS, 6 to a charger, 7 charging, 8 off duty
+const STATE_COLORS = ['#737B86', '#7FB0C8', '#FF7A00', '#FFC20A', '#2D5BE3', '#E5352B', '#12A150', '#3DDC84', '#737B86'].map(srgb);
+const C_SHARED = srgb('#0E9FA0');                   // two or three riders on board
 const C_WAIT0 = srgb('#15171A'), C_WAIT1 = srgb('#E5352B'), C_OFFER = srgb('#FF7A00'), C_ASSIGNED = srgb('#C79200'), C_P1 = srgb('#E5352B');
 const LINE_COL = { 2: [1.0, 0.48, 0.0, 0.9], 3: [0.69, 0.5, 0.0, 0.85], 4: [0.18, 0.36, 0.89, 0.28] };
 const headAngle = (h) => (h / 256) * Math.PI * 2;
@@ -2751,9 +2792,10 @@ function drawFrame(dt) {
     const target = headAngle(A.h[i]);
     if (!angleInit) angle[i] = target;
     else { let d = target - angle[i]; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; angle[i] += d * turn; }
-    const st = A.s[i], c = STATE_COLORS[st];
+    const st = A.s[i], c = A.o && A.o[i] >= 2 ? C_SHARED : STATE_COLORS[st];
+    if (st === 8) { cars.set(i, x, -9, z, 0, 0, 0, 0, 0, 0, 0, 0); continue; }     // logged off: not on the map
     cars.set(i, x, 0, z, CAR_K, CAR_K, CAR_K, angle[i], c[0], c[1], c[2], 1);
-    if (lamps && st !== 5) {                              // headlamp pool on the road ahead
+    if (lamps && st !== 5 && st !== 7) {                              // headlamp pool on the road ahead
       const fx = Math.sin(angle[i]), fz = Math.cos(angle[i]);
       beams.set(nb++, x + fx * 2.9 * CAR_K, 0.09, z + fz * 2.9 * CAR_K, 1.25 * CAR_K, 1, 2.3 * CAR_K, angle[i], 1.0, 0.86, 0.58, 0.42 * night);
     }
@@ -2830,6 +2872,13 @@ function drawFx() {
   for (const [x, z, r] of S.fx.outages) ring(`o${Math.round(x)},${Math.round(z)}`, x, z, r, [0.9, 0.14, 0.1]);
   for (const [x, z, r] of S.fx.accidents) { ring(`a${Math.round(x)},${Math.round(z)}`, x, z, r, [1.0, 0.45, 0.0]); fxLines.circle(x, 1.4, z, r * 0.45, 1, 0.45, 0, 0.9, 2.4, 48); }
   for (const [x, z, r] of S.fx.spikes) ring(`s${Math.round(x)},${Math.round(z)}`, x, z, r, [0.42, 0.24, 0.94]);
+  const st = S.fx.chargers && S.fx.chargers[view];
+  if (st) for (const [x, z, plugs, used, queue, dc] of st) {     // a charging station: plugs in use, and a red ring when cars queue
+    const r = (dc ? 3.2 : 2.2) * Math.max(0.6, CAR_K), busy = used / Math.max(1, plugs);
+    fxLines.circle(x, 1.2, z, r, 0.07, 0.63, 0.31, 0.95, 2.2, 24);
+    if (busy > 0) fxLines.circle(x, 1.25, z, r * 0.55, 0.24, 0.86, 0.52, 0.5 + 0.5 * busy, 3.2 * busy + 1, 18);
+    if (queue > 0) fxLines.circle(x, 1.3, z, r * 1.45, 0.9, 0.14, 0.1, 0.9 * pulse, 2.2, 24);
+  }
   fxLines.commit();
 }
 function paintHeat(arr, scale) {
@@ -2903,6 +2952,12 @@ canvas.addEventListener('pointermove', (e) => {
 });
 canvas.addEventListener('pointerup', (e) => {
   const d = drag; drag = null;
+  if (d && d.moved < 6 && placing) {
+    const [x, y] = local(e), g = cam.ground(x, y, viewW, viewH);
+    if (g) { src.command({ cmd: placing, x: g[0], z: g[2] }); addEffect(g[0], g[2], [0, 0, 0], 8, 0.7); }
+    setPlacing(null);
+    return;
+  }
   if (d && d.moved < 6) {
     const [x, y] = local(e), q = nearestReq(x, y);
     if (q) { pinned = q[0]; selectTab('why'); refreshPinned(); addEffect(q[1], q[2], [0, 0, 0], 4, 0.5); }
@@ -2937,6 +2992,7 @@ const keys = new Set();
 addEventListener('keydown', (e) => {
   if (e.target.closest('input, dialog')) return;
   if (e.key === ' ') { e.preventDefault(); if (touring) tourTogglePlay(); else togglePause(); return; }
+  if (e.key === 'Escape' && placing) { setPlacing(null); return; }
   if (e.key === 'Escape') { if (touring) endTour(); else { pinned = null; lastSwap = 0; if (summary) renderWhy(summary.notable); } return; }
   if (e.target !== document.body && e.target !== canvas) return;
   const k = e.key.toLowerCase();
@@ -2970,10 +3026,11 @@ function updateCursor() {
   if (!on) return;
   ptr.cx += (ptr.x - ptr.cx) * 0.45; ptr.cy += (ptr.y - ptr.cy) * 0.45;
   cursor.style.transform = `translate(${ptr.cx}px, ${ptr.cy}px)`;
-  const state = drag ? (drag.mode === 'pan' ? 'pan' : drag.moved > 6 ? 'drag' : '') : hoverReq ? 'hover' : '';
-  cursor.className = 'show ' + state + (state ? ' labeled' : '');
-  cursorLbl.className = 'lbl' + (state === 'hover' ? ' yellow' : '');
-  cursorLbl.textContent = state === 'hover' ? `Inspect request ${hoverReq[0]}${hoverReq[4] ? ', urgent' : ''}` : state === 'drag' ? 'Rotate' : state === 'pan' ? 'Move' : '';
+  const state = drag ? (drag.mode === 'pan' ? 'pan' : drag.moved > 6 ? 'drag' : '') : placing ? 'place' : hoverReq ? 'hover' : '';
+  cursor.className = 'show ' + (state === 'place' ? 'hover' : state) + (state ? ' labeled' : '');
+  cursorLbl.className = 'lbl' + (state === 'hover' || state === 'place' ? ' yellow' : '');
+  cursorLbl.textContent = state === 'place' ? `Place the ${PLACE_NAME[placing]} here` : state === 'hover' ? `Inspect request ${hoverReq[0]}${hoverReq[4] ? ', urgent' : ''}`
+    : state === 'drag' ? 'Rotate' : state === 'pan' ? 'Move' : '';
 }
 const compass = $('#compass svg'); let compassDeg = null;
 function updateCompass() { const deg = Math.round((-cam.yaw * 180) / Math.PI); if (deg !== compassDeg) { compassDeg = deg; compass.style.transform = `rotate(${deg}deg)`; } }
@@ -3145,6 +3202,10 @@ function renderEngine(S) {
 }
 function onSummary(S) {
   summary = S;
+  const pool = !!(S.engine && S.engine.pool), ev = !!(S.fx && S.fx.chargers);
+  $('#poolT').setAttribute('aria-pressed', pool); $('#evT').setAttribute('aria-pressed', ev);
+  document.querySelectorAll('.k-pool').forEach((k) => (k.hidden = !pool));
+  document.querySelectorAll('.k-ev').forEach((k) => (k.hidden = !ev));
   renderBoard(S); drawChart(S); renderForecast(S); renderZones(S); renderEvents(S); renderEngine(S);
   paintHeat(S.heat, S.heatScale ?? 1);
   if (touring) return;
@@ -3187,7 +3248,30 @@ function setView(v) {
   document.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.view === v));
 }
 document.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => setView(b.dataset.view)));
-document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => src.command({ cmd: b.dataset.cmd })));
+// What if: an incident button arms placement (click the map to put it there; press the button again for
+// somewhere central). Drivers logging off, shared rides and an electric fleet need the Python server.
+let placing = null;
+const PLACE_NAME = { spike: 'demand spike', outage: 'GPS outage', accident: 'accident' };
+function setPlacing(cmd) {
+  placing = cmd;
+  document.querySelectorAll('[data-cmd]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.cmd === cmd));
+  canvas.classList.toggle('placing', !!cmd);
+  if (cmd) toast(`Click the map to place the ${PLACE_NAME[cmd]}. Press the button again to place it in the centre, Esc to cancel.`);
+}
+document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => {
+  if (placing === b.dataset.cmd) { src.command({ cmd: placing }); setPlacing(null); } else setPlacing(b.dataset.cmd);
+}));
+$('#logoff').onclick = () => src.command({ cmd: 'logoff', value: 200, minutes: 30 });
+async function restartWith(opts, msg) {
+  toast(msg);
+  const res = await src.reset(+$('#fleet').value, opts);
+  if (res && res.ok === false) return;
+  lastSeq = -1; pinned = null; shownId = null; prevF = curF = null; angleInit = false; born.clear(); lastStatus.clear(); knownFx.clear();
+}
+$('#poolT').onclick = () => { const on = $('#poolT').getAttribute('aria-pressed') !== 'true';
+  restartWith({ pool: on }, on ? 'Restarting with shared rides: half the riders accept sharing, up to three per car…' : 'Restarting with solo rides…'); };
+$('#evT').onclick = () => { const on = $('#evT').getAttribute('aria-pressed') !== 'true';
+  restartWith({ ev: on ? 'smart' : null }, on ? 'Restarting with an electric fleet and the city\'s real charging stations…' : 'Restarting with petrol cars…'); };
 function setSpeed(v) { src.command({ cmd: 'speed', value: v }); document.querySelectorAll('[data-speed]').forEach((x) => x.setAttribute('aria-pressed', +x.dataset.speed === v)); }
 document.querySelectorAll('[data-speed]').forEach((b) => (b.onclick = () => setSpeed(+b.dataset.speed)));
 const PAUSE_SVG = '<svg viewBox="0 0 14 14" fill="currentColor"><rect x="2" y="1.5" width="3.4" height="11" rx=".6"/><rect x="8.6" y="1.5" width="3.4" height="11" rx=".6"/></svg>';
@@ -3386,6 +3470,7 @@ resize();
 (async () => {
   src = await pickSource();
   src.on('frame', onFrame); src.on('summary', onSummary); src.on('status', setStatus);
+  $('#whatif').hidden = src.kind !== 'live';
   setStatus(src.kind === 'live' ? 'live' : 'demo');
   if (src.kind === 'live') document.querySelectorAll('[data-speed]').forEach((x) => x.setAttribute('aria-pressed', +x.dataset.speed === src.speed));
   src.start();

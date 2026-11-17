@@ -20,7 +20,7 @@ import math
 import numpy as np
 from numba import njit
 
-S_IDLE, S_OFFERED, S_PICKUP, S_TRIP, S_CHARGE, S_PLUGGED = 0, 1, 2, 3, 4, 5
+S_IDLE, S_OFFERED, S_PICKUP, S_TRIP, S_CHARGE, S_PLUGGED, S_OFF = 0, 1, 2, 3, 4, 5, 6
 ODO_CRUISE, ODO_REBAL, ODO_PICKUP, ODO_LOADED = 0, 1, 2, 3
 
 
@@ -110,7 +110,7 @@ def step_fleet(dt, t, speed0, idle_cruise, ping_min, ping_jitter, off_rate,
                     out_cruise[nc] = i
                     nc += 1
                     cruise_wait[i] = 10.0 + u[2, i] * 30.0
-            elif s != S_PLUGGED:
+            elif s <= S_CHARGE:                          # not plugged in or off duty
                 out_arrive[na] = i
                 na += 1
     return na, nc, noff

@@ -11,9 +11,10 @@ Endpoints
   GET  /app                 control room (frontend/index.html)
   GET  /media/...           tour video, captions and poster (docs/)
   GET  /api/health          engine status and configuration
-  GET  /api/stream?view=    Server-Sent Events: `frame` at 10 Hz, `summary` at 1 Hz
-  POST /api/command         {"cmd": "speed"|"pause"|"demand"|"spike"|"outage"|"accident", "value": ...}
-  POST /api/reset           {"fleet": 1200, "seed": 7}
+  GET  /api/stream?view=    Server-Sent Events: `frame` at 10 Hz, `summary` at 1 Hz (&enc=b64: packed car arrays)
+  POST /api/command         {"cmd": "speed"|"pause"|"demand"|"spike"|"outage"|"accident"|"logoff", "value": ...}
+                            incidents take an optional "x", "z" (world units); logoff: "value" drivers, "minutes"
+  POST /api/reset           {"fleet": 1200, "seed": 7, "city": .., "pool": true, "ev": "smart"|"naive"|null}
   GET  /api/explain/{id}    why ORCA assigned request {id} the way it did, with its timeline
   GET  /api/analytics       wait statistics per dispatcher from the trip ledger (?since=minutes)
   GET  /api/trips           most recent pickups (?limit=50)
@@ -48,6 +49,7 @@ HOME = Path(os.environ.get("ORCA_HOME_DIST", ROOT / "web" / "dist"))
 MEDIA = ROOT / "docs"
 MEDIA_FILES = {"orca-tour.mp4", "orca-tour.webm", "orca-tour.vtt", "orca-tour-poster.jpg", "orca-tour-score.mp3", "benchmark.png"}
 FRAME_HZ, SUMMARY_EVERY = 10, 10   # summary every 10th frame
+MAX_FLEET = 10000                  # cars per dispatcher a reset may ask for
 
 
 def dumps(obj) -> str:
@@ -74,7 +76,8 @@ class Hub:
         if demand == "tlc" and (data is None or not Path(data).exists()):
             demand, data = "synthetic", None                 # this city's real trips are not prepared yet
         e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=demand, data=str(data) if data else None,
-                   zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=name)
+                   zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=name, pool=bool(opts.get("pool")),
+                   ev=opts.get("ev"))
         if demand != opts["demand"]:
             e.world.log("sys", f"No prepared real trips for {e.city.label}: running synthetic demand "
                                f"(python scripts/prepare_trips.py --city {name})")
@@ -93,10 +96,10 @@ class Hub:
             last = now
             await asyncio.sleep(1 / 30)
 
-    def frame(self, view):
-        key = ("f", view, self.tick)
+    def frame(self, view, packed=False):
+        key = ("f", view, packed, self.tick)
         if key not in self.cache:
-            self.cache[key] = dumps(self.engine.frame(view))
+            self.cache[key] = dumps(self.engine.frame(view, packed))
         return self.cache[key]
 
     def summary(self):
@@ -152,6 +155,7 @@ def build_app(opts: dict) -> Starlette:
 
     async def stream(request: Request):
         view = "base" if request.query_params.get("view") == "base" else "smart"
+        packed = request.query_params.get("enc") == "b64"
 
         async def gen():
             n = 0
@@ -161,7 +165,7 @@ def build_app(opts: dict) -> Starlette:
                     break
                 if n % SUMMARY_EVERY == 0:
                     yield f"event: summary\ndata: {hub.summary()}\n\n"
-                yield f"event: frame\ndata: {hub.frame(view)}\n\n"
+                yield f"event: frame\ndata: {hub.frame(view, packed)}\n\n"
                 n += 1
                 await asyncio.sleep(1 / FRAME_HZ)
 
@@ -183,7 +187,16 @@ def build_app(opts: dict) -> Starlette:
         except Exception:
             body = {}
         opts = dict(hub.opts)
-        opts["fleet"] = int(max(200, min(4000, body.get("fleet", opts["fleet"]))))
+        try:
+            opts["fleet"] = int(max(200, min(MAX_FLEET, float(body.get("fleet", opts["fleet"])))))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "fleet must be a number"}, status_code=400)
+        if "pool" in body:
+            opts["pool"] = bool(body["pool"])
+        if "ev" in body:
+            if body["ev"] not in (None, "smart", "naive"):
+                return JSONResponse({"ok": False, "error": "ev must be null, \"smart\" or \"naive\""}, status_code=400)
+            opts["ev"] = body["ev"]
         opts["seed"] = int(body.get("seed", int(time.time()) % 100000))
         if "city" in body:
             from . import city as G
@@ -196,7 +209,8 @@ def build_app(opts: dict) -> Starlette:
         async with hub.lock:
             new.speed = hub.engine.speed
             hub.engine, hub.opts = new, opts
-        return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"], "city": new.city.name})
+        return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"], "city": new.city.name,
+                             "pool": bool(opts.get("pool")), "ev": opts.get("ev")})
 
     async def explain(request: Request):
         try:

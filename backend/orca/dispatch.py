@@ -37,8 +37,9 @@ from .features import FeatureStore
 from .models import AcceptanceModel, DemandForecaster, EtaModel
 from .world import Request, World, hash2
 
-IDLE, OFFERED, PICKUP, TRIP, CHARGE, PLUGGED = K.S_IDLE, K.S_OFFERED, K.S_PICKUP, K.S_TRIP, K.S_CHARGE, K.S_PLUGGED
-STATE_NAMES = ("idle", "offered", "pickup", "trip", "charge", "plugged")
+IDLE, OFFERED, PICKUP, TRIP, CHARGE, PLUGGED, OFF = (K.S_IDLE, K.S_OFFERED, K.S_PICKUP, K.S_TRIP, K.S_CHARGE,
+                                                    K.S_PLUGGED, K.S_OFF)
+STATE_NAMES = ("idle", "offered", "pickup", "trip", "charge", "plugged", "off duty")
 PICK, DROP = 0, 1
 NO_IDS = np.zeros(0, dtype=np.int64)
 
@@ -119,6 +120,7 @@ class Fleet:
         self.odo = np.zeros((n, 4))                              # distance: cruising, repositioning, to pickup, loaded
         self.soc = np.ones(n)                                    # battery state of charge (electric fleet)
         self.tgt_x, self.tgt_z = np.full(n, -1.0), np.full(n, -1.0)
+        self.off_until = np.full(n, -1.0)                        # off duty until (drivers who logged off)
         self.r_pos = np.zeros(n, dtype=np.int64)
         self.r_end = np.zeros(n, dtype=np.int64)
         self.arena = np.zeros((max(4096, 64 * n), 4))
@@ -239,6 +241,13 @@ class Dispatcher:
             self.cruise(i)
         if self.ev is not None:
             self.ev.step(dt)
+        leaving = np.flatnonzero((f.off_until > t) & (f.state == IDLE))        # log off once their ride is done
+        if len(leaving):
+            f.state[leaving] = OFF
+            f.r_pos[leaving] = f.r_end[leaving] = 0
+        back = np.flatnonzero((f.state == OFF) & (f.off_until <= t))
+        for i in back.tolist():
+            self.set_idle(i, 1.0)
 
         for r in new_reqs:
             rs = RequestState(r)
@@ -492,7 +501,8 @@ class Dispatcher:
         return dict(mean=sum(s) / len(s) if s else 0.0, p50=pct(0.5), p95=pct(0.95),
                     p1=sum(p1) / len(p1) if p1 else 0.0, served=self.m["served"], lost=self.m["lost"],
                     reoffers=self.m["reoffers"], timeouts=self.m["timeouts"],
-                    util=float(np.count_nonzero(f.state != IDLE)) / self.n,
+                    util=float(np.count_nonzero((f.state != IDLE) & (f.state != OFF))) / max(1, self.n - int(np.count_nonzero(f.state == OFF))),
+                    off_duty=int(np.count_nonzero(f.state == OFF)),
                     offline=int(np.count_nonzero(f.offline_until >= t)), waiting=waiting,
                     veh_km=km, km_per_rider=km / dropped if dropped else 0.0,
                     svc_km_per_rider=float(f.odo[:, K.ODO_PICKUP:].sum()) * self.unit_km / dropped if dropped else 0.0,
