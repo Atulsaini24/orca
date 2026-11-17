@@ -1,0 +1,385 @@
+{
+ "city": "manhattan",
+ "source": "OpenStreetMap amenity=charging_station",
+ "fetched": 65,
+ "stations": [
+  {
+   "node": 1658,
+   "x": 128.356654932619,
+   "z": 513.9386256935733,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1502,
+   "x": 118.93155171138288,
+   "z": 522.0018290287534,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1181,
+   "x": 79.63853511898236,
+   "z": 583.9582738175303,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2598,
+   "x": 113.77144236177153,
+   "z": 382.11691123569955,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2363,
+   "x": 133.8021160207815,
+   "z": 455.31816174138015,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2582,
+   "x": 113.77787617053924,
+   "z": 373.8437107070018,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2593,
+   "x": 126.09577226866361,
+   "z": 393.05786577668056,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2273,
+   "x": 118.91600162762498,
+   "z": 457.975464706278,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2265,
+   "x": 126.18529451636164,
+   "z": 476.53048850309597,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1097,
+   "x": 90.37395189705913,
+   "z": 595.3399746005197,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 216,
+   "x": 93.07686207219606,
+   "z": 661.2171350124753,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 220,
+   "x": 84.9891257695656,
+   "z": 653.8104649788123,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Blink"
+  },
+  {
+   "node": 600,
+   "x": 136.93114574040823,
+   "z": 623.7483913400647,
+   "plugs": 6,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Blink"
+  },
+  {
+   "node": 522,
+   "x": 178.88577685696902,
+   "z": 618.9838263079021,
+   "plugs": 27,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 931,
+   "x": 78.11751977198881,
+   "z": 608.3958135029895,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1173,
+   "x": 87.90928989867133,
+   "z": 569.5265033828996,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1356,
+   "x": 78.75581529409563,
+   "z": 551.0452610437367,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Blink"
+  },
+  {
+   "node": 1324,
+   "x": 108.46121856832875,
+   "z": 548.5408496375694,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1429,
+   "x": 60.38650961258884,
+   "z": 513.9352844034149,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1382,
+   "x": 87.88868229537027,
+   "z": 535.0412432595035,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2213,
+   "x": 108.85254865624846,
+   "z": 463.281738304238,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2666,
+   "x": 51.29456600981108,
+   "z": 382.1596745060119,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2338,
+   "x": 108.86591767555758,
+   "z": 449.61557348433246,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2037,
+   "x": 67.23824687762234,
+   "z": 444.35121958923554,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2237,
+   "x": 118.9010456035453,
+   "z": 479.17321296880266,
+   "plugs": 4,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 2172,
+   "x": 51.291374869359686,
+   "z": 404.0500228153957,
+   "plugs": 4,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 154,
+   "x": 118.44603486755628,
+   "z": 664.7113802875995,
+   "plugs": 4,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 1740,
+   "x": 134.19566161303464,
+   "z": 495.3283573876688,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Bus Charging Station"
+  },
+  {
+   "node": 3991,
+   "x": 51.19238186449819,
+   "z": 164.18150709485235,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 2648,
+   "x": 148.56799696801812,
+   "z": 370.99144451783746,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "plugNYC"
+  },
+  {
+   "node": 1807,
+   "x": 56.25049901566294,
+   "z": 492.65374710493904,
+   "plugs": 26,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Blink"
+  },
+  {
+   "node": 2677,
+   "x": 51.294622167217106,
+   "z": 379.4903604669345,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "FLO"
+  },
+  {
+   "node": 2669,
+   "x": 60.426799021477734,
+   "z": 401.3803190988825,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 1584,
+   "x": 177.9585101802195,
+   "z": 612.7518100370032,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "plug nyc"
+  },
+  {
+   "node": 543,
+   "x": 122.21688033633558,
+   "z": 630.0326383727795,
+   "plugs": 2,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 231,
+   "x": 80.74739057682855,
+   "z": 664.7011079357692,
+   "plugs": 4,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 73,
+   "x": 121.71408949213516,
+   "z": 692.411704965876,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 3495,
+   "x": 30.42629057739753,
+   "z": 241.2982727496174,
+   "plugs": 12,
+   "kw": 11.0,
+   "dc": false,
+   "name": "New York City Department of Citywide Administrative Services"
+  },
+  {
+   "node": 498,
+   "x": 166.1503024308758,
+   "z": 636.9736423042912,
+   "plugs": 10,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Charging station"
+  },
+  {
+   "node": 746,
+   "x": 142.87652509106616,
+   "z": 615.3944719135295,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Charging station"
+  },
+  {
+   "node": 1400,
+   "x": 60.36227878825034,
+   "z": 537.7211750685567,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2813,
+   "x": 34.81668773874174,
+   "z": 349.9792080422689,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "NYC Department of Parks and Recreation"
+  }
+ ]
+}

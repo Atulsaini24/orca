@@ -38,6 +38,18 @@ POOL_SLACK = 120.0        # ... plus two minutes
 POOL_DELAY_W = 0.3
 POOL_K = 8                # busy cars considered per request
 
+# Electric fleet (Engine(ev=True)): a 75 kWh car using 0.18 kWh per km in city traffic covers ~400 km.
+EV_BATTERY_KWH = 75.0
+EV_KWH_PER_KM = 0.18
+EV_RESERVE = 0.10         # a ride is offered only if the car finishes it with this much left
+EV_LOW = 0.20             # below this a car stops taking rides and charges
+EV_TARGET = 0.80          # fast charging slows down above 80%: stop there
+EV_TOPUP = 0.0            # ORCA: idle cars below this top up early while the city has cars to spare (0: off) ...
+EV_TOPUP_MARGIN = 0.15    # ... beyond this share of the fleet over what the demand forecast needs
+EV_TOPUP_RADIUS = 40.0    # ... at a free plug within this distance (world units, ~1.2 km)
+EV_SOC0 = (0.35, 1.0)     # charge at the start of the shift (drivers charge overnight, not all fully)
+EV_DETOUR = 1.35          # road distance over straight line, for energy estimates
+
 START_CLOCK = 7 * 3600 + 30 * 60   # simulation starts at 07:30
 START_DEFAULT = START_CLOCK
 DEMAND_PER_UNIT = 0.00118          # requests / s per fleet unit at 1.0x demand
@@ -54,9 +66,10 @@ DEADLINE_W = 1.0          # weight of the give-up penalty: riders cancel after A
 DEADLINE_COST = 600.0     # cost (s) of a pairing that would arrive after the rider has given up
 TUNABLE = ("REOFFER", "COVER", "ZONE_SLOPE", "ZONE_CAP", "URGENT_W", "WAIT_W", "DEADLINE_W", "K")
 DEFAULTS = {k: globals()[k] for k in TUNABLE}
-SETTABLE = (*TUNABLE, "POOL_OPT_IN", "POOL_CAP", "POOL_DETOUR", "POOL_SLACK", "POOL_DELAY_W", "POOL_K")
+SETTABLE = (*TUNABLE, "POOL_OPT_IN", "POOL_CAP", "POOL_DETOUR", "POOL_SLACK", "POOL_DELAY_W", "POOL_K",
+            "EV_TOPUP", "EV_TOPUP_MARGIN")
 INTS = ("K", "POOL_CAP", "POOL_K")
-POOL_DEFAULTS = {k: globals()[k] for k in SETTABLE if k.startswith("POOL_")}
+POOL_DEFAULTS = {k: globals()[k] for k in SETTABLE if k.startswith(("POOL_", "EV_"))}
 
 
 def apply(params: dict) -> None:

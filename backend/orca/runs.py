@@ -33,6 +33,7 @@ class RunSpec:
     params: dict | None = None          # scoring weights; None = whatever config loaded (tuned if available)
     pool: bool = False                  # ORCA offers shared rides
     demand_fleet: int | None = None     # size demand for this many cars (None = fleet): fleet sweeps keep riders fixed
+    ev: str | None = None               # electric fleet: ORCA's charging policy, "smart" or "naive"
     start_hour: float | None = None     # simulated clock at the start; None = config.START_CLOCK
     warm: int = 300
     hourly: bool = False                # also return mean wait per clock hour
@@ -46,7 +47,9 @@ def _stats(d) -> dict:
     s = d.stats()
     return dict(mean=float(w.mean()), p50=float(np.percentile(w, 50)), p95=float(np.percentile(w, 95)),
                 served=int(d.m["served"]), lost=int(d.m["lost"]), reoffers=int(d.m["reoffers"]),
-                **{k: float(s[k]) for k in ("veh_km", "km_per_rider", "svc_km_per_rider", "occupancy", "shared", "detour", "ride")})
+                **{k: float(s[k]) for k in ("veh_km", "km_per_rider", "svc_km_per_rider", "occupancy", "shared", "detour", "ride")},
+                **{k: float(s[k]) for k in ("soc_mean", "soc_low", "sessions", "queue_wait", "kwh", "stranded", "topups", "charge_hours")
+                   if k in s})
 
 
 def run(spec: RunSpec) -> dict:
@@ -60,7 +63,8 @@ def run(spec: RunSpec) -> dict:
     from .engine import Engine
     data = spec.data or (str(cityspec.trips_file(G.current().name)) if cityspec.trips_file(G.current().name) else None)
     e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand if data else "synthetic",
-               data=data if spec.demand == "tlc" else None, city=spec.city, pool=spec.pool, demand_fleet=spec.demand_fleet)
+               data=data if spec.demand == "tlc" else None, city=spec.city, pool=spec.pool, demand_fleet=spec.demand_fleet,
+               ev=spec.ev)
     e.warm_up(spec.warm)
     for d in (e.smart, e.base):
         d.m["all"].clear()
@@ -83,7 +87,7 @@ def run(spec: RunSpec) -> dict:
                 hourly[name].setdefault(h, []).extend(new)
     out = dict(spec=dict(seed=spec.seed, minutes=spec.minutes, scenario=spec.scenario, use_learned=spec.use_learned, city=G.current().name,
                          params=spec.params, tag=spec.tag, start_hour=spec.start_hour, pool=spec.pool, fleet=spec.fleet,
-                         demand_fleet=spec.demand_fleet))
+                         demand_fleet=spec.demand_fleet, ev=spec.ev))
     for name, d in (("orca", e.smart), ("nearest", e.base)):
         out[name] = _stats(d)
     if spec.hourly:

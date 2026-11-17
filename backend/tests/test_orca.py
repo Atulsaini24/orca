@@ -15,7 +15,7 @@ from orca import city as G
 from orca import cityspec
 from orca import config as C
 from orca.city import GridCity, is_arterial
-from orca.dispatch import DROP, IDLE, OFFERED, PICK, TRIP, OrcaDispatcher
+from orca.dispatch import DROP, IDLE, OFFERED, PICK, PICKUP, TRIP, OrcaDispatcher
 from orca.engine import Engine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,11 +179,14 @@ def check_plans(d):
     """Every request is held by at most one car; each car's plan, load and state agree."""
     f, seen = d.f, {}
     for i in range(d.n):
-        held = {s.rs.r.id for s in f.stops[i]} | ({f.offer_rs[i].r.id} if f.offer_rs[i] is not None else set())
+        held = {s.rs.r.id for s in f.stops[i] if s.rs is not None} | ({f.offer_rs[i].r.id} if f.offer_rs[i] is not None else set())
         for rid in held:
             assert rid not in seen, f"request {rid} held by cars {seen[rid]} and {i}"
             seen[rid] = i
         for s in f.stops[i]:
+            if s.rs is None:                                   # a charging stop: the only stop in the plan
+                assert len(f.stops[i]) == 1 and d.ev is not None
+                continue
             assert s.rs.agent == i
             if s.kind == PICK:
                 assert any(t.kind == DROP and t.rs is s.rs for t in f.stops[i]), "every pickup has its drop-off"
@@ -191,7 +194,7 @@ def check_plans(d):
             assert f.state[i] == OFFERED and f.offer_rs[i].agent == i
         if f.state[i] == IDLE:
             assert not f.stops[i] and f.offer_rs[i] is None
-        onboard = sum(1 for s in f.stops[i] if s.kind == DROP and s.rs.status == "ontrip")
+        onboard = sum(1 for s in f.stops[i] if s.kind == DROP and s.rs is not None and s.rs.status == "ontrip")
         assert f.load[i] == onboard <= (C.POOL_CAP if d.pool else 1)
         picks = [k for k, s in enumerate(f.stops[i]) if s.kind == PICK]
         drops = {s.rs.r.id: k for k, s in enumerate(f.stops[i]) if s.kind == DROP}
@@ -365,6 +368,32 @@ def test_shared_rides_keep_their_promises(city):
     assert e.base.stats()["shared"] == 0
     f = json.loads(json.dumps(e.frame("smart")))
     assert max(f["agents"]["o"]) <= C.POOL_CAP
+
+
+# ---------------------------------------------------------------------------- electric fleet
+@pytest.mark.parametrize("city", CITIES)
+@pytest.mark.parametrize("policy", ["smart", "naive"])
+def test_electric_fleet_charges_and_never_runs_empty(city, policy):
+    from orca.dispatch import CHARGE, PLUGGED
+    e = Engine(seed=2, fleet=250, use_learned=False, city=city, ev=policy)
+    for d in (e.smart, e.base):
+        d.f.soc[:] = np.linspace(0.12, 0.6, d.n)               # many cars low from the start
+    for _ in range(1800):
+        e.step(1.0)
+    for d in (e.smart, e.base):
+        ev, f = d.ev, d.f
+        check_plans(d)
+        assert ev.m["sessions"] > 0 and ev.m["stranded"] == 0 and (f.soc > 0).all()
+        assert (ev.used <= ev.plugs).all() and ev.used.sum() == ev.plugged.sum()
+        assert sum(len(q) for q in ev.queue) == int(np.count_nonzero((f.state == PLUGGED) & ~ev.plugged))
+        assert (ev.coming == np.bincount(ev.station[f.state == CHARGE], minlength=ev.ns)).all()
+        assert (f.soc[ev.plugged] < C.EV_TARGET + 0.05).all()
+        busy = (f.state == PICKUP) | (f.state == TRIP)
+        assert (f.soc[busy] > 0.02).all(), "rides go only to cars with charge enough to finish them"
+    fr = json.loads(json.dumps(e.frame("smart")))
+    assert 0 <= min(fr["agents"]["b"]) and max(fr["agents"]["b"]) <= 100
+    s = json.loads(json.dumps(e.summary()))
+    assert len(s["fx"]["chargers"]["smart"]) == e.smart.ev.ns
 
 
 # ---------------------------------------------------------------------------- real-data path

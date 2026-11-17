@@ -75,11 +75,12 @@ class RequestState:
 
 @dataclass(slots=True)
 class Stop:
-    kind: int                        # PICK or DROP
-    rs: RequestState
+    kind: int                        # PICK, DROP or charging.CHARGE_STOP
+    rs: RequestState | None
     x: float
     z: float
     deadline: float                  # latest acceptable arrival (shared rides); inf otherwise
+    station: int = -1                # charging stop: the station
 
 
 class _View:
@@ -164,7 +165,8 @@ class Dispatcher:
     label = "Base"
     pool = False
 
-    def __init__(self, world: World, fleet_spec: list[tuple], telemetry: list | None = None, ledger=None):
+    def __init__(self, world: World, fleet_spec: list[tuple], telemetry: list | None = None, ledger=None,
+                 ev: str | None = None):
         self.world = world
         self.ledger = ledger
         self.city = G.current()
@@ -200,6 +202,10 @@ class Dispatcher:
         self.lut = np.ascontiguousarray(self.city.zone_lut, dtype=np.int64)
         self.unit_km = getattr(self.city, "frame", {}).get("unit_m", 30.0) / 1000
         self._view = _View()
+        self.ev = None                             # electric fleet: charging policy "naive" or "smart"
+        if ev:
+            from .charging import ChargingNetwork
+            self.ev = ChargingNetwork(self, ev)
 
     # ---- main step ---------------------------------------------------------------
     def step(self, dt: float, new_reqs: list[Request]):
@@ -230,6 +236,8 @@ class Dispatcher:
             self.arrive(i)
         for i in self.out_cruise[:nc].tolist():
             self.cruise(i)
+        if self.ev is not None:
+            self.ev.step(dt)
 
         for r in new_reqs:
             rs = RequestState(r)
@@ -267,7 +275,7 @@ class Dispatcher:
 
     def energy_use(self) -> float:
         """Battery used per world unit driven (0: not an electric fleet)."""
-        return 0.0
+        return self.ev.use if self.ev is not None else 0.0
 
     def on_minute(self):
         pass
@@ -302,12 +310,15 @@ class Dispatcher:
         f = self.f
         stops = f.stops[i]
         if not stops:
-            self.set_idle(i, 5 + self.rng.random() * 20)
+            if self.ev is not None and f.soc[i] < C.EV_LOW:
+                self.ev.go_charge(i)
+            else:
+                self.set_idle(i, 5 + self.rng.random() * 20)
             return
         s = stops[0]
         f.state[i] = PICKUP if s.kind == PICK else TRIP
         f.rebal[i] = False
-        f.share_ok[i] = all(st.rs.r.share for st in stops)
+        f.share_ok[i] = all(st.rs is not None and st.rs.r.share for st in stops)
         f.tgt_x[i], f.tgt_z[i] = s.x, s.z
         self.route_to(i, s.x, s.z)
 
@@ -319,6 +330,9 @@ class Dispatcher:
             return
         s = stops.pop(0)
         rs = s.rs
+        if rs is None:                               # reached the charging station
+            self.ev.arrive(i)
+            return
         if s.kind == PICK:
             rs.status, rs.picked_at = "ontrip", t
             f.load[i] += 1
@@ -480,7 +494,8 @@ class Dispatcher:
                     occupancy=float(f.odo[:, K.ODO_LOADED].sum() / max(1e-9, f.odo.sum())),
                     shared=self.m["shared"] / dropped if dropped else 0.0,
                     detour=float(np.mean(det)) if det else 0.0,
-                    ride=float(np.mean(self.m["ride"])) if self.m["ride"] else 0.0)
+                    ride=float(np.mean(self.m["ride"])) if self.m["ride"] else 0.0,
+                    **(self.ev.stats() if self.ev is not None else {}))
 
 
 class NearestDispatcher(Dispatcher):
@@ -494,7 +509,10 @@ class NearestDispatcher(Dispatcher):
             return
         self.build_index(fresh_only=False)
         for rs in q:
-            best = self.nearest_idle(rs.r.x, rs.r.z, 1, rs.declined)
+            r = rs.r
+            best = self.nearest_idle(r.x, r.z, 1 if self.ev is None else 6, rs.declined)
+            if self.ev is not None and len(best):           # the nearest car with charge enough for the ride
+                best = best[self.ev.can_serve(best, r.x, r.z, r.dx, r.dz)]
             if len(best):
                 self.offer(int(best[0]), rs)
             else:
@@ -519,8 +537,9 @@ class OrcaDispatcher(Dispatcher):
     policy = "smart"
     label = "ORCA"
 
-    def __init__(self, world, fleet_spec, telemetry=None, use_learned=True, ledger=None, pool: bool = False):
-        super().__init__(world, fleet_spec, telemetry, ledger)
+    def __init__(self, world, fleet_spec, telemetry=None, use_learned=True, ledger=None, pool: bool = False,
+                 ev: str | None = None):
+        super().__init__(world, fleet_spec, telemetry, ledger, ev=ev)
         self.pool = pool
         if pool:
             self.label = "ORCA shared"
@@ -609,6 +628,12 @@ class OrcaDispatcher(Dispatcher):
             if extra is not None:
                 for k in cand:
                     cand[k] = np.concatenate([cand[k], extra[k]])
+        if self.ev is not None:                      # only cars with charge enough for the ride
+            qd = np.array([rs.r.dx for rs in q]), np.array([rs.r.dz for rs in q])
+            c, qq = cand["ci"], cand["qi"]
+            ok = np.where(cand["kind"] == 0, self.ev.can_serve(c, qx[qq], qz[qq], qd[0][qq], qd[1][qq]),
+                          f.soc[c] >= C.EV_LOW + 0.15)
+            cand = {k: v[ok] for k, v in cand.items()}
         qi, eta = cand["qi"], cand["eta"]
         wait = t - qt[qi]
         cand["adj"] = (cand["cost"] * np.where(qp1[qi], C.URGENT_W, 1.0) - np.minimum(wait, C.WAIT_CAP) * C.WAIT_W
@@ -809,6 +834,8 @@ class OrcaDispatcher(Dispatcher):
                 surplus[i] = int(-d)
         deficit.sort(key=lambda x: -x[1])
         self.deficit_zones = [d[0] for d in deficit[:8]]
+        if self.ev is not None and self.ev.policy == "smart":
+            self.ev.top_up(self.z_idle, np.asarray(fc, dtype=float) * C.COVER)
         if not deficit:
             return
         free = np.flatnonzero(self.idle_fresh() & ~f.rebal)

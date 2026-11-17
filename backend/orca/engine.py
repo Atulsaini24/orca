@@ -20,11 +20,11 @@ REQ_CODE = {"waiting": 0, "offered": 1, "assigned": 2}
 class Engine:
     def __init__(self, seed: int = 7, fleet: int = 1200, demand: str = "synthetic", data: str | None = None,
                  zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:",
-                 city: str | None = None, pool: bool = False, demand_fleet: int | None = None):
+                 city: str | None = None, pool: bool = False, demand_fleet: int | None = None, ev: str | None = None):
         from . import city as G
         self.city = G.use(city)
         self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned,
-                           city=self.city.name, pool=pool)
+                           city=self.city.name, pool=pool, ev=ev)
         tlc = None
         if demand == "tlc":
             from .demand import TLCReplay
@@ -34,8 +34,10 @@ class Engine:
         self.telemetry = [] if telemetry else None
         from .ledger import Ledger
         self.ledger = Ledger(db, run=f"seed{seed}-fleet{fleet}-{int(time.time())}")
-        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool)
-        self.base = NearestDispatcher(self.world, spec, ledger=self.ledger)
+        # ev: None (petrol), "smart" (ORCA plans charging) or "naive" (ORCA dispatches, drivers charge as they like);
+        # nearest-car dispatch always leaves charging to the drivers
+        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool, ev=ev)
+        self.base = NearestDispatcher(self.world, spec, ledger=self.ledger, ev="naive" if ev else None)
         self.speed = 20.0
         self.paused = False
         self.step_ms = 0.0
@@ -126,6 +128,8 @@ class Engine:
                       tx=np.round(f.tgt_x, 2).tolist(), tz=np.round(f.tgt_z, 2).tolist())
         if d.pool:
             agents["o"] = f.load.tolist()                  # riders on board
+        if d.ev is not None:
+            agents["b"] = np.clip(np.rint(f.soc * 100), 0, 100).astype(np.int64).tolist()    # battery, %
         reqs = [[rs.r.id, rs.r.x, rs.r.z, REQ_CODE.get(rs.status, 0), 1 if rs.r.p1 else 0, round(t - rs.r.t, 1)]
                 for rs in d.active]
         return dict(type="frame", t=round(t, 2), clock=self.world.clock(), view=view, agents=agents, reqs=reqs)
@@ -135,7 +139,8 @@ class Engine:
         w, s = self.world, self.smart
         fc = s.forecaster.forecast
         top = sorted(range(len(fc)), key=lambda i: -fc[i])[:5]
-        fx = dict(outages=[[o.x, o.z, o.r] for o in w.outages],
+        fx = dict(chargers=dict(smart=s.ev.snapshot(), base=self.base.ev.snapshot()) if s.ev is not None else None,
+                  outages=[[o.x, o.z, o.r] for o in w.outages],
                   accidents=[[b.x, b.z, b.r] for b in w.blobs if b.accident],
                   spikes=[[h.x, h.z, h.s * 1.6] for h in w.spikes])
         return dict(
