@@ -630,3 +630,100 @@ def test_repositioning_modes():
         else:
             assert e.smart.learned.moves > 0
             assert max(moved) <= int(np.ceil(400 * 0.015))     # never more than the round's budget
+
+
+# ---------------------------------------------------------------------------- production stack
+class _FakeRedis:
+    """Enough of redis-py for the event writer: pipeline().xadd(...).execute(), optionally failing."""
+
+    def __init__(self, fail_first=0):
+        self.streams, self.fail = {}, fail_first
+
+    def pipeline(self, transaction=False):
+        fake, ops = self, []
+
+        class P:
+            def xadd(self, name, fields, maxlen=None, approximate=True):
+                ops.append((name, fields))
+
+            def execute(self):
+                if fake.fail > 0:
+                    fake.fail -= 1
+                    raise ConnectionError("broker down")
+                for name, fields in ops:
+                    fake.streams.setdefault(name, []).append(fields)
+        return P()
+
+
+def test_event_stream_publishes_everything_and_survives_a_broker_outage():
+    from orca.events import EventBus
+    fake = _FakeRedis(fail_first=1)
+    bus = EventBus(client=fake)
+    for k in range(1200):
+        bus.emit("pickup", req=k, wait=12.5)
+    deadline = time.time() + 15
+    while bus.published < 1200 and time.time() < deadline:
+        time.sleep(0.05)
+    bus.close()
+    got = fake.streams["orca:events"]
+    assert bus.errors > 0 and bus.dropped == 0                                    # one failed batch was retried later
+    assert {int(e["req"]) for e in got} >= set(range(1200 - bus.errors, 1200))
+    assert [e["seq"] for e in bus.since(1195)] == [1196, 1197, 1198, 1199, 1200]
+    assert any(line.startswith('orca_events_total{sink="redis",outcome="published"}') for line in bus.metrics())
+
+
+def test_engine_emits_domain_events_in_order():
+    e = Engine(seed=3, fleet=300, use_learned=False, city="grid", events=True)
+    for _ in range(600):
+        e.step(1.0)
+    ev = e.bus.since(0, 100000)
+    kinds = {x["kind"] for x in ev}
+    assert {"request", "assign", "pickup", "dropoff"} <= kinds
+    assert [x["seq"] for x in ev] == sorted(x["seq"] for x in ev)
+    first = {}
+    for x in ev:                                                                   # a rider is requested, assigned, picked up
+        if x["kind"] in ("request", "assign", "pickup") and x.get("policy", "smart") == "smart":
+            first.setdefault((x["req"], x["kind"]), x["seq"])
+    for (req, kind), seq in first.items():
+        if kind == "pickup":
+            assert first[(req, "request")] < first[(req, "assign")] < seq
+    m = e.prometheus()
+    assert 'orca_match_latency_ms_bucket{le="+Inf"}' in m and "orca_events_total" in m
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("ORCA_TEST_PG"), reason="set ORCA_TEST_PG to a PostgreSQL URL")
+def test_ledger_on_postgres_matches_sqlite():
+    import os
+
+    from orca.ledger import Ledger, lost, trips
+    e = Engine(seed=5, fleet=300, use_learned=False, city="grid")
+    for _ in range(900):
+        e.step(1.0)
+    e.ledger.flush()
+    pg = Ledger(os.environ["ORCA_TEST_PG"], run=f"test-{time.time()}")      # the same rows, written to PostgreSQL
+    with e.ledger.db.connect() as cx:
+        pg.buf_trips = [(pg.run, *r[1:]) for r in cx.execute(trips.select()).fetchall()]
+        pg.buf_lost = [(pg.run, *r[1:]) for r in cx.execute(lost.select()).fetchall()]
+    a, b = e.ledger.analytics(), pg.analytics()
+    for pol in ("smart", "base"):
+        assert a[pol]["trips"] == b[pol]["trips"] and a[pol]["lost"] == b[pol]["lost"]
+        assert a[pol]["mean"] == pytest.approx(b[pol]["mean"])
+        assert [(h["hour"], h["trips"]) for h in a[pol]["hourly"]] == [(h["hour"], h["trips"]) for h in b[pol]["hourly"]]
+        assert [h["mean"] for h in a[pol]["hourly"]] == pytest.approx([h["mean"] for h in b[pol]["hourly"]])
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("ORCA_TEST_REDIS"), reason="set ORCA_TEST_REDIS to a Redis URL")
+def test_event_stream_on_real_redis():
+    import os
+
+    import redis
+
+    from orca.events import EventBus
+    stream = f"orca:test:{time.time()}"
+    bus = EventBus(url=os.environ["ORCA_TEST_REDIS"], stream=stream)
+    for k in range(300):
+        bus.emit("pickup", req=k)
+    bus.close()
+    r = redis.Redis.from_url(os.environ["ORCA_TEST_REDIS"])
+    assert r.xlen(stream) == 300
+    r.delete(stream)

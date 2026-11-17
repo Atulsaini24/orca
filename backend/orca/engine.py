@@ -10,12 +10,32 @@ import numpy as np
 from . import config as C
 from .city import zone_name
 from .dispatch import IDLE, NearestDispatcher, OrcaDispatcher, make_fleet
+from .tracing import tracer
 from .world import World
 
 # client car codes: 0 idle, 1 repositioning, 2 offer sent, 3 to pickup, 4 rider on board, 5 no GPS,
 # 6 driving to a charger, 7 charging, 8 off duty; indexed here by fleet state (idle, offered, pickup, trip, charge,
 # plugged, off)
 STATE_CODE = np.array([0, 2, 3, 4, 6, 7, 8])
+
+
+class Histogram:
+    """A cumulative Prometheus histogram (milliseconds)."""
+
+    def __init__(self, buckets=(0.5, 1, 2, 5, 10, 20, 50, 100, 250, 1000)):
+        self.le = np.asarray(buckets, dtype=float)
+        self.counts = np.zeros(len(buckets) + 1, dtype=np.int64)
+        self.sum = 0.0
+
+    def observe(self, v: float):
+        self.counts[np.searchsorted(self.le, v)] += 1
+        self.sum += v
+
+    def lines(self, name: str, help_: str) -> list[str]:
+        cum = np.cumsum(self.counts)
+        out = [f"# HELP {name} {help_}", f"# TYPE {name} histogram"]
+        out += [f'{name}_bucket{{le="{le:g}"}} {c}' for le, c in zip(self.le, cum[:-1])]
+        return out + [f'{name}_bucket{{le="+Inf"}} {cum[-1]}', f"{name}_sum {self.sum:.3f}", f"{name}_count {cum[-1]}"]
 REQ_CODE = {"waiting": 0, "offered": 1, "assigned": 2}
 
 
@@ -23,7 +43,8 @@ class Engine:
     def __init__(self, seed: int = 7, fleet: int = 1200, demand: str = "synthetic", data: str | None = None,
                  zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:",
                  city: str | None = None, pool: bool = False, demand_fleet: int | None = None, ev: str | None = None,
-                 rebalance: str = "rules", rl_net: str | None = None, rl_explore: float = 0.0, rl_log: bool = False):
+                 rebalance: str = "rules", rl_net: str | None = None, rl_explore: float = 0.0, rl_log: bool = False,
+                 events: bool = False):
         from . import city as G
         self.city = G.use(city)
         self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned,
@@ -42,6 +63,13 @@ class Engine:
         self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool, ev=ev,
                                     rebalance=rebalance, rl_net=rl_net, rl_explore=rl_explore, rl_log=rl_log)
         self.base = NearestDispatcher(self.world, spec, ledger=self.ledger, ev="naive" if ev else None)
+        from .events import EventBus
+        self.bus = EventBus() if events else None
+        for d in (self.smart, self.base):
+            d.bus = self.bus
+        if self.bus is not None:
+            self.world.listeners.append(lambda e: self.bus.emit("incident", type=e.type, t=round(e.t, 1), msg=e.msg))
+        self.step_hist = Histogram()
         self.speed = 20.0
         self.paused = False
         self.step_ms = 0.0
@@ -61,6 +89,10 @@ class Engine:
     # ---- stepping ---------------------------------------------------------------
     def step(self, dt: float):
         reqs = self.world.step(dt)
+        if self.bus is not None:
+            for r in reqs:
+                self.bus.emit("request", t=round(r.t, 1), req=r.id, x=round(r.x, 1), z=round(r.z, 1), zone=r.zone,
+                              urgent=int(r.p1), share=int(r.share))
         self.smart.step(dt, reqs)
         self.base.step(dt, reqs)
 
@@ -70,11 +102,14 @@ class Engine:
             return
         t0 = time.perf_counter()
         sim_dt = min(real_dt, 0.25) * self.speed
-        while sim_dt > 1e-6:
-            d = min(1.0, sim_dt)
-            self.step(d)
-            sim_dt -= d
+        with tracer().start_as_current_span("engine.advance") as span:
+            span.set_attribute("sim_seconds", sim_dt)
+            while sim_dt > 1e-6:
+                d = min(1.0, sim_dt)
+                self.step(d)
+                sim_dt -= d
         self.step_ms = (time.perf_counter() - t0) * 1000
+        self.step_hist.observe(self.step_ms)
 
     def warm_up(self, seconds: int = 540):
         for _ in range(seconds):
@@ -227,4 +262,9 @@ class Engine:
         lines.append(f"orca_match_solve_ms {self.smart.solve_ms:.3f}")
         lines.append(f"orca_engine_step_ms {self.step_ms:.3f}")
         lines.append(f"orca_demand_rate_per_s {self.world.rate():.4f}")
+        lines.append(f"orca_decisions_total {self.smart.decisions}")
+        lines += self.smart.match_hist.lines("orca_match_latency_ms", "Wall time to decide one batch of requests (ms).")
+        lines += self.step_hist.lines("orca_engine_advance_ms", "Wall time of one engine advance (ms).")
+        if self.bus is not None:
+            lines += self.bus.metrics()
         return "\n".join(lines) + "\n"

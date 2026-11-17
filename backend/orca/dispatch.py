@@ -206,6 +206,7 @@ class Dispatcher:
         self._view = _View()
         self.ev = None                             # electric fleet: charging policy "naive" or "smart"
         self.rl_rec = None                         # orca.rl transition recorder (training runs only)
+        self.bus = None                            # orca.events.EventBus, set by the engine when events are on
         if ev:
             from .charging import ChargingNetwork
             self.ev = ChargingNetwork(self, ev)
@@ -372,6 +373,9 @@ class Dispatcher:
                         st.rs.shared = True
             if self.ledger is not None:
                 self.ledger.pickup(self.policy, rs.r, t, wait, i, rs.offers)
+            if self.bus is not None:
+                self.bus.emit("pickup", policy=self.policy, t=round(t, 1), req=rs.r.id, car=i, wait=round(wait, 1),
+                              zone=rs.r.zone, riders=int(f.load[i]))
             leg = f.leg[i]
             if leg is not None and leg[2] is rs and self.telemetry is not None:
                 self.telemetry.append((*leg[0], t - leg[1]))
@@ -383,6 +387,9 @@ class Dispatcher:
             if rs.shared:
                 self.m["shared"] += 1
             self.m["ride"].append(t - rs.picked_at)
+            if self.bus is not None:
+                self.bus.emit("dropoff", policy=self.policy, t=round(t, 1), req=rs.r.id, car=i,
+                              ride=round(t - rs.picked_at, 1), shared=int(rs.shared))
             if rs.direct > 0:
                 self.m["detour"].append((t - rs.picked_at) / rs.direct)
         self.advance_plan(i)
@@ -406,6 +413,8 @@ class Dispatcher:
         rs.log.append((self.world.t, "cancel", None))
         if self.ledger is not None:
             self.ledger.lost(self.policy, rs.r, self.world.t)
+        if self.bus is not None:
+            self.bus.emit("cancel", policy=self.policy, t=round(self.world.t, 1), req=rs.r.id, zone=rs.r.zone)
         self.m["lost"] += 1
         self.m["interval_lost"] += 1
 
@@ -435,6 +444,8 @@ class Dispatcher:
             f.accepts[i] += 1
             rs.status, rs.assigned_at = "assigned", t
             rs.log.append((t, "accept", i))
+            if self.bus is not None:
+                self.bus.emit("assign", policy=self.policy, t=round(t, 1), req=rs.r.id, car=i, shared=0)
             if self.telemetry is not None:
                 f.leg[i] = (self.fs.eta_features(f.x[i], f.z[i], rs.r.x, rs.r.z, self.world.clock()), t, rs)
             r = rs.r
@@ -589,6 +600,8 @@ class OrcaDispatcher(Dispatcher):
         self.solve_ms = 0.0
         self.decisions = 0                     # requests matched, for decisions per second
         self.batch_log: list[tuple[int, float]] = []   # (requests in the batch, ms to decide them), last 5,000
+        from .engine import Histogram
+        self.match_hist = Histogram()
         # shared-ride funnel, counted per sharing request and batch: asked, a busy car near, a feasible plan, chosen
         self.pool_funnel = dict(asked=0, near=0, feasible=0, chosen=0)
 
@@ -675,6 +688,7 @@ class OrcaDispatcher(Dispatcher):
         self.solve_ms = (time.perf_counter() - t0) * 1000
         self.decisions += len(chosen)
         self.batch_log.append((nq, self.solve_ms))
+        self.match_hist.observe(self.solve_ms)
         if len(self.batch_log) > 5000:
             del self.batch_log[:1000]
         for k in chosen:
@@ -776,6 +790,8 @@ class OrcaDispatcher(Dispatcher):
         rs.offers += 1
         rs.log.append((t, "offer", i))
         rs.log.append((t, "accept", i))          # drivers on shared rides take added riders automatically
+        if self.bus is not None:
+            self.bus.emit("assign", policy=self.policy, t=round(t, 1), req=r.id, car=i, shared=1)
         self.advance_plan(i)
 
     # ---- explanations ---------------------------------------------------------------------

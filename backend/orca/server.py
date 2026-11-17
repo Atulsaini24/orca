@@ -19,6 +19,7 @@ Endpoints
   GET  /api/analytics       wait statistics per dispatcher from the trip ledger (?since=minutes)
   GET  /api/trips           most recent pickups (?limit=50)
   GET  /api/models          training metrics of the models in use and the latest benchmark
+  GET  /api/events          the domain event stream (?after=<seq>&limit=); also Redis Streams with ORCA_REDIS_URL
   GET  /metrics             Prometheus text format
 """
 from __future__ import annotations
@@ -77,7 +78,7 @@ class Hub:
             demand, data = "synthetic", None                 # this city's real trips are not prepared yet
         e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=demand, data=str(data) if data else None,
                    zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=name, pool=bool(opts.get("pool")),
-                   ev=opts.get("ev"))
+                   ev=opts.get("ev"), events=True)
         if demand != opts["demand"]:
             e.world.log("sys", f"No prepared real trips for {e.city.label}: running synthetic demand "
                                f"(python scripts/prepare_trips.py --city {name})")
@@ -130,6 +131,7 @@ def build_app(opts: dict) -> Starlette:
         hub.task = asyncio.create_task(hub.run())
         yield
         hub.task.cancel()
+        hub.engine.bus.close(timeout=2)
 
     async def home(request):
         if (HOME / "index.html").exists():
@@ -208,7 +210,8 @@ def build_app(opts: dict) -> Starlette:
         new = await asyncio.to_thread(hub._new_engine, opts)
         async with hub.lock:
             new.speed = hub.engine.speed
-            hub.engine, hub.opts = new, opts
+            old, hub.engine, hub.opts = hub.engine, new, opts
+        old.bus.close(timeout=2)
         return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"], "city": new.city.name,
                              "pool": bool(opts.get("pool")), "ev": opts.get("ev")})
 
@@ -237,6 +240,15 @@ def build_app(opts: dict) -> Starlette:
         async with hub.lock:
             return JSONResponse(hub.engine.ledger.recent(limit))
 
+    async def events(request: Request):
+        try:
+            after = int(request.query_params.get("after", 0))
+            limit = max(1, min(2000, int(request.query_params.get("limit", 500))))
+        except ValueError:
+            return JSONResponse({"error": "after and limit must be whole numbers"}, status_code=400)
+        bus = hub.engine.bus
+        return JSONResponse(dict(sink=bus.sink, last=bus.seq, events=bus.since(after, limit)))
+
     async def models(request):
         return JSONResponse(hub.engine.models())
 
@@ -253,7 +265,7 @@ def build_app(opts: dict) -> Starlette:
         Route("/api/health", health), Route("/api/stream", stream),
         Route("/api/command", command, methods=["POST"]), Route("/api/reset", reset, methods=["POST"]),
         Route("/api/explain/{rid}", explain), Route("/api/analytics", analytics), Route("/api/trips", trips),
-        Route("/api/models", models), Route("/metrics", metrics),
+        Route("/api/models", models), Route("/api/events", events), Route("/metrics", metrics),
     ]
     if (HOME / "assets").is_dir():                         # content-hashed file names: cache for a year
         routes.append(Mount("/assets", CachedStatic(directory=HOME / "assets", cache="public, max-age=31536000, immutable")))

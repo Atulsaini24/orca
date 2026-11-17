@@ -33,7 +33,10 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 COPY backend/requirements.lock backend/
-RUN pip install --no-cache-dir -r backend/requirements.lock && useradd --create-home --uid 10001 orca
+# production extras: PostgreSQL ledger, Redis event stream, OpenTelemetry traces (all optional at run time)
+RUN pip install --no-cache-dir -r backend/requirements.lock \
+      "psycopg[binary]==3.2.3" redis==5.0.8 opentelemetry-sdk==1.27.0 opentelemetry-exporter-otlp-proto-http==1.27.0 \
+ && useradd --create-home --uid 10001 orca
 COPY backend/orca backend/orca
 COPY backend/pyproject.toml backend/
 COPY backend/artifacts backend/artifacts
