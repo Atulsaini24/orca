@@ -1,0 +1,19 @@
+{
+  "intersections": 3868,
+  "segments": 8713,
+  "zones": 57,
+  "street_km": 508,
+  "one_way_share": 0.282,
+  "width_km": 8.3,
+  "length_km": 8.4,
+  "source": "OpenStreetMap contributors (ODbL), drivable ways; zones: zones of about 1 km, named after OpenStreetMap places",
+  "city": "cambridge",
+  "label": "Cambridge, Massachusetts",
+  "buildings": 31440,
+  "footprints": 32461,
+  "tallest_m": 102,
+  "median_height_m": 9,
+  "buildings_over_150m": 0,
+  "real_outline_share": 0.998,
+  "buildings_source": "OpenStreetMap contributors (ODbL), building footprints"
+}

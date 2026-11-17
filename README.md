@@ -228,6 +228,8 @@ Design notes, the data pipelines and how this would scale out: [`docs/ARCHITECTU
 * Traffic speeds are known per zone and hour, not per street, so time-aware routing changes little except
   around accidents.
 * The learned repositioning policy does not beat the hand-written rules; it is reported, not used by default.
-* Cities built with `orca.newcity` have no trip records: they run synthetic demand and flat traffic.
+* Cities built with `orca.newcity` have no trip records: they run synthetic demand and flat traffic, with no trained
+  models or tuned weights, so ORCA's edge there is small (in the example city, Cambridge, it runs about even with
+  nearest-car dispatch). Training and tuning need a city's real trips.
 * One process holds one city's state in memory; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes
   the split into services at real scale.
