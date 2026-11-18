@@ -308,24 +308,34 @@ The control room page is 200 KB of code; at start-up it loads only the chosen ci
 ### Rendering budget
 
 The target is 60 frames per second on integrated graphics. Measured on Intel Iris Xe on a 1.5x screen
-with `make perf`: 27 fps before this design; with it and the full facade shading, about 50 fps over
-the whole city (dynamic resolution settles near a 1.1x pixel ratio there) and 60-70 fps zoomed in.
+with `make perf`: 27 fps before this design; now 56-62 fps over the whole city in all three cities with
+every building drawn, and 63-74 fps zoomed in, with no frame over 30 ms (no stutter).
 
 * **Tiles.** Land, streets, bridges and the 1.8-million-index building mesh are reordered once at
   start-up into 32-unit (about 1 km) ground tiles, each with its index range and bounding box. Every
   frame, tiles outside the view frustum or beyond the fog are skipped and the rest are drawn front to
   back, so hidden pixels fail the depth test before the facade shader runs.
-* **Level of detail.** Buildings under 24 m are skipped in tiles more than 260 units (about 8 km)
-  away; cars switch to a body-and-glasshouse model beyond 240 units of camera distance.
+* **Level of detail.** Every building is drawn at every distance (dropping low ones far away left
+  low-rise cities as flat sheets); only rooftop tanks and bulkheads are skipped in tiles more than 260
+  units (about 8 km) away. Cars switch to a body-and-glasshouse model beyond 240 units.
+* **Houses.** Outside Manhattan, small low four-cornered footprints (up to 10.5 m, about 650 m²) get a
+  pitched roof along their long side, with tile colours and painted walls.
 * **Shadows.** Only static geometry casts shadows, into one 2048² map that is redrawn only when its
   key changes: the sun direction (quantised to about 0.3 degrees) or the shadowed area, which follows
-  the camera in 30-unit steps. Surfaces facing away from the sun skip the lookup.
-* **Overdraw.** Sky and water are drawn after the opaque meshes, so they shade only uncovered pixels;
+  the camera in 30-unit steps. Surfaces facing away from the sun skip the lookup; the rest take four
+  hardware-filtered lookups on a rotated grid (one beyond 260 units) instead of a 3x3 kernel.
+* **Overdraw.** Buildings, trees and streets are drawn before parks and land (which lie below them), so
+  ground hidden under a building or a street fails the depth test before it is shaded; this cut the
+  ground's cost by about two thirds. Sky and water are drawn after the opaque meshes, so they shade only
+  uncovered pixels;
   window patterns, sun glints and lit-window hashes are computed only where a window is at least about
   a pixel wide, and walls farther away use the windows' mean. Flat ground shares vertices.
-* **Dynamic resolution.** When frames take over 21 ms for a second, the pixel ratio drops in 0.2 steps
-  (to at least 55% of the screen's); after several fast seconds it climbs back, waiting longer after
-  each fall so it settles instead of oscillating.
+* **Dynamic resolution without stalls.** The scene renders into an offscreen 2x MSAA target sized for
+  the full canvas, resolved and scaled onto the canvas at the end of each frame (`Renderer.present`).
+  Lowering the resolution draws a smaller area of that target, which costs nothing; resizing the canvas
+  instead reallocates its buffers and froze the page for about 80 ms each time. The scale follows a
+  smoothed frame time continuously, falling quickly above 18.5 ms and climbing slowly while frames keep
+  the display's pace, never below about 0.75 device pixels per CSS pixel.
 * **Start-up.** The city builds in about 0.5 s (Manhattan) to 0.7 s (Chicago); `performance.measure`
   entries named `orca-*` show each phase. City data is gzip-compressed by the server.
 
