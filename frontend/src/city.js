@@ -5,9 +5,11 @@
 const PAL = {
   road: '#AEB6C0', plate: '#D6DBE1', slab: '#ECEEF0', curb: '#F6F7F8', park: '#C5D4BA', parkPath: '#E3E6DD',
   mark: '#FAFBFC', zebra: '#F4F5F6',
-  clay: ['#F5F4F0', '#EFEEE9', '#F3F2EE', '#ECEBE6', '#F7F6F3'], glass: ['#C9D3DE', '#BFCBD8', '#D2DAE3'],
+  clay: ['#F5F4F0', '#EFEEE9', '#F3F2EE', '#ECEBE6', '#F7F6F3'], glass: ['#A9B9CA', '#97AABF', '#B8C5D3', '#8C9FB4', '#C2CDD9'], darkGlass: ['#4B5664', '#3F4A57', '#56626F', '#5F5A55'],
   brick: ['#DDBFA8', '#D2AE97', '#E0CBB8', '#C9A48E', '#E4D3C2'], stone: ['#E9E5DC', '#DFDACF', '#E6E2D9', '#D8D3C8'],
   concrete: ['#D9DADB', '#CED0D3', '#E0E1E2'],
+  tiles: ['#5E646C', '#6F6A66', '#575B61', '#7B7F86', '#6F5B50', '#80776F', '#8A4F3C', '#9C5B44'],   // pitched roofs: mostly slate and shingle
+  siding: ['#EDE6DA', '#D9DDE2', '#E6D9C3', '#C9D3D8', '#E9E2CF', '#D7CDBE', '#F2EFEA', '#C7CCC4', '#DCC9B6', '#BFC9CF'],   // painted house walls
   hvac: '#DADCDF', tank: '#B39478', tankRoof: '#7E6A58', legs: '#5C5650',
   leaf: ['#8FB47C', '#84AB73', '#9BBD88', '#7BA36B'], trunk: '#8C8277',
   glassCar: '#262C33', tyre: '#1F2327', head: '#FFF4D2', tail: '#C8232C', sign: '#FFFFFF',
@@ -232,14 +234,26 @@ function earClip(pts, eps) {
 }
 
 // Extrude many footprints into one static mesh, written straight into typed arrays.
-const MINOR_M = 24, LOD_FAR = 260;          // buildings under 24 m are drawn within 260 units (about 8 km) of the camera
-function extrudeBuildings(B) {
+const LOD_FAR = 260;                        // rooftop tanks and bulkheads are drawn within 260 units (about 8 km); buildings always
+// A house: a low, roughly rectangular four-cornered footprint gets a pitched roof with its ridge along the long side
+// (cities whose low-rise is flat-roofed, Manhattan's rowhouses, pass pitched = false).
+function houseRoof(pts, hm) {
+  if (pts.length !== 4 || hm > 10.5 || hm < 3) return null;
+  const L = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const e0 = L(pts[0], pts[1]), e1 = L(pts[1], pts[2]), area = Math.abs(polyArea(pts));
+  if (area > 0.72 || area < 0.012 || area < 0.85 * e0 * e1) return null;   // under ~650 m2, and close to a rectangle
+  const s = e0 >= e1 ? 0 : 1, short = Math.min(e0, e1);                    // the ridge runs along the longer pair of sides
+  return { s, rise: Math.min(0.13, short * 0.42) };
+}
+function polyArea(p) { let a = 0; for (let i = 0; i < p.length; i++) { const [x0, z0] = p[i], [x1, z1] = p[(i + 1) % p.length]; a += x0 * z1 - x1 * z0; } return a / 2; }
+
+function extrudeBuildings(B, pitched = true) {
   const counts = b64Bytes(B.counts), X = b64U16(B.x), Z = b64U16(B.z), H = b64U16(B.h), Y = b64U16(B.year);
   // What stands on a roof: 1 = a mechanical bulkhead (taller buildings), 2 = a wooden water tank (pre-war mid-rises).
   const roofKind = (b) => { const hm = (Math.max(0.12, H[b] / 1000)) * B.unit_m, yr = Y[b]; return hm > 30 ? 1 : yr && yr < 1940 && hm > 14 && b % 3 === 0 ? 2 : 0; };
   const EXTRA = [[0, 0], [20, 30], [42, 54]];                  // vertices and indices of each kind
   let nv = 0, ni = 0;
-  for (let i = 0; i < B.n; i++) { const k = counts[i], e = EXTRA[roofKind(i)]; nv += 5 * k + e[0]; ni += 6 * k + 3 * (k - 2) + e[1]; }
+  for (let i = 0; i < B.n; i++) { const k = counts[i], e = EXTRA[roofKind(i)]; nv += 5 * k + e[0] + 10; ni += 6 * k + 3 * (k - 2) + e[1] + 12; }   // + room for a pitched roof
   const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), col = new Float32Array(nv * 3), mask = new Float32Array(nv);
   const idx = new Uint32Array(ni), ids = new Float32Array(nv), minor = new Uint8Array(nv);   // minor: skipped far away
   let v = 0, t = 0, o = 0, tallest = 0;
@@ -271,8 +285,10 @@ function extrudeBuildings(B) {
     // picks its material, the same rule as here: glass curtain wall for towers, masonry below.
     const hash = (b * 0.6180339887) % 1, id = Math.floor(h * 50) + Math.min(0.999, hash);
     const glassy = h > 5 || (h > 2.2 && hash < 0.55);
-    const c = glassy ? pal(PAL.glass, b) : yr && yr < 1940 ? pal(hash < 0.7 ? PAL.brick : PAL.stone, b)
-      : hash < 0.35 ? pal(PAL.stone, b) : hash < 0.6 ? pal(PAL.concrete, b) : pal(PAL.clay, b);
+    const house = pitched ? houseRoof(pts, hm) : null;
+    const c = glassy ? pal(hash > 0.78 ? PAL.darkGlass : PAL.glass, b) : house ? pal(PAL.siding, b)
+      : yr && yr < 1940 ? pal(hash < 0.7 ? PAL.brick : PAL.stone, b)
+      : hash < 0.3 ? pal(PAL.brick, b) : hash < 0.5 ? pal(PAL.stone, b) : hash < 0.75 ? pal(PAL.concrete, b) : pal(PAL.clay, b);
     const v0 = v;
     for (let j = 0; j < k; j++) {                              // walls
       const [xa, za] = pts[j], [xb, zb] = pts[(j + 1) % k];
@@ -280,16 +296,37 @@ function extrudeBuildings(B) {
       if (nx * ((xa + xb) / 2 - cx) + nz * ((za + zb) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
       quad(put(xa, 0.06, za, nx, 0, nz, c, id), put(xb, 0.06, zb, nx, 0, nz, c, id), put(xb, h, zb, nx, 0, nz, c, id), put(xa, h, za, nx, 0, nz, c, id));
     }
-    const r0 = v;                                              // roof
-    for (const [x, z] of pts) put(x, h, z, 0, 1, 0, c, id);
-    const tris = triangulate(pts);
-    for (let q = 0; q < k - 2; q++) {
-      const tr = tris[q] || [0, q + 1, q + 2];
-      idx[t++] = r0 + tr[0]; idx[t++] = r0 + tr[1]; idx[t++] = r0 + tr[2];
+    if (house) {                                               // pitched roof: two slopes and two gable ends
+      const tile = pal(PAL.tiles, b + 3), [a0, a1, a2, a3] = [0, 1, 2, 3].map((q) => pts[(q + house.s) % 4]);
+      const top = h + house.rise, mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      const r1 = mid(a1, a2), r0p = mid(a3, a0);                 // the ridge, over the middle of the short sides
+      const slope = (p, q, rA, rB) => {                          // eave p-q up to ridge rA-rB, normal facing up and out
+        const ux = q[0] - p[0], uy = 0, uz = q[1] - p[1], vx = rA[0] - q[0], vy = top - h, vz = rA[1] - q[1];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+        const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+        quad(put(p[0], h, p[1], nx, ny, nz, tile, id), put(q[0], h, q[1], nx, ny, nz, tile, id),
+          put(rA[0], top, rA[1], nx, ny, nz, tile, id), put(rB[0], top, rB[1], nx, ny, nz, tile, id));
+      };
+      slope(a0, a1, r1, r0p);
+      slope(a2, a3, r0p, r1);
+      for (const [p, q, r] of [[a1, a2, r1], [a3, a0, r0p]]) {    // gables: wall-coloured triangles, facing out
+        let nx = q[1] - p[1], nz = -(q[0] - p[0]); const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l;
+        if (nx * ((p[0] + q[0]) / 2 - cx) + nz * ((p[1] + q[1]) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
+        const i0 = put(p[0], h, p[1], nx, 0, nz, c, id), i1 = put(q[0], h, q[1], nx, 0, nz, c, id), i2 = put(r[0], top, r[1], nx, 0, nz, c, id);
+        idx[t++] = i0; idx[t++] = i1; idx[t++] = i2;
+      }
+    } else {
+      const r0 = v;                                            // flat roof
+      for (const [x, z] of pts) put(x, h, z, 0, 1, 0, c, id);
+      const tris = triangulate(pts);
+      for (let q = 0; q < k - 2; q++) {
+        const tr = tris[q] || [0, q + 1, q + 2];
+        idx[t++] = r0 + tr[0]; idx[t++] = r0 + tr[1]; idx[t++] = r0 + tr[2];
+      }
     }
-    if (hm < MINOR_M) minor.fill(1, v0, v);
     // rooftop structure, where the footprint has room for it around its centre
-    const kind = roofKind(b), span = Math.min(x1b - x0b, z1b - z0b), e0 = v;
+    const kind = house ? 0 : roofKind(b), span = Math.min(x1b - x0b, z1b - z0b), e0 = v;
     if (kind && span > 0.5 && inside(pts, cx, cz)) {
       if (kind === 1) {
         const s = Math.min(0.9, span * 0.2), top = h + 0.1 + 0.08 * hash, ang = hash * 3.1;
@@ -373,7 +410,9 @@ function buildStreetCity(R, C) {
     up(land, [-far, y, -far], [WX + far, y, -far], [WX + far, y, WZ + far], outside);
     up(land, [-far, y, -far], [WX + far, y, WZ + far], [-far, y, WZ + far], outside);
   }
-  const landMesh = R.mesh(land, 1, { order: 0, tile: TILE }); landMesh.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); landMesh.commit(1);
+  // Draw order: what covers the ground first, so the GPU skips every ground pixel hidden under a building or a
+  // street before shading it (land is lowest, y = 0; parks 0.03; streets 0.04-0.07).
+  const landMesh = R.mesh(land, 1, { order: 0.5, tile: TILE }); landMesh.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); landMesh.commit(1);
   R.water = { rect: new Float32Array([-1600, -1600, 3200 + WX, 3200 + WZ]), y: -2.4, city: new Float32Array([WX / 2, WZ / 2, WX / 2, WZ / 2]),
     deep: [0.60, 0.70, 0.77], shallow: [0.70, 0.79, 0.84] };
 
@@ -400,13 +439,13 @@ function buildStreetCity(R, C) {
     }
   }
   performance.measure('orca-parks', 'orca-parks');
-  if (green.count) { const gm = R.mesh(green, 1, { order: 0, tile: TILE }); gm.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); gm.commit(1); }
+  if (green.count) { const gm = R.mesh(green, 1, { order: 0.4, tile: TILE }); gm.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); gm.commit(1); }
 
   // ---------------------------------------------------------------- streets: ribbons along the real geometry
   performance.mark('orca-roads');
   const roads = new Geo(), seen = new Set();
   const HALF = [0.95, 0.8, 0.62, 0.55, 0.42, 0.34, 0.34, 0.25, 0.45, 0.45, 0.42, 0.38, 0.34];
-  const colMajor = lin('#9DA6B1'), colMinor = lin('#B0B8C2'), colHwy = lin('#8E98A4');   // street contrast against the pale ground
+  const colMajor = lin('#8D96A2'), colMinor = lin('#A1A9B4'), colHwy = lin('#808A96');   // street contrast against the pale ground
   const ribbon = (geo, x0, z0, x1, z1, w, y, col) => {
     const L = Math.hypot(x1 - x0, z1 - z0); if (L < 1e-4) return;
     const dx = (x1 - x0) / L, dz = (z1 - z0) / L, nx = -dz * w, nz = dx * w;
@@ -422,7 +461,7 @@ function buildStreetCity(R, C) {
     const cls = C.cls[e], w = HALF[cls] ?? 0.34, col = cls <= 1 ? colHwy : C.classMajor[cls] ? colMajor : colMinor, y = cls <= 1 ? 0.07 : 0.04;
     for (let k = C.geoOff[e]; k < C.geoOff[e + 1] - 1; k++) ribbon(roads, C.gx[k], C.gz[k], C.gx[k + 1], C.gz[k + 1], w, y, col);
   }
-  const roadMesh = R.mesh(roads, 1, { order: 1, glow: [1.0, 0.78, 0.45], tile: TILE }); performance.measure('orca-roads', 'orca-roads'); roadMesh.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); roadMesh.commit(1);
+  const roadMesh = R.mesh(roads, 1, { order: -1, glow: [1.0, 0.78, 0.45], tile: TILE }); performance.measure('orca-roads', 'orca-roads'); roadMesh.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); roadMesh.commit(1);
 
   // ---------------------------------------------------------------- bridges over the water: deck, parapets, piers
   const deck = new Geo(), deckCol = lin('#A7AFB9'), sideCol = lin('#7E8792');
@@ -439,7 +478,7 @@ function buildStreetCity(R, C) {
       if (i % 8 === 0 && C.zoneOf(x0, z0) >= 0) piers.push([x0, z0]);
     }
   }
-  if (deck.count) { const dm = R.mesh(deck, 1, { cast: true, order: 1, tile: TILE }); dm.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); dm.commit(1); }
+  if (deck.count) { const dm = R.mesh(deck, 1, { cast: true, order: -1, tile: TILE }); dm.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); dm.commit(1); }
   const pier = new Geo().box(-0.3, 0.3, -3.2, 1.0, -0.3, 0.3, lin('#8E97A1'));
   const pm = R.mesh(pier, Math.max(1, piers.length), { cast: true, order: 1 });
   piers.forEach(([x, z], i) => pm.set(i, x, 0, z, 1, 1, 1, 0, 1, 1, 1, 1)); pm.commit(piers.length);
@@ -448,11 +487,11 @@ function buildStreetCity(R, C) {
   let tallest = 0, nb = 0;
   if (typeof BUILDINGS_DATA !== 'undefined' && BUILDINGS_DATA.city === C.name) {
     performance.mark('orca-extrude');
-    const ex = extrudeBuildings(BUILDINGS_DATA);
+    const ex = extrudeBuildings(BUILDINGS_DATA, C.name !== 'manhattan');
     performance.measure('orca-extrude', 'orca-extrude');
     tallest = ex.tallest; nb = ex.n;
     performance.mark('orca-bmesh');
-    const BL = R.mesh(ex.geo, 1, { cast: true, facade: 2, order: 2, tile: TILE, lod: LOD_FAR });
+    const BL = R.mesh(ex.geo, 1, { cast: true, facade: 2, order: -3, tile: TILE, lod: LOD_FAR });
     performance.measure('orca-buildings-upload', 'orca-bmesh');
     BL.set(0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1); BL.commit(1);
   }
@@ -469,7 +508,7 @@ function buildStreetCity(R, C) {
   const tree = new Geo();
   tree.cylinder(0, 0, 0.05, 0, 0.36, lin(PAL.trunk), 5);
   tree.ball(0, 0.60, 0, 0.34, [1, 1, 1], 7, 4, 1, 1.0).ball(0.10, 0.86, 0.06, 0.24, [1.08, 1.1, 1.02], 7, 4, 1, 1.0);   // crown in two soft lobes
-  const tr = R.mesh(tree, Math.max(1, trees.length), { cast: true, order: 3, sway: 0.035 });
+  const tr = R.mesh(tree, Math.max(1, trees.length), { cast: true, order: -2, sway: 0.035 });
   trees.forEach(([x, z], i) => {
     const k = 0.8 + rnd() * 0.6, c = lin(PAL.leaf[Math.floor(rnd() * PAL.leaf.length)]);
     tr.set(i, x, 0.05, z, k, k * (0.85 + rnd() * 0.4), k, rnd() * 6, c[0], c[1], c[2], 1);

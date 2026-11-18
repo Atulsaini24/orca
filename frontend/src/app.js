@@ -273,18 +273,19 @@ const VIEWS = {
 let viewW = 1, viewH = 1;
 function resize() {
   viewW = stage.clientWidth; viewH = stage.clientHeight;
-  R.resize(viewW, viewH, dprNow); cam.aspect = viewW / viewH; sizeChart();
+  R.resize(viewW, viewH, DPR); cam.aspect = viewW / viewH; sizeChart();
 }
-// Dynamic resolution: render below the screen's pixel ratio while frames run slow (over 21 ms for a second),
-// and step back up after several fast seconds. Each fall waits longer before the next climb, so it settles.
-const DPR_MIN = Math.min(DPR, Math.max(0.75, DPR * 0.55));
-let dprNow = DPR, slowT = 0, fastT = 0, holdUntil = 0, holdLen = 8;
+// Dynamic resolution: the 3D view draws a smaller area of its full-size target while frames run slow and scales it
+// up (Renderer.present), so changing resolution costs nothing and can follow the load continuously. It falls
+// quickly when frames take over 18.5 ms, and climbs slowly while they keep the display's pace; never below
+// about 0.75 device pixels per CSS pixel.
+const SCALE_MIN = Math.min(1, Math.max(0.5, 0.75 / DPR));
+let frameEma = 1 / 60;
 function adaptResolution(dt) {
   if (CAPTURE || document.hidden) return;
-  if (dt > 0.021) { slowT += dt; fastT = 0; } else { slowT = Math.max(0, slowT - dt * 0.5); if (dt < 0.0185) fastT += dt; }
-  if (slowT > 1 && dprNow > DPR_MIN) {
-    dprNow = Math.max(DPR_MIN, +(dprNow - 0.2).toFixed(2)); slowT = 0; fastT = 0; holdUntil = clock + holdLen; holdLen = Math.min(120, holdLen * 2); resize();
-  } else if (fastT > 4 && dprNow < DPR && clock > holdUntil) { dprNow = Math.min(DPR, +(dprNow + 0.1).toFixed(2)); fastT = 0; resize(); }
+  frameEma += (Math.min(dt, 0.1) - frameEma) * 0.08;
+  if (frameEma > 0.0185) R.scale = Math.max(SCALE_MIN, R.scale * 0.985);
+  else if (frameEma < 0.0172) R.scale = Math.min(1, R.scale * 1.0015);
 }
 
 // ----------------------------------------------------------------------------- live frame state + drawing
@@ -1020,7 +1021,7 @@ resize();
     document.title = 'capture-ready';
     return;
   }
-  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => dprNow, frame: () => curF };   // frame-cost probes (tools/perf_probe.py)
+  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => DPR * R.scale, frame: () => curF };   // frame-cost probes (tools/perf_probe.py)
   cam.flyTo(VIEWS.home, reduceMotion ? 0.001 : 3.4);   // the one orchestrated entrance: plan view settles into the model
   let last = performance.now();
   const loop = (now) => { requestAnimationFrame(loop); const raw = (now - last) / 1000, dt = Math.min(0.1, raw); last = now; step(dt); adaptResolution(raw); };

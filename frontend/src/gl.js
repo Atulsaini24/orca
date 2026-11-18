@@ -221,14 +221,16 @@ uniform vec3 uSun, uSunCol, uSky, uGround, uCam, uFog, uGlow; uniform vec2 uFogR
 uniform float uUnlit, uFacade, uShadowOn, uExposure, uAO, uNight, uTime, uSoft, uSelf; uniform int uPcf;
 uniform sampler2DShadow uShadow;
 out vec4 outColor;
-float shadowAt(vec4 l){
+// Each lookup is already a 2x2 bilinear comparison (LINEAR + compare mode), so four lookups on a rotated grid give
+// a soft edge close to a 3x3 kernel at under half the cost; far away one lookup is plenty.
+float shadowAt(vec4 l, bool far){
   vec3 p = l.xyz / l.w * 0.5 + 0.5;
   if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) return 1.0;
+  float z = p.z - 0.0008;
+  if (uPcf == 0 || far) return texture(uShadow, vec3(p.xy, z));
   vec2 t = 1.0 / vec2(textureSize(uShadow, 0));
-  float s = 0.0;
-  float k = float(uPcf), n = 0.0;
-  for (int x = -uPcf; x <= uPcf; x++) for (int y = -uPcf; y <= uPcf; y++) { s += texture(uShadow, vec3(p.xy + vec2(x, y) * t * (1.7 / max(k, 1.0)), p.z - 0.0008)); n += 1.0; }
-  return s / n;
+  return 0.25 * (texture(uShadow, vec3(p.xy + vec2(-0.55, -1.25) * t, z)) + texture(uShadow, vec3(p.xy + vec2(1.25, -0.55) * t, z))
+               + texture(uShadow, vec3(p.xy + vec2(0.55, 1.25) * t, z)) + texture(uShadow, vec3(p.xy + vec2(-1.25, 0.55) * t, z)));
 }
 vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
 float hash3(vec3 p){ p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
@@ -245,7 +247,8 @@ void main(){
   if (uUnlit < 0.5) {
     vec3 n = normalize(vN);
     float ndl = max(dot(n, uSun), 0.0);
-    float sh = uShadowOn > 0.5 && ndl > 0.0 ? shadowAt(vL) : 1.0;           // faces turned from the sun need no lookup
+    vec3 toCam = uCam - vW;
+    float sh = uShadowOn > 0.5 && ndl > 0.0 ? shadowAt(vL, dot(toCam, toCam) > 67600.0) : 1.0;   // none for faces turned away; one beyond 260 units
     vec3 amb = mix(uGround, uSky, n.y * 0.5 + 0.5);
     float ao = mix(1.0 - uAO, 1.0, smoothstep(0.0, 3.5, vW.y + 0.2));
     vec3 sun = uSunCol * ndl * sh * clouds(vW.xz);
@@ -269,7 +272,7 @@ void main(){
         float f1 = 1.0 - max(dot(V, n), 0.0), fres = f1 * f1 * f1;
         vec3 skyRef = mix(uGround * 1.1, uSky * vec3(1.25, 1.45, 1.75), clamp(R.y * 0.6 + 0.55, 0.0, 1.0));
         vec3 tint = glassy ? mix(vec3(0.10, 0.16, 0.25), vec3(0.13, 0.19, 0.22), hid) : vec3(0.07, 0.09, 0.12);
-        glassLit = mix(tint * (amb + sun * 0.7), skyRef, 0.22 + 0.62 * fres);
+        glassLit = mix(tint * (amb + sun * 0.7), skyRef, 0.16 + 0.56 * fres);
         if (detail > 0.0) {                                                   // near enough to tell windows apart
           vec2 cf = abs(fract(vec2(fb, fy)) - 0.5);
           float aa = px * 0.7 + 0.012;
@@ -308,7 +311,9 @@ void main(){
       } else if (n.y > 0.5) {
         // roofs: membrane, gravel or tar, by building
         vec3 roof = hid < 0.4 ? vec3(0.62, 0.63, 0.64) : hid < 0.75 ? vec3(0.47, 0.46, 0.44) : vec3(0.30, 0.31, 0.33);
-        col = mix(col, roof, 0.55);
+        float pitched = step(n.y, 0.985);                                     // a sloped house roof keeps its tile colour
+        float rows = abs(fract(vW.y * 26.0) - 0.5) * 2.0, rpx = fwidth(vW.y * 26.0);   // tile courses, faded out below a pixel
+        col = mix(mix(col, roof, 0.55), col * (1.0 - 0.10 * (1.0 - smoothstep(0.0, 0.25, rows)) * (1.0 - smoothstep(0.4, 1.0, rpx))), pitched);
       }
     } else if (uFacade > 0.5) {
       // Engraved floor lines and faint window bays on walls; brighter rims where edges catch light.
@@ -406,7 +411,8 @@ const INST_FLOATS = 11;   // off(3) scale(3) rot(1) color(4)
 
 class Renderer {
   constructor(canvas, opts = {}) {
-    const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: !!opts.preserve, powerPreference: 'high-performance' });
+    // The scene renders into an anti-aliased offscreen target (see resize / present); the canvas itself needs no MSAA.
+    const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, preserveDrawingBuffer: !!opts.preserve, powerPreference: 'high-performance' });
     if (!gl) throw new Error('WebGL2 is not available');
     this.gl = gl; this.canvas = canvas; this.layers = []; this.lineLayers = []; this.time = 0;
     this.pMesh = this.program(VS_MESH, FS_MESH);
@@ -436,6 +442,36 @@ class Renderer {
     this.light = { dir: [0, 1, 0], color: [1, 1, 1], sky: [0.5, 0.5, 0.5], ground: [0.3, 0.3, 0.3] };
     this.fog = [0.9, 0.9, 0.9]; this.fogRange = [600, 1600]; this.exposure = 1; this.ao = 0.35;
     this.planes = []; this.shadowTexel = 0.2;
+    this.samples = Math.min(opts.samples ?? 2, gl.getParameter(gl.MAX_SAMPLES));   // 2x MSAA: most of 4x's edge quality at a fraction of its cost
+    this.scale = 1;                                  // share of the full resolution actually rendered (dynamic resolution)
+    this.fbo = gl.createFramebuffer(); this.rfbo = gl.createFramebuffer(); this.tw = 0; this.th = 0;
+  }
+  // Render targets sized for the full canvas, allocated only when the canvas size changes: an MSAA colour + depth
+  // target, and a single-sample one it resolves into. Lowering the resolution then just draws a smaller area of
+  // them and scales it up when presenting, which is free; reallocating the canvas instead stalls the GPU.
+  targets(w, h) {
+    if (w === this.tw && h === this.th) return;
+    const gl = this.gl;
+    for (const rb of this.rbs || []) gl.deleteRenderbuffer(rb);
+    const rb = (samples, fmt) => { const r = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, r);
+      if (samples) gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, fmt, w, h); else gl.renderbufferStorage(gl.RENDERBUFFER, fmt, w, h); return r; };
+    const color = rb(this.samples, gl.RGBA8), depth = rb(this.samples, gl.DEPTH_COMPONENT24), resolved = rb(0, gl.RGBA8);
+    this.rbs = [color, depth, resolved];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.rfbo);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, resolved);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.tw = w; this.th = h;
+  }
+  present(rw, rh) {
+    const gl = this.gl, cw = this.canvas.width, ch = this.canvas.height;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.rfbo);
+    gl.blitFramebuffer(0, 0, rw, rh, 0, 0, rw, rh, gl.COLOR_BUFFER_BIT, gl.NEAREST);          // MSAA resolve
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.rfbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(0, 0, rw, rh, 0, 0, cw, ch, gl.COLOR_BUFFER_BIT, rw === cw ? gl.NEAREST : gl.LINEAR);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
   program(vs, fs) {
     const gl = this.gl, mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh) + '\n' + s); return sh; };
@@ -521,7 +557,9 @@ class Renderer {
     return { tex: t, n, m, update: (data) => { gl.bindTexture(gl.TEXTURE_2D, t); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, m, gl.RGBA, gl.UNSIGNED_BYTE, data); } };
   }
   resize(w, h, dpr) {
-    this.canvas.width = Math.max(1, Math.round(w * dpr)); this.canvas.height = Math.max(1, Math.round(h * dpr));
+    const cw = Math.max(1, Math.round(w * dpr)), ch = Math.max(1, Math.round(h * dpr));
+    if (cw !== this.canvas.width || ch !== this.canvas.height) { this.canvas.width = cw; this.canvas.height = ch; }
+    this.targets(cw, ch);
     this.w = w; this.h = h; this.dpr = dpr;
   }
   upload(layer, F) {
@@ -583,8 +621,9 @@ class Renderer {
       gl.disable(gl.POLYGON_OFFSET_FILL);
     }
     // main pass: opaque meshes first (front to back), so the sky and water only shade what is left uncovered
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    const rw = Math.max(1, Math.round(this.canvas.width * this.scale)), rh = Math.max(1, Math.round(this.canvas.height * this.scale));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.viewport(0, 0, rw, rh);
     gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LESS); gl.disable(gl.BLEND);   // strict: coplanar overlaps shade once
     gl.clearColor(this.fog[0], this.fog[1], this.fog[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     const planes = frustumPlanes(cam.vp), far = this.fogRange[1] + 40;
@@ -628,6 +667,7 @@ class Renderer {
     }
     gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
+    this.present(rw, rh);
   }
 }
 
