@@ -7,7 +7,8 @@ primary_region = "ewr"            # Newark, close to the city the data comes fro
 
 [env]
   ORCA_TRUST_PROXY = "1"
-  ORCA_DB = "/app/backend/ledger/orca.db"
+  ORCA_DB = "/app/backend/ledger/orca.db"     # the router gives each city its own file (orca_<city>.db)
+  ORCA_CITIES = "manhattan chicago"            # ~1.4 GB; add cambridge with memory = "4gb"
 
 [http_service]
   internal_port = 8000

@@ -28,6 +28,26 @@ with an original score is in [`docs/orca-tour.mp4`](docs/orca-tour.mp4).
 
 ## Results
 
+### Against the industry baseline
+
+Platforms replaced nearest-car dispatch with **batched matching**: collect requests for a few seconds,
+then solve one assignment minimising total predicted pickup time. ORCA is benchmarked against a faithful
+version of it built from ORCA's own batching, ETA model and exact solver, so the gap is what ORCA's extra
+signals add. 10 paired seeds, 95% intervals, Wilcoxon p = 0.002 (ORCA wins on every seed):
+
+| Mean wait | Nearest car | Batched ETA (industry) | **ORCA** | **ORCA vs batched** |
+|---|---:|---:|---:|---:|
+| Manhattan, steady | 134 s | 124 s | **108 s** | **−13%** (p95 −20%) |
+| Manhattan, spike + GPS outage + accident | 184 s | 169 s | **151 s** | **−11%** (p95 −13%) |
+| Chicago, steady | 95 s | 90 s | **80 s** | **−11%** (p95 −15%) |
+| Chicago, spike + GPS outage + accident | 118 s | 112 s | **99 s** | **−11%** (p95 −13%) |
+
+An ablation finds the wait gain comes from forecast-driven **repositioning**; ORCA's matching signals
+alone keep waits level with batched matching but **halve wasted offers** under stress. Method, ablation
+and limitations: [`docs/REPORT.md`](docs/REPORT.md); reproduce with `make industry`.
+
+### Full benchmark
+
 45 simulated minutes per run, 1,200 cars per dispatcher, **10 seeds**, means with **95% bootstrap
 confidence intervals**, real September 2026 demand and real traffic by zone and hour. Full tables,
 paired significance tests and a 24-hour day: [`docs/benchmark_manhattan.md`](docs/benchmark_manhattan.md),
@@ -103,6 +123,7 @@ make install        # Python deps from backend/requirements-dev.lock, home-page 
 make data           # download and prepare September 2026 trips for both cities
 make web            # build the home page
 make run            # http://localhost:8000 (home page), http://localhost:8000/app (control room)
+make run-all        # every city live at once, each in its own supervised process (orca.router)
 ```
 
 Or `docker compose up --build`: the image build downloads and prepares every city's real data. The full
@@ -229,7 +250,9 @@ Design notes, the data pipelines and how this would scale out: [`docs/ARCHITECTU
   around accidents.
 * The learned repositioning policy does not beat the hand-written rules; it is reported, not used by default.
 * Cities built with `orca.newcity` have no trip records: they run synthetic demand and flat traffic, with no trained
-  models or tuned weights, so ORCA's edge there is small (in the example city, Cambridge, it runs about even with
-  nearest-car dispatch). Training and tuning need a city's real trips.
-* One process holds one city's state in memory; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes
-  the split into services at real scale.
+  models or tuned weights. In the example city, Cambridge, 1,200 cars are stretched thin and ORCA's
+  repositioning cuts the mean wait 22-37% against batched matching ([`docs/industry_cambridge.md`](docs/industry_cambridge.md)),
+  but that is synthetic demand, not evidence about real riders. Training and tuning need a city's real trips.
+* Each city runs in its own process (`orca.router` supervises them behind one port and restarts any that
+  dies or stalls); a city's state lives in memory, so one city cannot span machines.
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the split into services at real scale.

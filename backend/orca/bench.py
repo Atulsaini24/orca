@@ -29,8 +29,9 @@ from . import config as C
 from .runs import SCENARIOS, RunSpec, bootstrap_ci, run_many
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
-LABELS = {"nearest": "Nearest car", "orca_heuristic": "ORCA, heuristic models", "orca_learned": "ORCA, learned models",
-          "orca_untuned": "ORCA, learned, hand-set weights", "orca_no_guard": "ORCA, learned, no give-up guard"}
+LABELS = {"nearest": "Nearest car", "batched_eta": "Batched ETA matching (industry baseline)", "orca_heuristic": "ORCA, heuristic models", "orca_learned": "ORCA, learned models",
+          "orca_untuned": "ORCA, learned, hand-set weights", "orca_no_guard": "ORCA, learned, no give-up guard",
+          "orca_matching_only": "ORCA, matching only (no repositioning)"}
 
 
 def summarise(rows: list[dict], scen: str, pol: str) -> dict:
@@ -75,10 +76,14 @@ def main():
     ap.add_argument("--day-seeds", type=int, nargs="*", default=[1, 2], help="seeds for the full 24-hour run")
     ap.add_argument("--no-day", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--vs-industry", action="store_true",
+                    help="only ORCA vs batched ETA matching vs nearest car; writes docs/industry_<city>.md")
     a = ap.parse_args()
     t0 = time.time()
     from . import city as G
     city = G.use(a.city)
+    if a.vs_industry:
+        return industry(a, city, t0)
     tuned = bool(C.TUNED) and C.TUNED != C.DEFAULTS
     # every worker process must run the same city as this one: pass it explicitly
     base = dict(minutes=a.minutes, fleet=a.fleet, demand=a.demand, data=a.data, city=city.name)
@@ -141,9 +146,80 @@ def main():
     print(f"Wrote docs/benchmark.json, .md, .png ({time.time() - t0:.0f}s)")
 
 
+def industry(a, city, t0):
+    """ORCA against the industry-standard baseline (batched matching on predicted pickup time) and nearest car.
+
+    Each seed runs twice on identical requests, traffic, incidents and drivers: once with ORCA, once with the
+    batched-ETA dispatcher in ORCA's place. Nearest car rides along in both runs and is identical in each.
+    """
+    base = dict(minutes=a.minutes, fleet=a.fleet, demand=a.demand, data=a.data, city=city.name)
+    variants = {"orca": dict(policy="orca"), "batched": dict(policy="batched"),
+                "norebal": dict(policy="orca", rebalance="off")}
+    names = {"orca": "orca_learned", "batched": "batched_eta", "norebal": "orca_matching_only"}
+    specs = [RunSpec(seed=s, scenario=scen, tag=f"{scen}/{v}", **variants[v], **base)
+             for scen in SCENARIOS for s in a.seeds for v in variants]
+    print(f"{len(specs)} runs on {a.workers or 'all-but-one'} cores", flush=True)
+    res = run_many(specs, workers=a.workers)
+    rows: dict[tuple, dict] = {}
+    for spec, r in zip(specs, res):
+        row = rows.setdefault((spec.scenario, spec.seed), dict(scenario=spec.scenario, seed=spec.seed, nearest=r["nearest"]))
+        row[names[spec.tag.split("/")[1]]] = r["orca"]
+    rows_l = sorted(rows.values(), key=lambda r: (r["scenario"], r["seed"]))
+    pols = ["nearest", "batched_eta", "orca_matching_only", "orca_learned"]
+    summary = {}
+    for scen in SCENARIOS:
+        summary[scen] = {p: summarise(rows_l, scen, p) for p in pols}
+        rs = [r for r in rows_l if r["scenario"] == scen]
+        for pol in ("orca_learned", "orca_matching_only"):
+            for key in ("mean", "p95"):
+                red = np.array([1 - r[pol][key] / r["batched_eta"][key] for r in rs])
+                lo, hi = bootstrap_ci(red)
+                summary[scen][pol][f"{key}_cut_vs_batched"] = dict(value=float(red.mean()), ci=[lo, hi])
+    tests = {scen: dict(orca_vs_batched=paired_p(rows_l, scen, "orca_learned", "batched_eta"),
+                        matching_vs_batched=paired_p(rows_l, scen, "orca_matching_only", "batched_eta"),
+                        batched_vs_nearest=paired_p(rows_l, scen, "batched_eta", "nearest"),
+                        orca_vs_batched_lost=paired_p_lost(rows_l, scen, "orca_learned", "batched_eta")) for scen in SCENARIOS}
+    out = dict(config=dict(minutes=a.minutes, seeds=a.seeds, fleet=a.fleet, demand=a.demand, city=city.name, city_label=city.label),
+               rows=rows_l, summary=summary, tests=tests, seconds=round(time.time() - t0))
+    DOCS.mkdir(exist_ok=True)
+    (DOCS / f"industry_{city.name}.json").write_text(json.dumps(out, indent=2))
+    c = out["config"]
+    md = [f"# ORCA vs the industry baseline: {city.label.split(' (')[0]}", "",
+          "Large ride-hailing platforms have publicly described replacing nearest-car dispatch with **batched matching**:",
+          "collect requests for a few seconds, then solve one assignment that minimises total predicted pickup time.",
+          "That is the baseline a dispatch system has to beat today, so this benchmark adds it.", "",
+          "The batched-ETA dispatcher uses ORCA's own batching window, candidate search, ETA model and exact",
+          "assignment solver, and nothing else. The gap between it and ORCA is therefore what ORCA's extra signals",
+          "add (driver acceptance odds, GPS freshness, rider wait and give-up deadline, forecast-driven repositioning),",
+          "not what batching adds. \"ORCA, matching only\" switches repositioning off, which splits that gap into",
+          "better matching and better positioning.", "",
+          f"{c['minutes']} simulated minutes per run, {c['fleet']} cars per dispatcher, {len(c['seeds'])} seeds; every policy",
+          "sees identical requests, traffic, incidents and drivers on a seed. Means over seeds with 95% bootstrap",
+          "confidence intervals; p-values from paired Wilcoxon signed-rank tests over seeds.", ""]
+    for scen, title in (("steady", "Steady demand"), ("stress", "Spike, GPS outage and accident")):
+        S, t = summary[scen], tests[scen]
+        md += [f"## {title}", "", "| Policy | Mean wait | p95 wait | Riders lost | Re-offers | Wait cut vs nearest |",
+               "|---|---:|---:|---:|---:|---:|"]
+        for p in pols:
+            x = S[p]
+            md.append(f"| {LABELS[p]} | {fmt_ci(x['mean'])} | {fmt_ci(x['p95'])} | {x['lost']['value']:.1f} | "
+                      f"{x['reoffers']['value']:.0f} | {fmt_ci(x['reduction_vs_nearest'], pct=True) if 'reduction_vs_nearest' in x else '–'} |")
+        o, m = S["orca_learned"], S["orca_matching_only"]
+        md += ["", f"**ORCA vs batched ETA:** mean wait {fmt_ci(o['mean_cut_vs_batched'], pct=True)} shorter, "
+                   f"p95 wait {fmt_ci(o['p95_cut_vs_batched'], pct=True)} shorter (p = {fmt_p(t['orca_vs_batched'])}). "
+                   f"With repositioning switched off, ORCA's matching alone: mean wait {fmt_ci(m['mean_cut_vs_batched'], pct=True)} "
+                   f"shorter, p95 {fmt_ci(m['p95_cut_vs_batched'], pct=True)} (p = {fmt_p(t['matching_vs_batched'])}). "
+                   f"Batched ETA vs nearest car: p = {fmt_p(t['batched_vs_nearest'])}.", ""]
+    md.append(f"Reproduce: `python -m orca.bench --city {city.name} --vs-industry` ({out['seconds'] // 60} min on this machine).")
+    (DOCS / f"industry_{city.name}.md").write_text(chr(10).join(md) + chr(10), encoding="utf-8", newline=chr(10))
+    print(f"Wrote docs/industry_{city.name}.json and .md ({time.time() - t0:.0f}s)")
+
+
 def fmt_ci(d, unit="s", pct=False):
     if pct:
-        return f"{d['value'] * 100:.0f}% ({d['ci'][0] * 100:.0f}-{d['ci'][1] * 100:.0f}%)"
+        lo, hi = d["ci"][0] * 100, d["ci"][1] * 100
+        sep = " to " if lo < 0 or hi < 0 else "-"
+        return f"{d['value'] * 100:.0f}% ({lo:.0f}{sep}{hi:.0f}%)"
     return f"{d['value']:.0f}{unit} ({d['ci'][0]:.0f}-{d['ci'][1]:.0f})"
 
 

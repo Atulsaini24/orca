@@ -77,3 +77,14 @@ def test_html_is_revalidated(client):
     r = client.get("/app")
     if r.status_code == 200:
         assert r.headers["cache-control"] == "no-cache"
+
+
+def test_health_fails_when_the_clock_stops(client):
+    """A frozen simulation must not look healthy: Docker and uptime monitors read /api/health."""
+    hub = client.app.state.hub
+    assert client.get("/api/health").status_code == 200
+    hub.task.cancel()                                    # the clock stops, as when the old loop died
+    hub.last_ok -= 60
+    r = client.get("/api/health")
+    assert r.status_code == 503 and r.json()["ok"] is False and r.json()["stalled_seconds"] >= 60
+    assert "orca_clock_stall_seconds 6" in client.get("/metrics").text

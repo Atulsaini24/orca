@@ -575,6 +575,33 @@ def test_api_end_to_end():
         proc.wait(5)
 
 
+def test_switching_city_keeps_the_clock_running():
+    """Regression: one city is active per process. Building the new city used to swap it under the engine still
+    running, whose next step raised; that ended the clock task and every client saw a frozen city forever."""
+    import requests
+    port = 8878
+    proc = subprocess.Popen([sys.executable, "-m", "orca.server", "--port", str(port), "--fleet", "300", "--demand", "synthetic",
+                             "--city", "grid"], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        base = f"http://127.0.0.1:{port}"
+        for _ in range(120):
+            try:
+                if requests.get(base + "/api/health", timeout=1).ok:
+                    break
+            except requests.RequestException:
+                time.sleep(0.5)
+        other = next((c for c in CITIES if c != "grid"), None) or "grid"
+        r = requests.post(base + "/api/reset", json={"city": other, "fleet": 300}, timeout=300).json()
+        assert r["ok"] and r["city"] == other
+        t0 = requests.get(base + "/api/health").json()["t"]
+        time.sleep(1.5)
+        h = requests.get(base + "/api/health").json()
+        assert h["city"] == other and h["t"] > t0 + 5          # the new city's clock moves (20x real time)
+    finally:
+        proc.terminate()
+        proc.wait(5)
+
+
 @pytest.mark.skipif(len(CITIES) < 3, reason="needs two real cities")
 def test_worker_processes_run_the_requested_city():
     """Regression: pool workers start on the default city and must switch to the one each run asks for."""
@@ -769,3 +796,69 @@ def test_zones_cover_the_streets_and_take_place_names():
     for x in z:
         (x0, y0), (x1, _), (_, y1) = x["rings"][0][:3]
         assert x1 - x0 == pytest.approx(1000.0) and y1 - y0 == pytest.approx(1000.0)
+
+
+def test_batched_eta_baseline_is_eta_only():
+    """The industry baseline uses ORCA's batching and solver, but scores pairs by predicted pickup time alone."""
+    from orca.dispatch import BatchedEtaDispatcher
+    from orca.engine import Engine
+    e = Engine(seed=4, fleet=300, demand="synthetic", city="grid", policy="batched")
+    assert isinstance(e.smart, BatchedEtaDispatcher) and e.smart.rebalance_mode == "off"
+    e.warm_up(240)
+    for _ in range(120):
+        e.step(1.0)
+    assert e.smart.m["served"] > 0
+    cands = [c for rec in e.smart.explain.values() for c in rec["cands"]]
+    assert cands and all(c["p"] == 1.0 and c["zc"] == 0.0 and c["cost"] == c["eta"] for c in cands)
+
+
+def test_router_runs_each_city_in_its_own_process_and_heals():
+    """orca.router: one supervised process per city behind one port; a dead city process comes back."""
+    import os
+    import signal
+
+    import requests
+    port, first = 8879, 8981
+    proc = subprocess.Popen([sys.executable, "-m", "orca.router", "--port", str(port), "--first-port", str(first),
+                             "--cities", "grid", "--", "--fleet", "200", "--demand", "synthetic"],
+                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    base = f"http://127.0.0.1:{port}"
+
+    def grid():
+        try:
+            return requests.get(base + "/api/cities", timeout=2).json()["cities"][0]
+        except (requests.RequestException, ValueError, KeyError, IndexError):
+            return None
+
+    def wait(cond, secs=120):
+        for _ in range(int(secs * 2)):
+            c = grid()
+            if c and cond(c):
+                return c
+            time.sleep(0.5)
+        raise AssertionError(f"timed out, last state {grid()}")
+
+    try:
+        c = wait(lambda c: c["ready"])
+        assert c["port"] == first and c["restarts"] == 0
+        h = requests.get(base + "/cities/grid/api/health").json()
+        root = requests.get(base + "/api/health")
+        assert h["city"] == "grid" and root.json()["city"] == "grid"
+        assert root.headers["x-orca-router"] == "grid"           # how the control room finds its city's process
+        assert requests.get(base + "/cities/atlantis/api/health").status_code == 404
+        r = requests.post(base + "/cities/grid/api/reset", json={"city": "manhattan"})
+        assert r.status_code in (400, 409)                  # never switches city behind the router
+        with requests.get(base + "/cities/grid/api/stream?enc=b64", stream=True, timeout=5) as s:
+            frames = 0
+            for line in s.iter_lines(decode_unicode=True):
+                frames += line.startswith("event: frame")
+                if frames >= 3:
+                    break
+        assert frames >= 3
+        os.kill(c["pid"], signal.SIGTERM)                     # a city process dies...
+        c2 = wait(lambda c: c["restarts"] >= 1 and c["ready"])
+        assert c2["pid"] != c["pid"]                          # ...and the router starts a new one
+        assert requests.get(base + "/cities/grid/api/health").json()["city"] == "grid"
+    finally:
+        proc.terminate()
+        proc.wait(10)

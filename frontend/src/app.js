@@ -139,13 +139,23 @@ class LiveSource extends Emitter {
   start() { this.connect(); }
   connect() {
     if (this.es) this.es.close();
-    this.es = new EventSource(`/api/stream?view=${this.view}&enc=b64`);
+    this.es = new EventSource(`${API}/api/stream?view=${this.view}&enc=b64`);
     this.es.addEventListener('frame', (e) => {
+      if (this.wrongCity) return;
       const f = JSON.parse(e.data);
       if (typeof f.agents.x === 'string') f.agents = unpackAgents(f.agents);
       f.n = f.agents.x.length; this.emit('frame', f);
     });
-    this.es.addEventListener('summary', (e) => { const s = JSON.parse(e.data); s.heatScale = 1 / (s.heat_scale || 10); this.emit('summary', s); });
+    this.es.addEventListener('summary', (e) => {
+      const s = JSON.parse(e.data);
+      const sc = s.engine && s.engine.city;
+      if (sc && sc !== CITY0.name) {
+        // Someone switched the server to another city: its cars do not belong on this map. Reloading picks the
+        // right source (follow the server, or run this city in the browser if it was asked for by name).
+        if (!this.wrongCity) { this.wrongCity = true; this.es.close(); toast(`The server switched to another city. Reloading…`); setTimeout(() => location.reload(), 900); }
+        return;
+      }
+      s.heatScale = 1 / (s.heat_scale || 10); this.emit('summary', s); });
     this.es.onopen = () => this.emit('status', 'live');
     this.es.onerror = () => this.emit('status', 'reconnecting');
   }
@@ -156,7 +166,7 @@ class LiveSource extends Emitter {
     if (OPERATOR_TOKEN) headers.Authorization = `Bearer ${OPERATOR_TOKEN}`;
     let res;
     try {
-      const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      const r = await fetch(API + url, { method: 'POST', headers, body: JSON.stringify(body) });
       res = await r.json().catch(() => ({ ok: r.ok }));
       if (!r.ok && !res.error) res.error = r.status === 429 ? 'Too many requests, slow down.' : `The server refused (${r.status}).`;
     } catch (e) { res = { ok: false, error: 'The server is unreachable.' }; }
@@ -165,11 +175,11 @@ class LiveSource extends Emitter {
   }
   command(c) { if (c.cmd === 'speed') this.speed = c.value; if (c.cmd === 'pause') this.paused = c.value; return this.post('/api/command', c); }
   async explain(id) {
-    try { const r = await fetch(`/api/explain/${id}`); if (r.ok) return await r.json(); } catch (e) { /* network hiccup */ }
+    try { const r = await fetch(`${API}/api/explain/${id}`); if (r.ok) return await r.json(); } catch (e) { /* network hiccup */ }
     return { found: false, waiting: false, id };
   }
   reset(fleet, opts = {}) { return this.post('/api/reset', { fleet, ...opts }); }
-  async models() { try { return await (await fetch('/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
+  async models() { try { return await (await fetch(API + '/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
 }
 
 // Operator token for servers in protected mode: open /app?token=... once; kept for this browser tab only.
@@ -181,11 +191,27 @@ const OPERATOR_TOKEN = (() => {
   } catch (e) { return null; }
 })();
 
+// Behind orca.router each city has its own server process under /cities/<city>/; a plain orca.server
+// answers at the root. API is the prefix this page talks to.
+let API = '';
+async function cityProcess(routed) {
+  // Only a router names its cities in X-Orca-Router; a plain server is never asked for /cities/... (it would 404).
+  if (!routed || !routed.split(' ').includes(CITY0.name)) return null;
+  try {
+    const r = await fetch(`/cities/${CITY0.name}/api/health`, { cache: 'no-store' });
+    if (!r.ok) return null;
+    const h = await r.json();
+    return h && h.mode === 'live' && h.city === CITY0.name ? h : null;
+  } catch (e) { return null; }
+}
+
 async function pickSource() {
   if (CAPTURE || location.hash === '#demo' || !/^https?:$/.test(location.protocol)) return new DemoSource();
   try {
     const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 1500);
     const r = await fetch('/api/health', { signal: ctl.signal, cache: 'no-store' }); clearTimeout(to);
+    const own = await cityProcess(r.headers.get('x-orca-router'));
+    if (own) { API = `/cities/${CITY0.name}`; return new LiveSource(own); }
     if (r.ok) {
       const h = await r.json();
       if (h && h.city && h.city !== CITY0.name) {
@@ -458,14 +484,40 @@ function drawExplain() {
   exLines.commit();
   const m = (1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3))) * (CAR_K / 1.25);   // sized with the cars, so it stays a marker up close
   marker.set(0, r.x, 0.2, r.z, m, 1, m, 0, 0, 0, 0, 0.9); marker.commit(1);
-  plate(plates[0], r.x, 10, r.z, `Request ${r.id}`, '');
-  plate(plates[1], r.chosen.rx, 4, r.chosen.rz, `ORCA picks ${car(r.chosen.id)}`, 'pick');
-  if (r.base && !r.base.same) plate(plates[2], r.base.rx, 4, r.base.rz, `Nearest: ${car(r.base.id)}`, 'near'); else plates[2].classList.remove('on');
+  const on = [plate(plates[0], r.x, 10, r.z, `Request ${r.id}`, ''),
+    plate(plates[1], r.chosen.rx, 4, r.chosen.rz, `ORCA picks ${car(r.chosen.id)}`, 'pick')];
+  if (r.base && !r.base.same) on.push(plate(plates[2], r.base.rx, 4, r.base.rz, `Nearest: ${car(r.base.id)}`, 'near')); else plates[2].classList.remove('on');
+  unstack(on.filter(Boolean));
 }
 function plate(el, x, y, z, text, cls) {
   const [sx, sy, vis] = cam.project(x, y, z, viewW, viewH);
-  if (!vis || sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40 || clock - shownAt < 0.5) { el.classList.remove('on'); return; }
-  el.className = 'plate on ' + cls; el.textContent = text; el.style.left = sx + 'px'; el.style.top = sy + 'px';
+  if (!vis || sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40 || clock - shownAt < 0.5) { el.classList.remove('on'); return null; }
+  const c = 'plate on ' + cls;
+  if (el.className !== c) el.className = c;
+  if (el.textContent !== text) { el.textContent = text; el._w = 0; }
+  el.style.left = sx + 'px'; el.style.top = sy + 'px';
+  if (!el._w) { el._w = el.offsetWidth; el._h = el.offsetHeight; }
+  return { el, sx, sy };
+}
+// Zoomed out, the request and its candidate cars project to nearly the same pixel and the plates pile up.
+// Lift each plate above any it would cover; its stem stretches down to the point it labels.
+function unstack(ps) {
+  ps.sort((a, b) => b.sy - a.sy);
+  const placed = [];
+  for (const p of ps) {
+    const w = p.el._w, h = p.el._h;
+    let lift = 0, moved = true;
+    while (moved) {
+      moved = false;
+      const top = p.sy - 10 - h - lift, l = p.sx - w / 2;
+      for (const q of placed) {
+        if (l < q.r + 4 && l + w > q.l - 4 && top < q.b + 4 && top + h > q.t - 4) { lift = p.sy - 10 - (q.t - 4) ; moved = true; break; }
+      }
+    }
+    p.el.style.setProperty('--lift', lift + 'px');
+    const top = p.sy - 10 - h - lift;
+    placed.push({ l: p.sx - w / 2, r: p.sx + w / 2, t: top, b: top + h });
+  }
 }
 
 // ----------------------------------------------------------------------------- input: camera, picking, custom cursor
@@ -985,7 +1037,7 @@ function tourTick(dt) {
   sel.onchange = async () => {
     const to = sel.value;
     // An operator switches the server's city; anyone else gets that city run in their browser.
-    if (src && src.kind === 'live') await src.post('/api/reset', { city: to });
+    if (src && src.kind === 'live' && !API) await src.post('/api/reset', { city: to });   // behind the router every city already runs
     location.search = `?city=${to}`;
   };
   const host = $('.masthead');

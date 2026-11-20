@@ -43,7 +43,8 @@ for name, spec in cityspec.CITIES.items():
         f"var CAL_MPS = {day / cal['speed_scale']:.5f};\n"
         f"var CITY_TUNED = {json.dumps(tuned)};\n"
         f"var CITY_REPORT = {json.dumps(report, separators=(',', ':'))};\n", encoding="utf-8")
-    cities.append(dict(name=name, label=spec.label, short=spec.short, zones=spec.zone_label))
+    cities.append(dict(name=name, label=spec.label, short=spec.short, zones=spec.zone_label,
+                       trips=(d / "trips.js").exists()))      # cities built from OpenStreetMap alone have none
 
 loader = """window.ORCA_CITIES = %s;
 window.ORCA_LOAD = (async () => {
@@ -61,7 +62,8 @@ window.ORCA_LOAD = (async () => {
   if (city === 'grid') return;
   const base = (http ? '/app/data/' : 'data/') + city + '/';
   const one = (f) => new Promise((done) => { const s = document.createElement('script'); s.src = base + f + '.js'; s.onload = done; s.onerror = done; document.head.appendChild(s); });
-  await Promise.all(['streets', 'buildings', 'trips', 'config'].map(one));
+  const spec = ORCA_CITIES.find((c) => c.name === city);
+  await Promise.all(['streets', 'buildings', ...(spec.trips ? ['trips'] : []), 'config'].map(one));
 })();""" % json.dumps(cities)
 
 html = (here / "src/index.html").read_text(encoding="utf-8")

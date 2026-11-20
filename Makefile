@@ -1,4 +1,4 @@
-.PHONY: install data cities web frontend run train tune bench test test-fast e2e lint lock video perf all
+.PHONY: install data cities web frontend run run-all train tune bench industry test test-fast e2e lint lock video perf all
 PY ?= python
 CITIES ?= manhattan chicago
 
@@ -10,9 +10,11 @@ cities:    ; cd backend && for c in $(CITIES); do $(PY) scripts/build_streets.py
 web:       ; cd web && npm run build
 frontend:  ; $(PY) frontend/build.py
 run:       ; cd backend && $(PY) -m orca.server
+run-all:   ; cd backend && $(PY) -m orca.router
 train:     ; cd backend && for c in $(CITIES); do $(PY) -m orca.train demand --city $$c && $(PY) -m orca.train eta --city $$c && $(PY) -m orca.train eta-real --city $$c && $(PY) -m orca.calibrate --city $$c || exit 1; done
 tune:      ; cd backend && for c in $(CITIES); do ORCA_CITY=$$c $(PY) -m orca.tune || exit 1; done
 bench:     ; cd backend && for c in $(CITIES); do $(PY) -m orca.bench --city $$c || exit 1; done
+industry:  ; cd backend && for c in $(CITIES) cambridge; do $(PY) -m orca.bench --city $$c --vs-industry || exit 1; done
 test:      ; cd backend && $(PY) -m pytest -q
 test-fast: ; cd backend && $(PY) -m pytest -q -m "not e2e"
 e2e:       ; cd backend && $(PY) -m pytest -q -m e2e

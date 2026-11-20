@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import time
 from collections import defaultdict
@@ -43,6 +44,8 @@ from starlette.staticfiles import StaticFiles
 
 from .engine import Engine
 from .security import HardeningMiddleware
+
+log = logging.getLogger("orca.server")
 
 FRONTEND = Path(os.environ.get("ORCA_FRONTEND", Path(__file__).resolve().parents[2] / "frontend" / "index.html"))
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,8 +68,12 @@ class Hub:
         self.engine = self._new_engine(opts)
         self.tick = 0
         self.cache: dict = {}
+        self.last: dict = {}                  # the last good frame / summary of each kind
+        self.last_ok = time.perf_counter()    # when the clock last stepped (or held still on purpose)
         self.explicit_data = bool(opts.get("data"))
         self.lock = asyncio.Lock()
+        self.switch = asyncio.Lock()          # one rebuild at a time
+        self.building = False                 # the clock holds still while a new engine is built
         self.task = None
 
     def _new_engine(self, opts):
@@ -87,27 +94,54 @@ class Hub:
         return e
 
     async def run(self):
+        # The clock must never stop: a failed step is logged and the next one runs. Before this, one exception
+        # ended the task silently and every client saw a city frozen at the moment it was built.
         last = time.perf_counter()
+        failures = 0
         while True:
             now = time.perf_counter()
-            async with self.lock:
-                self.engine.advance(now - last)
-                self.tick += 1
-                self.cache.clear()
+            if self.building:
+                # One city is active per process (city.use): while another city is being built, stepping the
+                # old engine would read the new city's zones and streets.
+                last = self.last_ok = now
+                await asyncio.sleep(1 / 30)
+                continue
+            try:
+                async with self.lock:
+                    self.engine.advance(now - last)
+                    self.tick += 1
+                    self.cache.clear()
+                failures = 0
+                self.last_ok = now
+            except Exception:
+                failures += 1
+                if failures <= 3 or failures % 300 == 0:
+                    log.exception("engine step failed (%d in a row)", failures)
             last = now
             await asyncio.sleep(1 / 30)
 
-    def frame(self, view, packed=False):
-        key = ("f", view, packed, self.tick)
+    def _cached(self, key, make):
+        # While a new city is built the old engine may not be read (the active city is process-wide), and a
+        # failed read must not end a client's stream: both fall back to the last good copy.
         if key not in self.cache:
-            self.cache[key] = dumps(self.engine.frame(view, packed))
+            last = self.last.get(key[:-1])
+            if self.building and last is not None:
+                return last
+            try:
+                self.cache[key] = dumps(make())
+            except Exception:
+                if last is None:
+                    raise
+                log.exception("building %s failed; resending the previous one", key[0])
+                return last
+            self.last[key[:-1]] = self.cache[key]
         return self.cache[key]
 
+    def frame(self, view, packed=False):
+        return self._cached(("f", view, packed, self.tick), lambda: self.engine.frame(view, packed))
+
     def summary(self):
-        key = ("s", self.tick)
-        if key not in self.cache:
-            self.cache[key] = dumps(self.engine.summary())
-        return self.cache[key]
+        return self._cached(("s", self.tick), self.engine.summary)
 
 
 class CachedStatic(StaticFiles):
@@ -125,6 +159,11 @@ class CachedStatic(StaticFiles):
 
 # HTML must be revalidated on every visit: a cached page points at hashed assets a new build has removed.
 NO_CACHE = {"Cache-Control": "no-cache"}
+STALL_AFTER = 10.0                      # seconds without a clock step before /api/health fails
+
+
+def LOADING():
+    return JSONResponse({"ok": False, "error": "A new city is loading, try again in a moment."}, status_code=503)
 
 
 def build_app(opts: dict) -> Starlette:
@@ -155,7 +194,13 @@ def build_app(opts: dict) -> Starlette:
 
     async def health(request):
         e = hub.engine
-        return JSONResponse(dict(ok=True, mode="live", t=e.world.t, fleet=e.smart.n, demand=e.demand_label(), pool=e.smart.pool,
+        # A clock that has not stepped for STALL_AFTER seconds is a failure: 503 makes Docker, load balancers and
+        # uptime monitors notice, where a frozen city used to look healthy forever.
+        stall = time.perf_counter() - hub.last_ok
+        if stall > STALL_AFTER:
+            return JSONResponse(dict(ok=False, mode="live", error="the simulation clock has stopped",
+                                     stalled_seconds=round(stall, 1), city=e.city.name), status_code=503)
+        return JSONResponse(dict(ok=True, mode="live", loading=hub.building, t=e.world.t, fleet=e.smart.n, demand=e.demand_label(), pool=e.smart.pool,
                                  city=e.city.name, city_label=e.city.label,
                                  eta_model=e.smart.eta.kind, forecaster=e.smart.forecaster.kind, speed=e.speed))
 
@@ -179,6 +224,8 @@ def build_app(opts: dict) -> Starlette:
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     async def command(request: Request):
+        if hub.building:
+            return LOADING()
         try:
             body = await request.json()
         except Exception:
@@ -208,18 +255,39 @@ def build_app(opts: dict) -> Starlette:
             from . import city as G
             if body["city"] not in G.available():
                 return JSONResponse({"ok": False, "error": f"Unknown city '{body['city']}'"}, status_code=400)
+            if os.environ.get("ORCA_LOCK_CITY") == "1" and body["city"] != hub.engine.city.name:
+                # behind orca.router every city has its own process: open that city instead of switching this one
+                return JSONResponse({"ok": False, "error": f"This process runs {hub.engine.city.name}; "
+                                                           f"open /app?city={body['city']}"}, status_code=409)
             opts["city"] = body["city"]
             if not hub.explicit_data:
                 opts["data"] = None
-        new = await asyncio.to_thread(hub._new_engine, opts)
-        async with hub.lock:
-            new.speed = hub.engine.speed
-            old, hub.engine, hub.opts = hub.engine, new, opts
+        async with hub.switch:
+            async with hub.lock:                      # wait for the step in flight, then hold the clock
+                hub.building = True
+            try:
+                new = await asyncio.to_thread(hub._new_engine, opts)
+            except Exception:
+                log.exception("rebuilding the engine failed")
+                from . import city as G
+                G.use(hub.engine.city.name)           # the running city stays active
+                hub.building = False
+                return JSONResponse({"ok": False, "error": "The new city could not be built; see the server log"},
+                                    status_code=500)
+            async with hub.lock:
+                new.speed = hub.engine.speed
+                old, hub.engine, hub.opts = hub.engine, new, opts
+                hub.tick += 1
+                hub.cache.clear()
+                hub.last.clear()
+                hub.building = False
         old.bus.close(timeout=2)
         return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"], "city": new.city.name,
                              "pool": bool(opts.get("pool")), "ev": opts.get("ev")})
 
     async def explain(request: Request):
+        if hub.building:
+            return LOADING()
         try:
             rid = int(request.path_params["rid"])
         except ValueError:
@@ -228,6 +296,8 @@ def build_app(opts: dict) -> Starlette:
             return JSONResponse(hub.engine.explain(rid))
 
     async def analytics(request: Request):
+        if hub.building:
+            return LOADING()
         since = request.query_params.get("since")
         try:
             since = float(since) if since else None
@@ -237,6 +307,8 @@ def build_app(opts: dict) -> Starlette:
             return JSONResponse(hub.engine.ledger.analytics(since, hub.engine.world.t))
 
     async def trips(request: Request):
+        if hub.building:
+            return LOADING()
         try:
             limit = max(1, min(500, int(request.query_params.get("limit", 50))))
         except ValueError:
@@ -258,6 +330,9 @@ def build_app(opts: dict) -> Starlette:
 
     async def metrics(request):
         lines = [hub.engine.prometheus().rstrip("\n"),
+                 "# HELP orca_clock_stall_seconds Seconds since the simulation clock last stepped (alert above 10).",
+                 "# TYPE orca_clock_stall_seconds gauge",
+                 f"orca_clock_stall_seconds {time.perf_counter() - hub.last_ok:.3f}",
                  "# HELP orca_http_requests_total HTTP requests by method, route and status class.",
                  "# TYPE orca_http_requests_total counter"]
         for (m, route, cls), n in sorted(request.app.state.http_metrics.items()):
@@ -312,6 +387,17 @@ def main():
     app = build_app(vars(a))
     print(f"ORCA home page:    http://{a.host}:{a.port}")
     print(f"ORCA control room: http://{a.host}:{a.port}/app")
+    if os.environ.get("ORCA_EXIT_WITH_PARENT") == "1":
+        # Started by orca.router with a pipe on stdin: the pipe closes when the router dies, however it dies
+        # (even a hard kill on Windows, which skips its shutdown), and this process must not outlive it.
+        import sys
+        import threading
+
+        def watch_parent():
+            sys.stdin.read()
+            os._exit(0)
+
+        threading.Thread(target=watch_parent, daemon=True, name="parent-watch").start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
 
 

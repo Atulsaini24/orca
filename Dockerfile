@@ -54,4 +54,7 @@ USER orca
 ENV ORCA_HOST=0.0.0.0 ORCA_PORT=8000 PYTHONUNBUFFERED=1
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=90s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
-CMD ["python", "-m", "orca.server"]
+# one supervised process per city behind port 8000 (orca.router); ORCA_CITIES picks them, the first is the
+# default. Measured resident memory: Manhattan ~0.8 GB, Chicago ~0.6 GB, Cambridge ~0.3 GB.
+ENV ORCA_CITIES="manhattan chicago cambridge"
+CMD ["python", "-m", "orca.router"]

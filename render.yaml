@@ -11,6 +11,8 @@ services:
         generateValue: true
       - key: ORCA_TRUST_PROXY
         value: "1"
+      - key: ORCA_CITIES      # one process per city (~1.4 GB for these two); add cambridge on a 4 GB plan
+        value: "manhattan chicago"
     disk:
       name: ledger
       mountPath: /app/backend/ledger

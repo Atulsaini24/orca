@@ -8,8 +8,7 @@ import time
 import numpy as np
 
 from . import config as C
-from .city import zone_name
-from .dispatch import IDLE, NearestDispatcher, OrcaDispatcher, make_fleet
+from .dispatch import IDLE, BatchedEtaDispatcher, NearestDispatcher, OrcaDispatcher, make_fleet
 from .tracing import tracer
 from .world import World
 
@@ -44,7 +43,7 @@ class Engine:
                  zones: str | None = None, use_learned: bool = True, telemetry: bool = False, db: str = ":memory:",
                  city: str | None = None, pool: bool = False, demand_fleet: int | None = None, ev: str | None = None,
                  rebalance: str = "rules", rl_net: str | None = None, rl_explore: float = 0.0, rl_log: bool = False,
-                 events: bool = False):
+                 events: bool = False, policy: str = "orca"):
         from . import city as G
         self.city = G.use(city)
         self.config = dict(seed=seed, fleet=fleet, demand=demand, data=data, zones=zones, use_learned=use_learned,
@@ -60,8 +59,12 @@ class Engine:
         self.ledger = Ledger(db, run=f"seed{seed}-fleet{fleet}-{int(time.time())}")
         # ev: None (petrol), "smart" (ORCA plans charging) or "naive" (ORCA dispatches, drivers charge as they like);
         # nearest-car dispatch always leaves charging to the drivers
-        self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool, ev=ev,
-                                    rebalance=rebalance, rl_net=rl_net, rl_explore=rl_explore, rl_log=rl_log)
+        # policy "batched" puts the industry baseline (batched ETA-only matching) in ORCA's slot, for benchmarks
+        if policy == "batched":
+            self.smart = BatchedEtaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger)
+        else:
+            self.smart = OrcaDispatcher(self.world, spec, self.telemetry, use_learned, self.ledger, pool=pool, ev=ev,
+                                        rebalance=rebalance, rl_net=rl_net, rl_explore=rl_explore, rl_log=rl_log)
         self.base = NearestDispatcher(self.world, spec, ledger=self.ledger, ev="naive" if ev else None)
         from .events import EventBus
         self.bus = EventBus() if events else None
@@ -213,7 +216,7 @@ class Engine:
             stats=dict(smart=self.smart.stats(), base=self.base.stats()),
             series=dict(smart=[[p[0], p[1]] for p in self.smart.m["series"]],
                         base=[[p[0], p[1]] for p in self.base.m["series"]]),
-            forecast=[dict(zone=i, name=zone_name(i), forecast=float(fc[i]), need=float(fc[i]) * C.COVER, idle=int(s.z_idle[i]))
+            forecast=[dict(zone=i, name=self.city.zone_names[i], forecast=float(fc[i]), need=float(fc[i]) * C.COVER, idle=int(s.z_idle[i]))
                       for i in top],
             deficit=s.deficit_zones, fx=fx,
             heat=[min(255, int(v * 10)) for v in w.heat], heat_scale=10, heat_w=w.HEAT_W, heat_h=w.HEAT_H,
@@ -232,7 +235,7 @@ class Engine:
             return dict(found=True, rec=rec | {"timeline": timeline})
         for rs in self.smart.active:
             if rs.r.id == req_id:
-                return dict(found=False, waiting=True, id=req_id, p1=rs.r.p1, zone_name=zone_name(rs.r.zone),
+                return dict(found=False, waiting=True, id=req_id, p1=rs.r.p1, zone_name=self.city.zone_names[rs.r.zone],
                             wait=self.world.t - rs.r.t, timeline=timeline)
         return dict(found=False, waiting=False, id=req_id)
 

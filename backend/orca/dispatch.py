@@ -562,6 +562,8 @@ def deadline_cost(wait, eta):
 class OrcaDispatcher(Dispatcher):
     policy = "smart"
     label = "ORCA"
+    ETA_ONLY = False          # BatchedEtaDispatcher scores pairs by predicted pickup time alone
+    FRESH_ONLY = True         # skip cars whose GPS has gone quiet
 
     def __init__(self, world, fleet_spec, telemetry=None, use_learned=True, ledger=None, pool: bool = False,
                  ev: str | None = None, rebalance: str = "rules", rl_net: str | None = None, rl_explore: float = 0.0,
@@ -646,7 +648,7 @@ class OrcaDispatcher(Dispatcher):
         self.queue = []
         if not q:
             return
-        self.build_index(fresh_only=True)
+        self.build_index(fresh_only=self.FRESH_ONLY)
         self.compute_zone_idle()
         t0 = time.perf_counter()
         nq = len(q)
@@ -665,8 +667,11 @@ class OrcaDispatcher(Dispatcher):
         ci = out[out >= 0]
         ax, az = f.rx[ci], f.rz[ci]
         eta = self.eta.predict(ax, az, qx[qi], qz[qi], clock)
-        p = self.accept.p_many(f.accepts[ci], f.offers[ci], eta, qp1[qi])
-        zc = self.zone_cost(ax, az)
+        if self.ETA_ONLY:
+            p, zc = np.ones(len(ci)), np.zeros(len(ci))
+        else:
+            p = self.accept.p_many(f.accepts[ci], f.offers[ci], eta, qp1[qi])
+            zc = self.zone_cost(ax, az)
         cand = dict(qi=qi, ci=ci, eta=eta, p=p, zc=zc, cost=eta + (1 - p) * C.REOFFER + zc,
                     kind=np.zeros(len(ci), dtype=np.int64), pi=np.full(len(ci), -1), pj=np.full(len(ci), -1))
         if self.pool:
@@ -682,8 +687,11 @@ class OrcaDispatcher(Dispatcher):
             cand = {k: v[ok] for k, v in cand.items()}
         qi, eta = cand["qi"], cand["eta"]
         wait = t - qt[qi]
-        cand["adj"] = (cand["cost"] * np.where(qp1[qi], C.URGENT_W, 1.0) - np.minimum(wait, C.WAIT_CAP) * C.WAIT_W
-                       + deadline_cost(wait, eta))
+        if self.ETA_ONLY:
+            cand["adj"] = cand["cost"]                 # predicted pickup time, nothing else
+        else:
+            cand["adj"] = (cand["cost"] * np.where(qp1[qi], C.URGENT_W, 1.0) - np.minimum(wait, C.WAIT_CAP) * C.WAIT_W
+                           + deadline_cost(wait, eta))
         chosen = self.solve(qi, cand["ci"], cand["adj"], nq)
         self.solve_ms = (time.perf_counter() - t0) * 1000
         self.decisions += len(chosen)
@@ -923,3 +931,23 @@ class OrcaDispatcher(Dispatcher):
             self.last_rebal_log = t
             self.world.log("rebal", f"ORCA moved {moved} idle cars toward "
                                     + ", ".join(zone_name(d[0]) for d in deficit[:3]) + " ahead of forecast demand")
+
+
+class BatchedEtaDispatcher(OrcaDispatcher):
+    """The industry-standard baseline: batched, globally optimal matching on predicted pickup time.
+
+    Large ride-hailing platforms have publicly described moving from nearest-car to batched matching: collect
+    requests for a few seconds, then solve one assignment that minimises total pickup time. This dispatcher
+    does exactly that with ORCA's own batching window, candidate search, ETA model and exact solver, and
+    nothing else: no acceptance model, no GPS-freshness filter, no wait or deadline priority, no zone-deficit
+    cost and no repositioning. The gap between it and ORCA is therefore what ORCA's extra signals add, not
+    what batching adds.
+    """
+    policy = "smart"          # it occupies ORCA's slot in an Engine, so statistics and events keep their keys
+    label = "Batched ETA"
+    ETA_ONLY = True
+    FRESH_ONLY = False
+
+    def __init__(self, world, fleet_spec, telemetry=None, use_learned=True, ledger=None, **_):
+        super().__init__(world, fleet_spec, telemetry, use_learned, ledger, rebalance="off")
+

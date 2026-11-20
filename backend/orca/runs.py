@@ -35,6 +35,7 @@ class RunSpec:
     demand_fleet: int | None = None     # size demand for this many cars (None = fleet): fleet sweeps keep riders fixed
     ev: str | None = None               # electric fleet: ORCA's charging policy, "smart" or "naive"
     rebalance: str = "rules"            # ORCA's repositioning: "rules", "learned" (orca.rl) or "off"
+    policy: str = "orca"                # "batched": the industry baseline (batched ETA matching) in ORCA's place
     rl_net: str | None = None           # value network file (default: the city's trained one)
     rl_explore: float = 0.0             # share of random repositioning moves (training only)
     rl_log: bool = False                # return the idle-to-idle transitions (training only)
@@ -68,7 +69,8 @@ def run(spec: RunSpec) -> dict:
     data = spec.data or (str(cityspec.trips_file(G.current().name)) if cityspec.trips_file(G.current().name) else None)
     e = Engine(seed=spec.seed, fleet=spec.fleet, use_learned=spec.use_learned, demand=spec.demand if data else "synthetic",
                data=data if spec.demand == "tlc" else None, city=spec.city, pool=spec.pool, demand_fleet=spec.demand_fleet,
-               ev=spec.ev, rebalance=spec.rebalance, rl_net=spec.rl_net, rl_explore=spec.rl_explore, rl_log=spec.rl_log)
+               ev=spec.ev, rebalance=spec.rebalance, rl_net=spec.rl_net, rl_explore=spec.rl_explore, rl_log=spec.rl_log,
+               policy=spec.policy)
     e.warm_up(spec.warm)
     for d in (e.smart, e.base):
         d.m["all"].clear()

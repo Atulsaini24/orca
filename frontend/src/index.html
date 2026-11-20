@@ -27,10 +27,10 @@ button,input{font:inherit;color:inherit}
 #gl{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
 @media (hover:hover) and (pointer:fine){ #gl{cursor:none} }
 #tags{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-.plate{position:absolute;transform:translate(-50%,calc(-100% - 10px));padding:6px 9px;font-size:12.5px;font-weight:650;line-height:1;white-space:nowrap;
+.plate{--lift:0px;position:absolute;transform:translate(-50%,calc(-100% - 10px - var(--lift)));padding:6px 9px;font-size:12.5px;font-weight:650;line-height:1;white-space:nowrap;
   background:#000;color:#fff;border-radius:3px;font-feature-settings:"tnum" 1;opacity:0;transition:opacity .3s}
 .plate.on{opacity:1}
-.plate::after{content:"";position:absolute;left:50%;top:100%;width:1.5px;height:10px;background:inherit;transform:translateX(-50%)}
+.plate::after{content:"";position:absolute;left:50%;top:100%;width:1.5px;height:calc(10px + var(--lift));background:inherit;transform:translateX(-50%)}
 .plate.pick{background:var(--taxi);color:#000}
 .plate.near{background:#fff;color:var(--ink-2);box-shadow:inset 0 0 0 1.5px var(--slate)}
 

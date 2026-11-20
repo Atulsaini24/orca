@@ -222,6 +222,18 @@ full 24-hour day. Results are means over seeds with 95% percentile-bootstrap int
 per-seed reduction against nearest-car dispatch, and Wilcoxon signed-rank tests for the ablations
 (learned vs heuristic models, tuned vs hand-set weights, give-up guard on vs off for riders lost).
 
+`--vs-industry` adds the industry baseline, `BatchedEtaDispatcher` in `orca/dispatch.py`: a subclass of
+ORCA's dispatcher with the same batching window, candidate search, ETA model and exact solver, scoring
+pairs by predicted pickup time alone (no acceptance model, GPS-freshness filter, wait or deadline
+priority, zone cost or repositioning). It takes ORCA's slot in the engine (`Engine(policy="batched")`),
+so nearest car runs beside it on the same world. A third variant, ORCA with repositioning off, splits
+ORCA's gain into matching and positioning. Writes `docs/industry_<city>.md` and `.json`; the write-up is
+[`REPORT.md`](REPORT.md).
+
+The live server's clock is watched: `/api/health` returns 503 once it has not stepped for 10 s, and
+`/metrics` exports `orca_clock_stall_seconds`, so a stopped simulation fails Docker's health check and
+alerts instead of looking healthy.
+
 ## What-if mode
 
 From the control room: incidents placed where you click (`{"cmd": "accident", "x": .., "z": ..}`), 200
@@ -285,7 +297,33 @@ At real scale the single process would split along the same seams:
 * **Feature store**: streaming aggregation (Flink) writing zone speeds and demand counts to Redis.
 * **Matching**: one stateless matcher per zone cluster, with a boundary pass for requests near edges.
 * **Models**: served in the matcher process, retrained nightly, promoted after shadow evaluation.
-* **Cities**: one engine per city; the registry already keeps them independent.
+* **Cities**: one engine per city. This step is done: `orca.router` runs each city in its own process.
+
+### One process per city (`orca.router`)
+
+`python -m orca.router` (the Docker image's command) starts one `orca.server` per city on a private
+loopback port and serves them all on one public port: `/cities/<city>/...` goes to that city's process
+with the prefix removed, everything else to the default (first) city, and `/api/cities` reports every
+process's port, pid, readiness, restarts and last health. The control room asks
+`/cities/<its city>/api/health` first and, if the router answers, talks only to that prefix; against a
+plain `orca.server` it falls back to the root. Switching city in the control room then opens the other
+city's page, with no rebuild.
+
+* **Isolation.** `city.use` activates one city per process, so separate processes never share zones,
+  streets or tuned weights; city processes run with `ORCA_LOCK_CITY=1` and refuse `/api/reset` to another
+  city (409). A SQLite ledger path becomes one file per city.
+* **Self-healing.** A process that exits is restarted with backoff (1 s, doubling to 60 s); one whose
+  `/api/health` has failed for 30 s (it fails once the clock stalls for 10 s) is killed and restarted.
+  City processes hold a pipe from the router on stdin and exit when it closes, so even a hard kill of the
+  router (which skips its shutdown on Windows) leaves no orphans.
+* **Security.** The router replaces `X-Forwarded-For` with the address it saw (or, with
+  `ORCA_TRUST_PROXY=1`, the one its own proxy reported), and city processes trust that header only
+  because they listen on loopback. Visitors keep separate rate limits, and only a local client counts as
+  a loopback operator.
+* **Streaming.** The proxy is a small asyncio HTTP/1.1 client (no new dependency): it decodes the city
+  process's chunked responses and forwards each chunk as it arrives, so Server-Sent Events stream
+  through, and it closes the upstream stream as soon as the viewer disconnects.
+* **Memory**, measured: Manhattan about 0.8 GB, Chicago 0.6 GB, Cambridge 0.3 GB.
 
 ## Frontend
 
