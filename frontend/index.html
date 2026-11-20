@@ -2709,7 +2709,10 @@ class LiveSource extends Emitter {
     return res;
   }
   command(c) { if (c.cmd === 'speed') this.speed = c.value; if (c.cmd === 'pause') this.paused = c.value; return this.post('/api/command', c); }
-  async explain(id) { return (await fetch(`/api/explain/${id}`)).json(); }
+  async explain(id) {
+    try { const r = await fetch(`/api/explain/${id}`); if (r.ok) return await r.json(); } catch (e) { /* network hiccup */ }
+    return { found: false, waiting: false, id };
+  }
   reset(fleet, opts = {}) { return this.post('/api/reset', { fleet, ...opts }); }
   async models() { try { return await (await fetch('/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
 }
@@ -2751,6 +2754,10 @@ try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, preserve: true } : 
   throw e;
 }
 const DPR = CAPTURE ? 1 : Math.min(devicePixelRatio || 1, 2);
+// A GPU reset (driver update, sleep, too many tabs) used to leave the map blank for good: rebuild by reloading.
+let glLost = false;
+canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); glLost = true; }, false);
+canvas.addEventListener('webglcontextrestored', () => location.reload(), false);
 const sunDir = (() => { const v = [-0.62, 0.5, 0.48], l = Math.hypot(...v); return v.map((x) => x / l); })();
 R.light = { dir: sunDir, color: [2.9, 2.72, 2.45], sky: [0.44, 0.50, 0.60], ground: [0.32, 0.30, 0.29] };
 const DAY = { fog: [0.905, 0.922, 0.94], sky: [0.80, 0.85, 0.91], amb: [0.44, 0.50, 0.60], gnd: [0.32, 0.30, 0.29], exp: 0.62 };
@@ -2817,7 +2824,9 @@ const VIEWS = {
 };
 let viewW = 1, viewH = 1;
 function resize() {
-  viewW = stage.clientWidth; viewH = stage.clientHeight;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  if (w < 2 || h < 2) return;    // not laid out yet (a 0 x 0 stage gave a NaN camera and an empty map); the observer calls again
+  viewW = w; viewH = h;
   R.resize(viewW, viewH, DPR); cam.aspect = viewW / viewH; sizeChart();
 }
 // Dynamic resolution: the 3D view draws a smaller area of its full-size target while frames run slow and scales it
@@ -3085,6 +3094,7 @@ addEventListener('keydown', (e) => {
   if (k === 'h') goHome();
 });
 addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+addEventListener('blur', () => keys.clear());   // a key released in another window never sends keyup: the camera kept flying
 function keyboardCam(dt) {
   if (!keys.size) return;
   const sp = cam.dist * 0.9 * dt, c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
@@ -3310,7 +3320,7 @@ $('#repBtn').onclick = async () => {
   };
   const bench = d && d.benchmark ? (() => {
     const pols = [['nearest', 'Nearest car'], ['orca_heuristic', 'ORCA, heuristic models'], ['orca_learned', 'ORCA, learned models']];
-    const agg = (scen, pol, k) => { const rs = d.benchmark.rows.filter((r) => r.scenario === scen); return rs.reduce((a, r) => a + r[pol][k], 0) / rs.length; };
+    const agg = (scen, pol, k) => { const rs = d.benchmark.rows.filter((r) => r.scenario === scen && r[pol]); return rs.length ? rs.reduce((a, r) => a + r[pol][k], 0) / rs.length : NaN; };
     return ['steady', 'stress'].map((sc) => `<h3>${sc === 'steady' ? 'Steady demand' : 'Spike, GPS outage and accident'}</h3><table class="num"><thead><tr><th>Dispatcher</th><th>Mean wait</th><th>95th pct.</th><th>Gave up</th></tr></thead><tbody>${pols.map(([p, l]) =>
       `<tr class="${p === 'orca_learned' ? 'best' : ''}"><td>${l}</td><td>${mmss(agg(sc, p, 'mean'))}</td><td>${mmss(agg(sc, p, 'p95'))}</td><td>${fmtInt(agg(sc, p, 'lost'))}</td></tr>`).join('')}</tbody></table>`).join('');
   })() : '';
@@ -3535,22 +3545,28 @@ function followShadows() {
   }
 }
 let isNight = null;
+let stepErrors = 0;
 function step(dt, draw = true) {
   clock += dt;
-  src.tick(dt);
-  tourTick(dt);
-  keyboardCam(dt);
-  cam.update(dt);
-  if (STREETS) followShadows();
-  updateDaylight(curF ? curF.clock : summary ? summary.clock : CFG.START_CLOCK);
-  heatPlane.alpha = 0.9 * clamp01((cam.dist - 110) / 300);          // the demand wash is for the overview, not close-ups
-  const night = (R.night || 0) > 0.55; if (night !== isNight) { isNight = night; document.body.classList.toggle('night', night); }
-  drawFrame(dt); drawFx(); drawExplain();
-  tweenBoard(dt); updateCursor(); updateCompass();
+  try {
+    src.tick(dt);
+    tourTick(dt);
+    keyboardCam(dt);
+    cam.update(dt);
+    if (STREETS) followShadows();
+    updateDaylight(curF ? curF.clock : summary ? summary.clock : CFG.START_CLOCK);
+    heatPlane.alpha = 0.9 * clamp01((cam.dist - 110) / 300);          // the demand wash is for the overview, not close-ups
+    const night = (R.night || 0) > 0.55; if (night !== isNight) { isNight = night; document.body.classList.toggle('night', night); }
+    drawFrame(dt); drawFx(); drawExplain();
+    tweenBoard(dt); updateCursor(); updateCompass();
+  } catch (e) {
+    if (stepErrors++ < 5) console.error('ORCA frame update failed', e);   // one bad frame must not stop the map drawing
+  }
   R.time = clock;
-  if (draw) R.render(cam);
+  if (draw && !glLost) R.render(cam);
 }
 addEventListener('resize', resize);
+if ('ResizeObserver' in window) new ResizeObserver(resize).observe(stage);   // the stage can change size without a window resize
 resize();
 (async () => {
   src = await pickSource();

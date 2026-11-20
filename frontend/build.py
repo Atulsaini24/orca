@@ -24,7 +24,7 @@ js = "\n".join((here / "src" / f).read_text(encoding="utf-8") for f in order)
 
 
 def load(p: pathlib.Path):
-    return json.loads(p.read_text()) if p.exists() else None
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
 cities = []

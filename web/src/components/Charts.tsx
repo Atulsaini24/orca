@@ -149,7 +149,7 @@ export function RealEtaCard({ city }: { city: CityData }) {
         Trip duration, trained on {r.train_days.join(' to ')} and tested on {r.n_test.toLocaleString()} later trips
         ({r.test_days.join(' to ')}) it never saw.
       </p>
-      <table className="num mt-4 w-full text-[14px]">
+      <div className="overflow-x-auto"><table className="num mt-4 w-full min-w-[480px] text-[14px]">
         <thead><tr className="text-left text-[12px] uppercase tracking-wide text-ink-3"><th className="pb-2 font-semibold">Model</th>
           <th className="pb-2 text-right font-semibold">Mean error</th><th className="pb-2 text-right font-semibold">% error</th></tr></thead>
         <tbody>
@@ -161,7 +161,7 @@ export function RealEtaCard({ city }: { city: CityData }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
       <p className="mt-3 text-[13px] text-ink-3">
         {Math.round((1 - r.ours.mae / best.mae) * 100)}% lower error than the strongest baseline, the historical median for the same
         zone pair and hour. Trip records give zones rather than exact points, which limits how precise any model can be.

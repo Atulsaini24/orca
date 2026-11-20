@@ -23,7 +23,7 @@ a structure of arrays advanced by **Numba-compiled kernels**: 10,000 cars per di
 faster than real time.
 
 The control room is a **hand-written WebGL2 renderer** (no 3D library): glass and masonry facades, lit
-windows and headlamps at night, cloud shadows, a sky with sun and stars, all following the city clock; the **home page** is React, TypeScript, Vite and Tailwind; a **narrated tour**
+windows and headlamps at night, cloud shadows, a sky with sun and stars, all following the city clock; the **home page** (React, TypeScript, Vite, Tailwind, Three.js, Motion, Lenis) opens with a scroll-driven journey through the real cities: Manhattan's OpenStreetMap streets light up, its 44,375 real buildings rise, a fleet drives the real street graph, one dispatch decision plays out on real fastest routes, a real weekday's zone speeds rise and fall, then Chicago and Cambridge take its place; a **narrated tour**
 with an original score is in [`docs/orca-tour.mp4`](docs/orca-tour.mp4).
 
 ## Results

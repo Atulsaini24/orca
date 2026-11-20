@@ -81,6 +81,7 @@ def test_home_page(server, browser):
     page.get_by_role("heading", level=1).wait_for()
     assert "every ride" in page.get_by_role("heading", level=1).inner_text()
     page.get_by_text("Engine live").wait_for(timeout=10_000)              # live status from /api/health
+    assert page.locator("#journey canvas").count() == 1                   # the scroll-driven 3D journey through real cities
     for section in ("#how", "#results", "#data", "#tour"):
         assert page.locator(section).count() == 1
     assert page.locator("video source[src='/media/orca-tour.mp4']").count() == 1

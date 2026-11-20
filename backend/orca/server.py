@@ -123,6 +123,10 @@ class CachedStatic(StaticFiles):
         return resp
 
 
+# HTML must be revalidated on every visit: a cached page points at hashed assets a new build has removed.
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 def build_app(opts: dict) -> Starlette:
     hub = Hub(opts)
 
@@ -135,12 +139,12 @@ def build_app(opts: dict) -> Starlette:
 
     async def home(request):
         if (HOME / "index.html").exists():
-            return FileResponse(HOME / "index.html")
+            return FileResponse(HOME / "index.html", headers=NO_CACHE)
         return RedirectResponse("/app")            # home page not built: go straight to the control room
 
     async def index(request):
         if FRONTEND.exists():
-            return FileResponse(FRONTEND)
+            return FileResponse(FRONTEND, headers=NO_CACHE)
         return PlainTextResponse("frontend/index.html not found", status_code=404)
 
     async def media(request):

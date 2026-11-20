@@ -7,6 +7,8 @@ import HeroMap from './components/HeroMap';
 import { BenchmarkChart, FullDayChart, HourlyChart, RealEtaCard } from './components/Charts';
 import { BEYOND, CITIES, fmt, mmss } from './data';
 import { CityProvider } from './city';
+import Journey from './journey/Journey';
+import { useSmoothScroll } from './lib/smoothScroll';
 import { useCity } from './cityContext';
 
 const appUrl = (city: string) => `/app?city=${city}`;
@@ -61,16 +63,20 @@ function CitySwitch({ compact = false }: { compact?: boolean }) {
 function Nav() {
   const { city } = useCity();
   const [scrolled, setScrolled] = useState(false);
+  const [dark, setDark] = useState(false);                // over the night-time journey at the top of the page
   useEffect(() => {
-    const on = () => setScrolled(window.scrollY > 12);
+    const on = () => {
+      setScrolled(window.scrollY > 12);
+      const j = document.getElementById('journey'); setDark(!!j && j.getBoundingClientRect().bottom > 72);
+    };
     on(); window.addEventListener('scroll', on, { passive: true });
     return () => window.removeEventListener('scroll', on);
   }, []);
   return (
-    <header className={`sticky top-0 z-40 transition-colors duration-300 ${scrolled ? 'bg-paper/85 shadow-[0_1px_0_#DADDE1] backdrop-blur-md' : ''}`}>
+    <header className={`fixed inset-x-0 top-0 z-40 transition-colors duration-300 ${dark ? 'nav-dark text-white' : scrolled ? 'bg-paper/85 shadow-[0_1px_0_#DADDE1] backdrop-blur-md' : 'bg-paper/85 backdrop-blur-md'}`}>
       <nav className="mx-auto flex max-w-page items-center justify-between gap-4 px-5 py-4 md:px-8" aria-label="Main">
         <div className="flex items-center gap-5"><Wordmark /><div className="hidden sm:block"><CitySwitch compact /></div></div>
-        <div className="hidden items-center gap-7 text-[15px] font-medium text-ink-2 lg:flex">
+        <div className={`hidden items-center gap-7 text-[15px] font-medium lg:flex ${dark ? 'text-white/70 [&_a:hover]:text-white' : 'text-ink-2'}`}>
           <a className="hover:text-ink" href="#how">How it works</a>
           <a className="hover:text-ink" href="#results">Results</a>
           <a className="hover:text-ink" href="#reality">Reality check</a>
@@ -103,7 +109,7 @@ function Hero() {
   const { city } = useCity();
   const b = city.bench;
   return (
-    <section className="relative overflow-hidden">
+    <section className="relative overflow-hidden pt-16">
       <div className="grid-bg pointer-events-none absolute inset-0" aria-hidden />
       <div className="relative mx-auto grid max-w-page items-center gap-12 px-5 pb-20 pt-10 md:grid-cols-[1.1fr_1fr] md:px-8 md:pb-28 md:pt-16">
         <div>
@@ -311,7 +317,7 @@ function RealData() {
   return (
     <section id="data" className="scroll-mt-20 border-y border-line bg-white">
       <div className="mx-auto grid max-w-page gap-12 px-5 py-24 md:grid-cols-[0.9fr_1.1fr] md:px-8">
-        <Reveal>
+        <Reveal className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-3"><p className="eyebrow">Real data · {city.short}</p><CitySwitch compact /></div>
           <h2 className="wide mt-3 text-[36px] font-extrabold leading-[1.05] tracking-tight md:text-[44px]">Real streets, real buildings, real riders.</h2>
           <p className="mt-5 text-[17px] leading-relaxed text-ink-2">
@@ -339,7 +345,7 @@ function RealData() {
               dataset has live GPS traces. Trip records give zones or tract centres rather than exact points.</span>
           </p>
         </Reveal>
-        <div className="space-y-6"><Reveal delay={0.08}><HourlyChart city={city} /></Reveal><Reveal delay={0.1}><RealEtaCard city={city} /></Reveal></div>
+        <div className="min-w-0 space-y-6"><Reveal delay={0.08}><HourlyChart city={city} /></Reveal><Reveal delay={0.1}><RealEtaCard city={city} /></Reveal></div>
       </div>
     </section>
   );
@@ -463,6 +469,7 @@ function Stack() {
 }
 
 export default function App() {
+  useSmoothScroll();
   const initial = new URLSearchParams(location.search).get('city');
   const [name, setName] = useState(CITIES.some((c) => c.name === initial) ? (initial as string) : CITIES[0]?.name);
   const value = useMemo(() => ({
@@ -478,6 +485,7 @@ export default function App() {
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-white focus:p-2">Skip to content</a>
       <Nav />
       <main id="main">
+        <Journey />
         <Hero />
         <How />
         <Results />

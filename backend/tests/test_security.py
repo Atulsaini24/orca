@@ -70,3 +70,10 @@ def test_rate_limit_and_metrics(client):
     m = client.get("/metrics").text
     assert 'orca_http_requests_total{method="POST",route="/api/command",status="4xx"}' in m
     assert "orca_requests_served_total" in m
+
+
+def test_html_is_revalidated(client):
+    """A cached page would reference hashed assets that a rebuild removed: HTML must say no-cache."""
+    r = client.get("/app")
+    if r.status_code == 200:
+        assert r.headers["cache-control"] == "no-cache"

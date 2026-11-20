@@ -27,3 +27,20 @@
   background-size: 44px 44px;
   mask-image: radial-gradient(ellipse 80% 70% at 50% 35%, #000 40%, transparent 100%);
 }
+
+/* Lenis smooth scrolling */
+html.lenis, html.lenis body { height: auto; }
+html.lenis { scroll-behavior: auto !important; }
+
+/* labels pinned to places in the journey's 3D city */
+.jl {
+  position: absolute; left: 0; top: 0; white-space: nowrap; will-change: transform, opacity; margin-top: -10px;
+  padding: 6px 11px; border-radius: 999px; font-size: 13px; font-weight: 650; color: #fff;
+  background: rgba(10, 14, 22, .72); box-shadow: 0 0 0 1px rgba(255,255,255,.18), 0 10px 30px -10px rgba(0,0,0,.8); backdrop-filter: blur(6px);
+}
+.jl.yellow { background: #FFC20A; color: #0B0C0E; box-shadow: 0 0 24px rgba(255,194,10,.55); }
+.jl.red { background: #E5352B; box-shadow: 0 0 24px rgba(229,53,43,.55); }
+.jl.violet { background: rgba(107,60,240,.85); }
+@media (max-width: 640px) { .jl { font-size: 11px; padding: 4px 8px; } }
+.nav-dark { background: linear-gradient(rgba(5,7,12,.75), rgba(5,7,12,0)); }
+.nav-dark .btn-primary { background: #FFC20A; color: #0B0C0E; }
