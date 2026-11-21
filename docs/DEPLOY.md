@@ -11,23 +11,25 @@ Two ways to put ORCA online:
 
 ## Vercel (free)
 
-[`vercel.json`](../vercel.json) builds the home page and assembles the site with
-[`tools/build_site.mjs`](../tools/build_site.mjs), at the same paths the server uses (`/`, `/app`, `/app/data/...`,
-`/media/...`). There is no `/api`, so the control room runs its in-browser engine, which makes the same decisions as
-the server for each city. CI builds the same site on every pull request.
+Live at **https://orca-tau-ten.vercel.app**.
 
-One-time setup (about 5 minutes):
+[`tools/build_site.mjs`](../tools/build_site.mjs) assembles `site/` at the same paths the server uses (`/`, `/app`,
+`/app/data/...`, `/media/...`) and gives it its own `vercel.json` ([`deploy/vercel-site.json`](../deploy/vercel-site.json): the
+`/app` rewrite, the server's security headers and caching). There is no `/api`, so the control room runs its
+in-browser engine, which makes the same decisions as the server for each city. CI builds the same site on every pull
+request.
 
-1. Sign in at https://vercel.com with your GitHub account (the Hobby plan is free).
-2. **Add New → Project**, import the `orca` repository and press **Deploy**. Vercel reads `vercel.json`; leave the
-   framework preset, build and output settings as they are.
-3. The tour video and its poster are stored with Git LFS: in the project's **Settings → Git**, turn on
-   **Git Large File Storage (LFS)**, then redeploy (**Deployments → ⋯ → Redeploy**). Without it the site works, only
-   the video section is empty, and the build log says so.
+Vercel deploys the `site/` folder as it is, with nothing built on Vercel's side. Deploying the repository root instead
+does not work: Vercel finds the `Dockerfile` there and sets the project up as a container.
 
-After that, every push to `main` deploys to `https://<project>.vercel.app`, and every pull request gets its own
-preview link. To try the same site locally: `npm ci --prefix web && npm run build --prefix web && python frontend/build.py && node tools/build_site.mjs`,
-then serve `site/` with any static server, for example `python -m http.server --directory site`.
+```bash
+npx vercel login                                   # once: approve in the browser (free Hobby plan, no card)
+npx vercel link --cwd site --project orca --yes    # once per clone, after a first `make site`
+make vercel                                        # builds site/ and deploys it to production
+```
+
+`make site` alone builds the folder; serve it locally with `python -m http.server --directory site` to try it.
+`site/.vercel` keeps the project link across rebuilds.
 
 # Fly.io (the full server)
 
