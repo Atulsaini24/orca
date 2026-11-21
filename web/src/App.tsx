@@ -134,14 +134,14 @@ function Hero() {
           </Reveal>
           <Reveal delay={0.18} className="mt-5 sm:hidden"><CitySwitch /></Reveal>
           <Reveal delay={0.2}>
-            <dl className="mt-12 grid max-w-[34rem] grid-cols-3 gap-6 border-t border-line pt-6">
+            <dl className="mt-12 grid max-w-[34rem] grid-cols-3 gap-4 border-t border-line pt-6 sm:gap-6">
               {[
                 ...(b ? [[`${Math.round(b.agg('steady', 'orca_learned', 'mean'))} s`, 'mean wait with ORCA'],
                   [`${Math.round(b.agg('steady', 'nearest', 'mean'))} s`, 'with nearest car']] : []),
                 [fmt(city.facts?.intersections ?? 0), `real ${city.short} intersections`],
                 ...(b ? [] : [[fmt(city.facts?.buildings ?? 0), 'real buildings'], [String(city.facts?.zones ?? 0), 'official zones']]),
               ].map(([v, l]) => (
-                <div key={l}><dt className="sr-only">{l}</dt><dd className="num wide text-[30px] font-extrabold leading-none">{v}</dd>
+                <div key={l}><dt className="sr-only">{l}</dt><dd className="num wide whitespace-nowrap text-[22px] font-extrabold leading-none min-[400px]:text-[26px] sm:text-[30px]">{v}</dd>
                   <p className="mt-2 text-[13px] leading-snug text-ink-3">{l}</p></div>
               ))}
             </dl>
@@ -152,7 +152,7 @@ function Hero() {
           <div className="relative h-full w-full rotate-[-2deg] rounded-[28px] shadow-[0_40px_80px_-40px_rgba(20,30,45,.55)]"><HeroMap /></div>
           <div className="card absolute -bottom-5 -left-3 w-[230px] p-4 text-[13px] sm:-left-8">
             <p className="font-bold">Why this car?</p>
-            <p className="mt-1 text-ink-2">In the control room, click any rider to see every candidate car ORCA scored and why it picked one.</p>
+            <p className="mt-1 text-ink-2">In the control room, pick any rider to see every candidate car ORCA scored and why it chose one.</p>
           </div>
         </Reveal>
       </div>
@@ -450,7 +450,7 @@ function Stack() {
         </div>
         <Reveal className="mt-16 flex flex-col items-start justify-between gap-6 rounded-3xl bg-taxi p-8 text-ink md:flex-row md:items-center md:p-10">
           <div><h3 className="wide text-[28px] font-extrabold leading-tight md:text-[34px]">Run the city yourself.</h3>
-            <p className="mt-2 max-w-xl text-[16px] text-ink-2">Pick a city, switch dispatchers, cause outages and accidents, and click any rider to see why ORCA chose that car.</p></div>
+            <p className="mt-2 max-w-xl text-[16px] text-ink-2">Pick a city, switch dispatchers, cause outages and accidents, and pick any rider to see why ORCA chose that car.</p></div>
           <div className="flex flex-wrap gap-3">
             {CITIES.map((c) => (
               <a key={c.name} href={appUrl(c.name)} className={c.name === city.name ? 'btn-primary text-[16px]' : 'btn-ghost text-[16px]'}>

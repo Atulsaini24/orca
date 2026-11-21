@@ -229,7 +229,10 @@ async function pickSource() {
 if (!/^https?:$/.test(location.protocol)) $('#homeLink').removeAttribute('href');   // opened as a file: no home page
 const canvas = $('#gl'), stage = $('.stage');
 let R;
-try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, preserve: true } : {}); } catch (e) {
+// phones and small tablets: a touch screen under 820 CSS px on its short side gets the phone layout and lighter shadows
+const PHONE = matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
+// On phones: a smaller shadow map, single-sample shadows and no multisampling (a phone's pixel density hides the edges)
+try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, preserve: true } : PHONE ? { shadowSize: 1024, samples: 0, pcf: 0 } : {}); } catch (e) {
   $('#fatal').style.display = 'grid';
   $('#fatal').textContent = 'This browser cannot start WebGL2, so the city cannot be drawn. Try a recent Chrome, Edge, Firefox or Safari.';
   throw e;
@@ -312,14 +315,20 @@ function resize() {
 }
 // Dynamic resolution: the 3D view draws a smaller area of its full-size target while frames run slow and scales it
 // up (Renderer.present), so changing resolution costs nothing and can follow the load continuously. It falls
-// quickly when frames take over 18.5 ms, and climbs slowly while they keep the display's pace; never below
-// about 0.75 device pixels per CSS pixel.
-const SCALE_MIN = Math.min(1, Math.max(0.5, 0.75 / DPR));
-let frameEma = 1 / 60;
+// quickly when frames take over 18.5 ms, and climbs slowly while they keep the display's pace.
+// Very slow frames (a phone's GPU with the city filling the screen) cut the resolution at once, in proportion to the
+// overrun (frame time grows with the pixel count, so with the square of the scale): stepping down 1.5% a frame took
+// about 45 frames, which at a second a frame left the page frozen for most of a minute. Two slow frames in a row are
+// needed, so one hiccup (garbage collection, a tab switch) does not blur the map. Floor: half a device pixel per CSS pixel.
+const SCALE_MIN = Math.min(1, Math.max(0.35, 0.5 / DPR));
+const FRAME_BUDGET = 0.0185;
+let frameEma = 1 / 60, slowFrames = 0;
 function adaptResolution(dt) {
   if (CAPTURE || document.hidden) return;
   frameEma += (Math.min(dt, 0.1) - frameEma) * 0.08;
-  if (frameEma > 0.0185) R.scale = Math.max(SCALE_MIN, R.scale * 0.985);
+  slowFrames = dt > 0.05 && dt < 2 ? slowFrames + 1 : 0;
+  if (slowFrames >= 2) { R.scale = Math.max(SCALE_MIN, R.scale * Math.max(0.6, Math.sqrt(FRAME_BUDGET / dt))); frameEma = FRAME_BUDGET; }
+  else if (frameEma > FRAME_BUDGET) R.scale = Math.max(SCALE_MIN, R.scale * 0.985);
   else if (frameEma < 0.0172) R.scale = Math.min(1, R.scale * 1.0015);
 }
 
@@ -500,24 +509,11 @@ function plate(el, x, y, z, text, cls) {
   return { el, sx, sy };
 }
 // Zoomed out, the request and its candidate cars project to nearly the same pixel and the plates pile up.
-// Lift each plate above any it would cover; its stem stretches down to the point it labels.
+// Lift each plate above any it would cover; its stem stretches down to the point it labels. The stacking is
+// stackLabels (labels.js), which always terminates: the previous loop here could spin forever on float rounding.
 function unstack(ps) {
-  ps.sort((a, b) => b.sy - a.sy);
-  const placed = [];
-  for (const p of ps) {
-    const w = p.el._w, h = p.el._h;
-    let lift = 0, moved = true;
-    while (moved) {
-      moved = false;
-      const top = p.sy - 10 - h - lift, l = p.sx - w / 2;
-      for (const q of placed) {
-        if (l < q.r + 4 && l + w > q.l - 4 && top < q.b + 4 && top + h > q.t - 4) { lift = p.sy - 10 - (q.t - 4) ; moved = true; break; }
-      }
-    }
-    p.el.style.setProperty('--lift', lift + 'px');
-    const top = p.sy - 10 - h - lift;
-    placed.push({ l: p.sx - w / 2, r: p.sx + w / 2, t: top, b: top + h });
-  }
+  const lift = stackLabels(ps.map((p) => ({ sx: p.sx, sy: p.sy, w: p.el._w, h: p.el._h })));
+  ps.forEach((p, i) => p.el.style.setProperty('--lift', lift[i] + 'px'));
 }
 
 // ----------------------------------------------------------------------------- input: camera, picking, custom cursor
@@ -534,15 +530,43 @@ function nearestReq(sx, sy, radius = 24) {
 }
 function local(e) { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+// Touch works like a map app: one finger pans, two fingers pinch to zoom around the point between them, twist to
+// rotate and move together to pan. Everything goes through pointer events: separate touch handlers used to run
+// alongside a one-finger "rotate" drag, so a pinch also spun the camera.
+const fingers = new Map();      // touch pointers on the map: id -> [x, y]
+let pinch = null;
+function pinchNow() {
+  const [a, b] = [...fingers.values()];
+  return { d: Math.hypot(a[0] - b[0], a[1] - b[1]), ang: Math.atan2(b[1] - a[1], b[0] - a[0]), mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 };
+}
+function capture(el, e) { try { el.setPointerCapture(e.pointerId); } catch (err) { /* the pointer already went away */ } }
+function touchPan(x, y, moved = 0) { drag = { mode: 'pan', touch: true, x, y, sx: x, sy: y, moved, grab: cam.ground(x, y, viewW, viewH) }; }
 canvas.addEventListener('pointerdown', (e) => {
-  canvas.setPointerCapture(e.pointerId); stopTourOnInput();
+  capture(canvas, e); stopTourOnInput();
   const [x, y] = local(e);
+  if (e.pointerType === 'touch') {
+    fingers.set(e.pointerId, [x, y]);
+    if (fingers.size === 1) touchPan(x, y);
+    else { drag = null; pinch = fingers.size === 2 ? pinchNow() : null; }
+    return;
+  }
   const mode = e.button === 2 || e.shiftKey || e.button === 1 ? 'pan' : 'rotate';
   drag = { mode, x, y, sx: x, sy: y, moved: 0, grab: mode === 'pan' ? cam.ground(x, y, viewW, viewH) : null };
 });
 canvas.addEventListener('pointermove', (e) => {
   const [x, y] = local(e);
-  ptr.x = e.clientX; ptr.y = e.clientY; ptr.inside = true;
+  ptr.x = e.clientX; ptr.y = e.clientY; ptr.inside = e.pointerType !== 'touch';
+  if (e.pointerType === 'touch' && fingers.has(e.pointerId)) {
+    fingers.set(e.pointerId, [x, y]);
+    if (pinch && fingers.size === 2) {
+      const n = pinchNow();
+      cam.zoom(pinch.d / Math.max(1, n.d), cam.ground(n.mx, n.my, viewW, viewH));
+      let da = n.ang - pinch.ang; if (da > Math.PI) da -= 2 * Math.PI; if (da < -Math.PI) da += 2 * Math.PI;
+      cam.g.yaw += da; cam.pan(n.mx - pinch.mx, n.my - pinch.my); cam.clampGoal();
+      pinch = n;
+      return;
+    }
+  }
   if (!drag) { hoverReq = finePointer ? nearestReq(x, y) : null; return; }
   const dx = x - drag.x, dy = y - drag.y; drag.moved += Math.abs(dx) + Math.abs(dy); drag.x = x; drag.y = y;
   if (drag.mode === 'rotate') cam.rotate(dx, dy);
@@ -551,16 +575,26 @@ canvas.addEventListener('pointermove', (e) => {
     if (g) { cam.tween = null; cam.g.t[0] += drag.grab[0] - g[0]; cam.g.t[2] += drag.grab[2] - g[2]; cam.t[0] += drag.grab[0] - g[0]; cam.t[2] += drag.grab[2] - g[2]; cam.clampGoal(); cam.update(0); }
   }
 });
+function liftFinger(e) {
+  if (e.pointerType !== 'touch' || !fingers.delete(e.pointerId)) return false;
+  if (fingers.size === 2) { pinch = pinchNow(); return true; }
+  pinch = null;
+  // the finger left on the glass after a pinch keeps panning from where it is, without a jump; it is not a tap
+  if (fingers.size === 1) { const [[fx, fy]] = fingers.values(); touchPan(fx, fy, 99); return true; }
+  return false;
+}
+canvas.addEventListener('pointercancel', (e) => { liftFinger(e); if (!fingers.size) drag = null; });
 canvas.addEventListener('pointerup', (e) => {
+  if (liftFinger(e)) return;
   const d = drag; drag = null;
-  if (d && d.moved < 6 && placing) {
+  if (d && d.moved < (d.touch ? 12 : 6) && placing) {
     const [x, y] = local(e), g = cam.ground(x, y, viewW, viewH);
     if (g) { src.command({ cmd: placing, x: g[0], z: g[2] }); addEffect(g[0], g[2], [0, 0, 0], 8, 0.7); }
     setPlacing(null);
     return;
   }
-  if (d && d.moved < 6) {
-    const [x, y] = local(e), q = nearestReq(x, y);
+  if (d && d.moved < (d.touch ? 12 : 6)) {
+    const [x, y] = local(e), q = nearestReq(x, y, d.touch ? 36 : 24);   // a fingertip is less precise than a pointer
     if (q) { pinned = q[0]; selectTab('why'); refreshPinned(); addEffect(q[1], q[2], [0, 0, 0], 4, 0.5); }
   }
 });
@@ -574,20 +608,6 @@ canvas.addEventListener('wheel', (e) => {
   const [x, y] = local(e), g = cam.ground(x, y, viewW, viewH);
   cam.zoom(Math.exp(e.deltaY * (e.deltaMode ? 0.05 : 0.0012)), g);
 }, { passive: false });
-// two-finger pinch / pan on touch screens
-const touches = new Map();
-canvas.addEventListener('touchstart', (e) => { for (const t of e.changedTouches) touches.set(t.identifier, [t.clientX, t.clientY]); }, { passive: true });
-canvas.addEventListener('touchmove', (e) => {
-  if (touches.size !== 2 || e.touches.length !== 2) return;
-  drag = null;
-  const [a, b] = [...e.touches], pa = touches.get(a.identifier), pb = touches.get(b.identifier);
-  if (!pa || !pb) return;
-  const d0 = Math.hypot(pa[0] - pb[0], pa[1] - pb[1]), d1 = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-  cam.zoom(d0 / Math.max(1, d1));
-  cam.pan(((a.clientX + b.clientX) - (pa[0] + pb[0])) / 2, ((a.clientY + b.clientY) - (pa[1] + pb[1])) / 2);
-  touches.set(a.identifier, [a.clientX, a.clientY]); touches.set(b.identifier, [b.clientX, b.clientY]);
-}, { passive: true });
-canvas.addEventListener('touchend', (e) => { for (const t of e.changedTouches) touches.delete(t.identifier); }, { passive: true });
 
 const keys = new Set();
 addEventListener('keydown', (e) => {
@@ -680,13 +700,79 @@ function drawChart(S) {
 }
 
 // ----------------------------------------------------------------------------- console: tabs
-const TABS = ['why', 'fc', 'zn', 'ev']; let tab = 'why';
+const TABS = ['ctl', 'why', 'fc', 'zn', 'ev']; let tab = 'why';     // 'ctl' (Controls) exists on phones only
 function selectTab(t) { tab = t; for (const k of TABS) { $('#t-' + k).setAttribute('aria-selected', k === t); $('#p-' + k).hidden = k !== t; } }
 for (const k of TABS) $('#t-' + k).onclick = () => selectTab(k);
 $('.tabs').addEventListener('keydown', (e) => {
   if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-  const n = TABS[(TABS.indexOf(tab) + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length]; selectTab(n); $('#t-' + n).focus();
+  const shown = TABS.filter((k) => $('#t-' + k).offsetParent !== null);
+  const n = shown[(shown.indexOf(tab) + (e.key === 'ArrowRight' ? 1 : shown.length - 1)) % shown.length]; selectTab(n); $('#t-' + n).focus();
 });
+
+// ---- phone layout: a full-screen map with a bottom sheet (index.html, max-width 820px)
+// The map's controls, speed buttons and key move into the sheet's Controls tab, and back when the window widens.
+const phoneMQ = matchMedia('(max-width: 820px)');
+const sheet = (() => {
+  const el = $('.console'), grip = $('#grip'), board = $('#board');
+  let open = false, peek = 150, g = null;
+  function set(o) {
+    open = o; el.classList.toggle('open', o); el.scrollTop = 0;
+    grip.setAttribute('aria-expanded', o); grip.setAttribute('aria-label', o ? 'Hide results and controls' : 'Show results and controls');
+  }
+  function measure() {          // the peek shows the grip, both waits and the verdict
+    if (!phoneMQ.matches) return;
+    const v = $('#verdict');
+    peek = Math.round(v.offsetTop + v.offsetHeight + 6);
+    document.documentElement.style.setProperty('--peek', peek + 'px');
+  }
+  const closedY = () => el.offsetHeight - peek - (parseFloat(getComputedStyle(el).paddingBottom) || 0);
+  function down(e) {
+    if (!phoneMQ.matches || document.body.classList.contains('touring') || (open && e.currentTarget !== grip)) return;
+    g = { id: e.pointerId, y0: e.clientY, t0: performance.now(), base: open ? 0 : closedY(), dy: 0 };
+    capture(e.currentTarget, e); el.classList.add('dragging');
+  }
+  function move(e) {
+    if (!g || e.pointerId !== g.id) return;
+    g.dy = e.clientY - g.y0;
+    el.style.transform = `translateY(${Math.max(0, Math.min(closedY(), g.base + g.dy))}px)`;
+  }
+  function up(e) {
+    if (!g || e.pointerId !== g.id) return;
+    const v = g.dy / Math.max(1, performance.now() - g.t0), y = g.base + g.dy, tap = Math.abs(g.dy) < 8;
+    g = null; el.classList.remove('dragging'); el.style.transform = '';
+    set(tap ? !open : v < -0.35 || (v < 0.35 && y < closedY() / 2));
+  }
+  for (const t of [grip, board]) {
+    t.addEventListener('pointerdown', down); t.addEventListener('pointermove', move);
+    t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
+  }
+  grip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); set(!open); } });
+  if ('ResizeObserver' in window) new ResizeObserver(measure).observe(board);
+  return { set, measure, get open() { return open; } };
+})();
+const moved = ['.controls', '.mapbar', '.key'].map((sel) => {
+  const node = $(sel), mark = document.createComment(sel);
+  node.before(mark);
+  return { node, mark };
+});
+const speedCtl = Object.assign(document.createElement('div'), { className: 'ctl', innerHTML: '<span class="lab">Simulation speed</span>' });
+const keyTitle = Object.assign(document.createElement('div'), { className: 'key-title', textContent: 'Map key' });
+function applyLayout() {
+  const phone = phoneMQ.matches, pane = $('#p-ctl'), [controls, mapbar, key] = moved.map((m) => m.node);
+  document.body.classList.toggle('phone', phone);
+  if (phone) {
+    speedCtl.append(mapbar);
+    pane.append(controls, speedCtl, keyTitle, key);
+  } else {
+    for (const m of moved) m.mark.after(m.node);
+    speedCtl.remove(); keyTitle.remove();
+    sheet.set(false);
+    if (tab === 'ctl') selectTab('why');
+  }
+  sheet.measure();
+}
+phoneMQ.addEventListener('change', applyLayout);
+applyLayout();
 
 // ---- why this car
 let pinned = null, lastSwap = -99, shownId = null;
@@ -854,11 +940,15 @@ document.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => setVi
 // somewhere central). Drivers logging off, shared rides and an electric fleet need the Python server.
 let placing = null;
 const PLACE_NAME = { spike: 'demand spike', outage: 'GPS outage', accident: 'accident' };
+if (!finePointer) document.querySelectorAll('.ctl .lab').forEach((l) => { l.textContent = l.textContent.replace('then click where', 'then tap where'); });
 function setPlacing(cmd) {
   placing = cmd;
   document.querySelectorAll('[data-cmd]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.cmd === cmd));
   canvas.classList.toggle('placing', !!cmd);
-  if (cmd) toast(`Click the map to place the ${PLACE_NAME[cmd]}. Press the button again to place it in the centre, Esc to cancel.`);
+  if (!cmd) return;
+  if (phoneMQ.matches) sheet.set(false);          // the sheet slides down so the map is free to tap
+  toast(finePointer ? `Click the map to place the ${PLACE_NAME[cmd]}. Press the button again to place it in the centre, Esc to cancel.`
+    : `Tap the map to place the ${PLACE_NAME[cmd]}, or tap the button again to place it in the centre.`);
 }
 document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => {
   if (placing === b.dataset.cmd) { src.command({ cmd: placing }); setPlacing(null); } else setPlacing(b.dataset.cmd);
@@ -896,7 +986,14 @@ try { if (sessionStorage.getItem('orca-welcome') === '1') $('#welcome').hidden =
 $('#w-ok').onclick = closeWelcome;
 $('#w-tour').onclick = () => { closeWelcome(); startTour(); };
 $('#tourBtn').onclick = () => (touring ? endTour() : startTour());
-function setStatus(s) { $('#mode').classList.toggle('live', s === 'live'); $('#modeTxt').textContent = s === 'live' ? 'Live server' : s === 'reconnecting' ? 'Reconnecting…' : 'In-browser engine'; }
+let lastStatusMode = null;
+function setStatus(s = lastStatusMode) {     // shorter words on a phone's top bar
+  if (!s) return;
+  lastStatusMode = s; const short = phoneMQ.matches;
+  $('#mode').classList.toggle('live', s === 'live');
+  $('#modeTxt').textContent = s === 'live' ? (short ? 'Live' : 'Live server') : s === 'reconnecting' ? 'Reconnecting…' : short ? 'In browser' : 'In-browser engine';
+}
+phoneMQ.addEventListener('change', () => setStatus());
 
 // ----------------------------------------------------------------------------- guided tour (plays like a video)
 // Each chapter: duration, caption, camera move, and what the app does on entry.
@@ -1044,12 +1141,21 @@ function tourTick(dt) {
   host.insertBefore(sel, host.querySelector('.clock'));
 })();
 
-function followShadows() {
+// The sun's shadow map covers the area around the camera and follows it. Each change redraws the shadow map, which
+// means drawing every building in the city again: while a zoom or pan gesture moves the camera, that happened many
+// times a second, more than a phone's GPU could keep up with. So the shadowed area waits until the camera has been
+// still for a quarter of a second, unless the view has moved so far that the current shadows no longer cover it.
+let camWas = '', camStill = 0;
+function followShadows(dt) {
+  const now = `${cam.dist.toFixed(1)},${cam.t[0].toFixed(1)},${cam.t[2].toFixed(1)}`;
+  camStill = now === camWas ? camStill + dt : 0; camWas = now;
   const q = 30, rad = Math.max(140, Math.min(480, Math.round((cam.dist * 0.75) / q) * q));
   const c = [Math.round(cam.t[0] / q) * q, 0, Math.round(cam.t[2] / q) * q];
-  if (c[0] !== cam.lightCenter[0] || c[2] !== cam.lightCenter[2] || rad !== cam.lightRadius) {
-    cam.lightCenter = c; cam.lightRadius = rad;
-  }
+  if (c[0] === cam.lightCenter[0] && c[2] === cam.lightCenter[2] && rad === cam.lightRadius) return;
+  const r0 = cam.lightRadius, off = Math.hypot(c[0] - cam.lightCenter[0], c[2] - cam.lightCenter[2]);
+  const stale = rad > r0 * 1.4 || rad < r0 * 0.7 || off > r0 * 0.35;
+  if (camStill < 0.25 && !stale) return;
+  cam.lightCenter = c; cam.lightRadius = rad;
 }
 let isNight = null;
 let stepErrors = 0;
@@ -1060,7 +1166,7 @@ function step(dt, draw = true) {
     tourTick(dt);
     keyboardCam(dt);
     cam.update(dt);
-    if (STREETS) followShadows();
+    if (STREETS) followShadows(dt);
     updateDaylight(curF ? curF.clock : summary ? summary.clock : CFG.START_CLOCK);
     heatPlane.alpha = 0.9 * clamp01((cam.dist - 110) / 300);          // the demand wash is for the overview, not close-ups
     const night = (R.night || 0) > 0.55; if (night !== isNight) { isNight = night; document.body.classList.toggle('night', night); }

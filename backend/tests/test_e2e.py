@@ -160,3 +160,30 @@ def test_control_room_other_city_runs_in_browser(server, browser):
     _until(lambda: page.inner_text("#modeTxt") == "In-browser engine", what="in-browser engine for the other city")
     _until(lambda: "real Chicago trips" in page.inner_text("#engine"), what="Chicago engine label")
     assert not [e for e in errors if "favicon" not in e], errors
+
+
+def test_control_room_on_a_phone(server, browser):
+    """Phones get a full-screen map; results and controls live in a bottom sheet that a touch on its handle opens."""
+    errors: list[str] = []
+    ctx = browser.new_context(viewport={"width": 375, "height": 812}, device_scale_factor=2, is_mobile=True, has_touch=True)
+    try:
+        page = ctx.new_page()
+        _open_pages.append(page)
+        page.route(re.compile(r"^https?://"), _offline)
+        page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        page.goto(server + "/app", wait_until="domcontentloaded")
+        _until(lambda: page.inner_text("#modeTxt") == "Live", what="the phone's short live status")
+        page.locator("#w-ok").dispatch_event("click")
+        box = page.locator("canvas#gl").bounding_box()
+        assert box["width"] >= 374 and box["height"] >= 800                    # the map fills the screen
+        assert page.locator("#p-ctl .controls").count() == 1                    # controls moved into the sheet
+        assert page.locator("#p-ctl .mapbar").count() == 1 and page.locator("#t-ctl").is_visible()
+        assert "tap where" in page.inner_text("#p-ctl .controls")
+        assert "open" not in (page.get_attribute(".console", "class") or "")
+        grip = page.locator("#grip")
+        for kind in ("pointerdown", "pointerup"):                                # a tap on the handle (DOM events: see above)
+            grip.dispatch_event(kind, {"pointerId": 7, "pointerType": "touch", "isPrimary": True, "clientX": 187, "clientY": 700})
+        _until(lambda: "open" in (page.get_attribute(".console", "class") or ""), what="the sheet to open")
+        assert not errors, errors
+    finally:
+        ctx.close()
