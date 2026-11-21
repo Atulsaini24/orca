@@ -229,7 +229,7 @@ python ../tools/loadtest.py                   # concurrent viewers
   against the view and drawn front to back, low-rise buildings and cars switch to lighter models with
   distance, the shadow map is redrawn only when the sun or the view moves, and the resolution adapts
   to keep frames under about 21 ms. City data is served gzip-compressed with cache revalidation.
-* **Deployable**: Docker multi-stage image with health check; [`render.yaml`](render.yaml) and [`fly.toml`](fly.toml).
+* **Deployable**: Docker multi-stage image with health check; one-click GitHub deploy to Fly.io ([`docs/DEPLOY.md`](docs/DEPLOY.md)), and [`render.yaml`](render.yaml).
 
 Design notes, the data pipelines and how this would scale out: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
