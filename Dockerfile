@@ -53,7 +53,9 @@ COPY docs/benchmark*.json docs/
 COPY --from=web /app/web/dist web/dist
 WORKDIR /app/backend
 RUN mkdir -p /app/backend/ledger && chown -R orca /app/backend/ledger
-USER orca
+# the entrypoint makes a mounted ledger volume writable, then drops to the orca user (deploy/entrypoint.sh)
+COPY --chmod=755 deploy/entrypoint.sh /usr/local/bin/orca-entrypoint
+ENTRYPOINT ["orca-entrypoint"]
 ENV ORCA_HOST=0.0.0.0 ORCA_PORT=8000 PYTHONUNBUFFERED=1
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=90s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"

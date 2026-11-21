@@ -1,4 +1,4 @@
-# Fly.io: `fly launch --copy-config --no-deploy`, then `fly secrets set ORCA_ADMIN_TOKEN=...` and `fly deploy`.
+# Fly.io: first-time setup and deploys are in docs/DEPLOY.md.
 app = "orca-dispatch"
 primary_region = "ewr"            # Newark, close to the city the data comes from
 
@@ -13,12 +13,13 @@ primary_region = "ewr"            # Newark, close to the city the data comes fro
 [http_service]
   internal_port = 8000
   force_https = true
+  # one machine always on: a stopped one takes a minute or more to start and warm up the cities
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [[http_service.checks]]
-    grace_period = "60s"
+    grace_period = "120s"
     interval = "30s"
     method = "GET"
     path = "/api/health"

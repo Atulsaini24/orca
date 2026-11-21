@@ -1,0 +1,45 @@
+name: Deploy to Fly.io
+
+# Manual: Actions > "Deploy to Fly.io" > Run workflow. Needs the repository secret FLY_API_TOKEN
+# (`fly tokens create deploy`). The image is built here, not on Fly's builder: a cold build downloads a month
+# of Chicago trips (about 35 minutes). The build cache makes later deploys reuse that download.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { lfs: true }
+      - name: App name from fly.toml
+        run: echo "APP=$(sed -n 's/^app *= *"\(.*\)".*/\1/p' fly.toml)" >> "$GITHUB_ENV"
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1   # 1.6
+      - name: Log Docker in to Fly's registry
+        run: flyctl auth docker
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: registry.fly.io/${{ env.APP }}:${{ github.sha }}
+          cache-from: type=gha,scope=fly
+          cache-to: type=gha,scope=fly,mode=max
+      - name: Deploy
+        run: flyctl deploy --image "registry.fly.io/$APP:${{ github.sha }}" --wait-timeout 10m
+      - name: Check the live site
+        run: |
+          for i in $(seq 1 60); do curl -sf "https://$APP.fly.dev/api/health" && exit 0; sleep 5; done
+          echo "health check failed: https://$APP.fly.dev/api/health"; exit 1
