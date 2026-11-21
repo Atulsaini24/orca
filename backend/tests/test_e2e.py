@@ -129,9 +129,12 @@ def test_control_room_live(server, browser):
     _until(lambda: page.inner_text("#modeTxt") == "Live server", what="live server status")
     _until(lambda: ":" in page.inner_text("#w-orca"), what="first wait figures")
     assert page.locator("canvas#gl").is_visible()
-    page.locator("#w-ok").click()                                        # dismiss the welcome card
-    page.get_by_role("button", name="Demand spike").click()
-    page.locator("#tourBtn").click()
+    # Clicks are dispatched as DOM events: a pointer click first waits for the button to sit still across
+    # animation frames, and with WebGL rendered on the CPU (CI) those frames can stall for longer than the
+    # timeout. What the buttons do is still checked: the tour caption below appears only if the tour started.
+    page.locator("#w-ok").dispatch_event("click")                        # dismiss the welcome card
+    page.get_by_role("button", name="Demand spike").dispatch_event("click")
+    page.locator("#tourBtn").dispatch_event("click")
     _until(lambda: len(page.inner_text("#capT")) > 0, what="tour caption")
     assert "tour" in page.locator("#tourBtn").inner_text().lower()
     assert not errors, errors
