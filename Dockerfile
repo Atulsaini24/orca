@@ -3,20 +3,23 @@ FROM python:3.12-slim AS data
 WORKDIR /app/backend
 COPY backend/requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock matplotlib==3.10.1
-COPY backend/orca orca
 COPY backend/scripts scripts
-# street networks (OpenStreetMap) and zone boundaries are committed, so trips are projected onto real streets
-COPY backend/artifacts artifacts
 COPY backend/data/chicago/region.json backend/data/chicago/community_areas.geojson data/chicago/
 COPY backend/data/chicago/neighborhoods data/chicago/neighborhoods
-COPY frontend/data /app/frontend/data
 # Manhattan: NYC TLC, September 2026, yellow taxis + Uber / Lyft. Chicago: City of Chicago TNP trips, same month.
+# The downloads come before the code, so a code change reuses them from the build cache: Chicago's open-data
+# API serves the month a day at a time and takes about 35 minutes; Manhattan's 580 MB takes seconds.
 ARG CITIES="manhattan chicago"
 RUN python scripts/download_tlc.py --zones \
  && python scripts/download_tlc.py --year 2026 --month 9 \
  && python scripts/download_tlc.py --kind fhvhv --year 2026 --month 9 \
- && python scripts/prepare_trips.py --city manhattan && rm -f data/*_tripdata_*.parquet \
- && if echo "$CITIES" | grep -q chicago; then python scripts/download_chicago.py --only trips && python scripts/prepare_trips.py --city chicago; fi
+ && if echo "$CITIES" | grep -q chicago; then python scripts/download_chicago.py --only trips; fi
+COPY backend/orca orca
+# street networks (OpenStreetMap) and zone boundaries are committed, so trips are projected onto real streets
+COPY backend/artifacts artifacts
+COPY frontend/data /app/frontend/data
+RUN python scripts/prepare_trips.py --city manhattan \
+ && if echo "$CITIES" | grep -q chicago; then python scripts/prepare_trips.py --city chicago; fi
 
 # ---- 2. home page: React + TypeScript + Vite + Tailwind
 FROM node:22-alpine AS web

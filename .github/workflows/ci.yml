@@ -123,6 +123,9 @@ jobs:
           context: .
           load: true
           tags: orca:ci
+          # Manhattan only: Chicago's trip download alone takes about 35 minutes; the image still runs every
+          # city (a city without prepared trips runs synthetic demand), and the deploy builds include Chicago
+          build-args: CITIES=manhattan
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke-test the container

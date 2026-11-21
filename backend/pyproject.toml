@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 data = ["pyarrow>=14"]                 # read NYC TLC Parquet files
-dev = ["pytest>=8", "requests>=2.31", "matplotlib>=3.8"]
+dev = ["pytest>=8", "requests>=2.31", "matplotlib>=3.8", "httpx2>=2.0"]   # httpx2: starlette.testclient
 video = ["playwright>=1.45", "imageio-ffmpeg>=0.5", "edge-tts>=7.0", "gTTS>=2.5"]   # tools/make_tour_video.py
 lint = ["ruff>=0.6"]
 # the production stack (docker compose --profile stack): PostgreSQL ledger, Redis event stream, tracing
