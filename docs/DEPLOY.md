@@ -1,4 +1,35 @@
-# Deploying to Fly.io
+# Deploying ORCA
+
+Two ways to put ORCA online:
+
+| | Vercel (free) | Fly.io (paid, about $10-15 a month) |
+|---|---|---|
+| What runs | The home page and the control room as static files; the dispatch simulation runs in each visitor's browser on the bundled real trips | The Python server: one process per city, live streaming to every viewer |
+| Cost | Free (Hobby plan, personal non-commercial use), no card | One always-on 2 GB machine and a 1 GB volume |
+| Sleeps | Never | Never, once a card is on the account (a trial account stops machines after 5 minutes) |
+| Not available | The server-only what-ifs (200 drivers log off, shared rides, electric fleet), the live API, `/metrics` | Nothing |
+
+## Vercel (free)
+
+[`vercel.json`](../vercel.json) builds the home page and assembles the site with
+[`tools/build_site.mjs`](../tools/build_site.mjs), at the same paths the server uses (`/`, `/app`, `/app/data/...`,
+`/media/...`). There is no `/api`, so the control room runs its in-browser engine, which makes the same decisions as
+the server for each city. CI builds the same site on every pull request.
+
+One-time setup (about 5 minutes):
+
+1. Sign in at https://vercel.com with your GitHub account (the Hobby plan is free).
+2. **Add New → Project**, import the `orca` repository and press **Deploy**. Vercel reads `vercel.json`; leave the
+   framework preset, build and output settings as they are.
+3. The tour video and its poster are stored with Git LFS: in the project's **Settings → Git**, turn on
+   **Git Large File Storage (LFS)**, then redeploy (**Deployments → ⋯ → Redeploy**). Without it the site works, only
+   the video section is empty, and the build log says so.
+
+After that, every push to `main` deploys to `https://<project>.vercel.app`, and every pull request gets its own
+preview link. To try the same site locally: `npm ci --prefix web && npm run build --prefix web && python frontend/build.py && node tools/build_site.mjs`,
+then serve `site/` with any static server, for example `python -m http.server --directory site`.
+
+# Fly.io (the full server)
 
 ORCA runs as one Docker container: `orca.router` on port 8000 with one supervised process per city
 (`ORCA_CITIES`, Manhattan and Chicago by default, about 1.4 GB together). [`fly.toml`](../fly.toml) asks for a
