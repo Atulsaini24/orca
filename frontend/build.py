@@ -19,7 +19,7 @@ docs = root / "docs"
 sys.path.insert(0, str(root / "backend"))
 from orca import cityspec  # noqa: E402
 
-order = ["sim.js", "cities.js", "gl.js", "city.js", "app.js"]
+order = ["sim.js", "cities.js", "gl.js", "city.js", "labels.js", "app.js"]
 js = "\n".join((here / "src" / f).read_text(encoding="utf-8") for f in order)
 
 
