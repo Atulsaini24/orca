@@ -5,3 +5,5 @@ backend/data/taxi_zones*
 backend/.venv
 build-test
 **/__pycache__
+backend/data/osm
+backend/data/nyc_buildings_manhattan.json

@@ -1,0 +1,67 @@
+{
+  "fleet": 1200,
+  "seconds": 20,
+  "local": true,
+  "rows": [
+    {
+      "viewers": 50,
+      "connected": 50,
+      "refused": 0,
+      "errors": 0,
+      "fps_mean": 9.613000000000001,
+      "fps_p5": 9.5725,
+      "gap_p95_ms": 123.4511099915835,
+      "mbit_s": 75.7573232,
+      "advance_ms_mean": 2.881907216494845,
+      "server_cpu": 16.8
+    },
+    {
+      "viewers": 100,
+      "connected": 100,
+      "refused": 0,
+      "errors": 0,
+      "fps_mean": 9.2305,
+      "fps_p5": 9.15,
+      "gap_p95_ms": 127.75169999804348,
+      "mbit_s": 158.1481788,
+      "advance_ms_mean": 3.50870253164557,
+      "server_cpu": 21.7
+    },
+    {
+      "viewers": 200,
+      "connected": 200,
+      "refused": 0,
+      "errors": 0,
+      "fps_mean": 8.96725,
+      "fps_p5": 8.9,
+      "gap_p95_ms": 133.6991600051988,
+      "mbit_s": 351.1051268,
+      "advance_ms_mean": 4.104677148846959,
+      "server_cpu": 35.1
+    },
+    {
+      "viewers": 400,
+      "connected": 400,
+      "refused": 0,
+      "errors": 0,
+      "fps_mean": 8.360375,
+      "fps_p5": 8.3,
+      "gap_p95_ms": 142.047349990753,
+      "mbit_s": 738.168952,
+      "advance_ms_mean": 4.387970526315789,
+      "server_cpu": 60.8
+    },
+    {
+      "viewers": 800,
+      "connected": 800,
+      "refused": 0,
+      "errors": 0,
+      "fps_mean": 6.984375,
+      "fps_p5": 6.95,
+      "gap_p95_ms": 191.95212000631716,
+      "mbit_s": 1318.387464,
+      "advance_ms_mean": 5.764444444444446,
+      "server_cpu": 98.1
+    }
+  ]
+}

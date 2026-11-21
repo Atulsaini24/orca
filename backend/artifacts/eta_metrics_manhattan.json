@@ -1,0 +1,58 @@
+{
+  "task": "eta",
+  "target": "log_ratio_to_physics",
+  "source": "tlc",
+  "features": [
+    "road_dist",
+    "euclid",
+    "arterial_frac",
+    "speed_origin",
+    "speed_corner",
+    "speed_dest",
+    "speed_city",
+    "hour_sin",
+    "hour_cos"
+  ],
+  "n_train": 13664,
+  "n_test": 3419,
+  "results": [
+    {
+      "model": "free-flow distance / speed",
+      "mae": 62.965095636074025,
+      "p90_abs_err": 141.42834893619448,
+      "r2": 0.5610802635315111
+    },
+    {
+      "model": "observed zone-speed heuristic",
+      "mae": 42.60593613757148,
+      "p90_abs_err": 98.80270121988806,
+      "r2": 0.760901185007295
+    },
+    {
+      "model": "gradient boosting (ORCA)",
+      "mae": 34.68106420319628,
+      "p90_abs_err": 84.16471732747917,
+      "r2": 0.8498914370035832
+    }
+  ],
+  "hours": 1.5,
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "start_hours": [
+    0.0,
+    4.0,
+    7.5,
+    12.0,
+    16.5,
+    20.0
+  ],
+  "incident_every": 700,
+  "fleet": 1200,
+  "trained_at": "2026-11-16 15:44"
+}

@@ -1,0 +1,34 @@
+# Fly.io: `fly launch --copy-config --no-deploy`, then `fly secrets set ORCA_ADMIN_TOKEN=...` and `fly deploy`.
+app = "orca-dispatch"
+primary_region = "ewr"            # Newark, close to the city the data comes from
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ORCA_TRUST_PROXY = "1"
+  ORCA_DB = "/app/backend/ledger/orca.db"     # the router gives each city its own file (orca_<city>.db)
+  ORCA_CITIES = "manhattan chicago"            # ~1.4 GB; add cambridge with memory = "4gb"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "3s"
+
+[[mounts]]
+  source = "orca_ledger"
+  destination = "/app/backend/ledger"
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 2

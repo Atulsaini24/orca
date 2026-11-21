@@ -1,0 +1,13 @@
+{
+  "city": "manhattan",
+  "speed_scale": 0.902525918822288,
+  "trips": 2996,
+  "median_real_s": 915.0,
+  "median_sim_s_before": 814.5221253497234,
+  "median_sim_s_after": 902.4916718320939,
+  "mae_s_after": 315.2115883704255,
+  "median_abs_err_s_after": 242.260964743048,
+  "corr": 0.7271466704703325,
+  "note": "Real durations include stops and signals; the simulator moves cars continuously at the calibrated speed.",
+  "calibrated_at": "2026-11-16 15:32"
+}

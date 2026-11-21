@@ -1,0 +1,21 @@
+{
+  "name": "cambridge",
+  "label": "Cambridge, Massachusetts",
+  "short": "Cambridge",
+  "projection": "local:42.378331,-71.112192",
+  "grid_angle": 26.5,
+  "bbox": [
+    42.352402,
+    -71.148673,
+    42.404259,
+    -71.07571
+  ],
+  "zone_label": "zones of about 1 km, named after OpenStreetMap places",
+  "data_note": "no trip records for Cambridge: synthetic demand",
+  "demand_source": "synthetic demand",
+  "tags": {
+    "surround": "land",
+    "built_with": "orca.newcity",
+    "built": "2026-11-17"
+  }
+}

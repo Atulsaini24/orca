@@ -1,0 +1,241 @@
+{
+ "city": "chicago",
+ "source": "OpenStreetMap amenity=charging_station",
+ "fetched": 37,
+ "stations": [
+  {
+   "node": 1128,
+   "x": 84.69451324687688,
+   "z": 143.2932268708246,
+   "plugs": 3,
+   "kw": 100.0,
+   "dc": true,
+   "name": "eVgo"
+  },
+  {
+   "node": 1107,
+   "x": 50.40901817736061,
+   "z": 134.70969344209493,
+   "plugs": 4,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 1243,
+   "x": 75.88114345479602,
+   "z": 82.87522203025875,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 1191,
+   "x": 69.61498610092676,
+   "z": 93.13796932813327,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 2970,
+   "x": 210.70783535620626,
+   "z": 287.8451340796426,
+   "plugs": 10,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 1743,
+   "x": 159.6012260915149,
+   "z": 351.272127832678,
+   "plugs": 14,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 3756,
+   "x": 143.70406157258742,
+   "z": 100.0132433573211,
+   "plugs": 8,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 3270,
+   "x": 133.7831146308027,
+   "z": 207.7704236095655,
+   "plugs": 10,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 1570,
+   "x": 143.83797891050344,
+   "z": 369.78990099604323,
+   "plugs": 6,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Blink"
+  },
+  {
+   "node": 1598,
+   "x": 159.87376404928315,
+   "z": 360.6773311485847,
+   "plugs": 4,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Shell Recharge"
+  },
+  {
+   "node": 2057,
+   "x": 177.5689637928095,
+   "z": 324.8318072285193,
+   "plugs": 4,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 3890,
+   "x": 136.53524045481657,
+   "z": 66.96044019457577,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Volta Charging Station"
+  },
+  {
+   "node": 112,
+   "x": 77.95288373198515,
+   "z": 369.3552280187491,
+   "plugs": 6,
+   "kw": 11.0,
+   "dc": false,
+   "name": "EVgo"
+  },
+  {
+   "node": 1766,
+   "x": 137.08757574660703,
+   "z": 311.7063718516031,
+   "plugs": 2,
+   "kw": 7.4,
+   "dc": false,
+   "name": "Shell Recharge"
+  },
+  {
+   "node": 1655,
+   "x": 110.30611568774135,
+   "z": 321.94057653675554,
+   "plugs": 4,
+   "kw": 350.0,
+   "dc": true,
+   "name": "Electrify America"
+  },
+  {
+   "node": 1690,
+   "x": 118.56092930524416,
+   "z": 328.09600894875285,
+   "plugs": 3,
+   "kw": 7.0,
+   "dc": false,
+   "name": "Blink ParkChip Garage - 1035 Van Buren"
+  },
+  {
+   "node": 3866,
+   "x": 127.42726429248384,
+   "z": 57.71530324100752,
+   "plugs": 4,
+   "kw": 50.0,
+   "dc": true,
+   "name": "EVgo"
+  },
+  {
+   "node": 1106,
+   "x": 57.66505876050408,
+   "z": 128.95998740842336,
+   "plugs": 4,
+   "kw": 350.0,
+   "dc": true,
+   "name": "Costco Lincoln Park"
+  },
+  {
+   "node": 1092,
+   "x": 65.95903526424276,
+   "z": 187.82075532040716,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Red E"
+  },
+  {
+   "node": 3056,
+   "x": 189.46893585237945,
+   "z": 251.3667064234498,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "EVgo"
+  },
+  {
+   "node": 2705,
+   "x": 147.75110702661914,
+   "z": 225.6480664192932,
+   "plugs": 6,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Electrify America"
+  },
+  {
+   "node": 1065,
+   "x": 79.99755133922056,
+   "z": 200.56484291818927,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Red E"
+  },
+  {
+   "node": 3480,
+   "x": 104.05031375139951,
+   "z": 119.21098118496207,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Shell Recharge"
+  },
+  {
+   "node": 1214,
+   "x": 76.48589186834482,
+   "z": 92.98889381216918,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "EVgo"
+  },
+  {
+   "node": 1830,
+   "x": 158.5090074471295,
+   "z": 325.3283713367108,
+   "plugs": 4,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Charging station"
+  },
+  {
+   "node": 1774,
+   "x": 139.64799694079946,
+   "z": 311.6536793946017,
+   "plugs": 2,
+   "kw": 12.0,
+   "dc": false,
+   "name": "Blink"
+  }
+ ]
+}

@@ -1,0 +1,132 @@
+{
+  "city": "manhattan",
+  "machine": {
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "python": "3.12.10",
+    "os": "Windows-11-10.0.26300-SP0"
+  },
+  "seconds": 600,
+  "fleets": [
+    {
+      "fleet": 1200,
+      "ms_per_sim_s": 2.415373666663072,
+      "realtime": 414.0146155445741,
+      "batch_ms_mean": 2.7522883118964074,
+      "batch_ms_p95": 4.554725003254132,
+      "batch_requests_mean": 2.0064935064935066,
+      "batch_requests_max": 6,
+      "decisions": 309,
+      "decisions_per_s": 729.0273689063388,
+      "frame_ms": 1.5725000001111766,
+      "frame_kb": 37.01171875,
+      "served": 351,
+      "waiting": 8
+    },
+    {
+      "fleet": 2500,
+      "ms_per_sim_s": 3.382049833332227,
+      "realtime": 295.67867100726056,
+      "batch_ms_mean": 3.1236855669253742,
+      "batch_ms_p95": 4.621100000440492,
+      "batch_requests_mean": 3.7422680412371134,
+      "batch_requests_max": 9,
+      "decisions": 726,
+      "decisions_per_s": 1198.029686746162,
+      "frame_ms": 3.1707149999419926,
+      "frame_kb": 76.4892578125,
+      "served": 783,
+      "waiting": 12
+    },
+    {
+      "fleet": 5000,
+      "ms_per_sim_s": 5.73436949999935,
+      "realtime": 174.38708824049675,
+      "batch_ms_mean": 4.647512000228744,
+      "batch_ms_p95": 6.643844998689019,
+      "batch_requests_mean": 7.39,
+      "batch_requests_max": 16,
+      "decisions": 1478,
+      "decisions_per_s": 1590.098099722233,
+      "frame_ms": 6.485969999994268,
+      "frame_kb": 151.9765625,
+      "served": 1634,
+      "waiting": 24
+    },
+    {
+      "fleet": 10000,
+      "ms_per_sim_s": 11.205570333331707,
+      "realtime": 89.24133000401007,
+      "batch_ms_mean": 8.76427999988664,
+      "batch_ms_p95": 12.107014999128294,
+      "batch_requests_mean": 16.115,
+      "batch_requests_max": 30,
+      "decisions": 3223,
+      "decisions_per_s": 1838.7135052974618,
+      "frame_ms": 13.442220000069938,
+      "frame_kb": 302.4140625,
+      "served": 3510,
+      "waiting": 50
+    },
+    {
+      "fleet": 20000,
+      "ms_per_sim_s": 23.733240000001388,
+      "realtime": 42.13499716009873,
+      "batch_ms_mean": 18.575806999615452,
+      "batch_ms_p95": 24.286019994542578,
+      "batch_requests_mean": 33.02,
+      "batch_requests_max": 54,
+      "decisions": 6604,
+      "decisions_per_s": 1777.5809148255883,
+      "frame_ms": 28.004479999799514,
+      "frame_kb": 599.556640625,
+      "served": 7197,
+      "waiting": 101
+    }
+  ],
+  "solver": [
+    {
+      "requests": 100,
+      "pairs": 995,
+      "dense": 0.3763999993680045,
+      "sparse": 0.7255000018631108
+    },
+    {
+      "requests": 500,
+      "pairs": 4994,
+      "dense": 11.823399996501394,
+      "sparse": 2.7592999977059662
+    },
+    {
+      "requests": 1000,
+      "pairs": 9991,
+      "dense": 42.76609999942593,
+      "sparse": 12.34439999825554
+    },
+    {
+      "requests": 2000,
+      "pairs": 19995,
+      "dense": 162.5796999942395,
+      "sparse": 42.01420000026701
+    },
+    {
+      "requests": 5000,
+      "pairs": 49991,
+      "dense": null,
+      "sparse": 224.9900000024354
+    }
+  ],
+  "previous": {
+    "1200": [
+      14.7,
+      2.11
+    ],
+    "5000": [
+      78.4,
+      13.8
+    ],
+    "10000": [
+      139.1,
+      17.2
+    ]
+  }
+}

@@ -11,13 +11,15 @@ Endpoints
   GET  /app                 control room (frontend/index.html)
   GET  /media/...           tour video, captions and poster (docs/)
   GET  /api/health          engine status and configuration
-  GET  /api/stream?view=    Server-Sent Events: `frame` at 10 Hz, `summary` at 1 Hz
-  POST /api/command         {"cmd": "speed"|"pause"|"demand"|"spike"|"outage"|"accident", "value": ...}
-  POST /api/reset           {"fleet": 1200, "seed": 7}
+  GET  /api/stream?view=    Server-Sent Events: `frame` at 10 Hz, `summary` at 1 Hz (&enc=b64: packed car arrays)
+  POST /api/command         {"cmd": "speed"|"pause"|"demand"|"spike"|"outage"|"accident"|"logoff", "value": ...}
+                            incidents take an optional "x", "z" (world units); logoff: "value" drivers, "minutes"
+  POST /api/reset           {"fleet": 1200, "seed": 7, "city": .., "pool": true, "ev": "smart"|"naive"|null}
   GET  /api/explain/{id}    why ORCA assigned request {id} the way it did, with its timeline
   GET  /api/analytics       wait statistics per dispatcher from the trip ledger (?since=minutes)
   GET  /api/trips           most recent pickups (?limit=50)
   GET  /api/models          training metrics of the models in use and the latest benchmark
+  GET  /api/events          the domain event stream (?after=<seq>&limit=); also Redis Streams with ORCA_REDIS_URL
   GET  /metrics             Prometheus text format
 """
 from __future__ import annotations
@@ -25,25 +27,33 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from starlette.routing import Route
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from .engine import Engine
+from .security import HardeningMiddleware
 
-REAL_DATA = Path(__file__).resolve().parents[1] / "data" / "nyc_tlc_2015-01_manhattan.parquet"
+log = logging.getLogger("orca.server")
+
 FRONTEND = Path(os.environ.get("ORCA_FRONTEND", Path(__file__).resolve().parents[2] / "frontend" / "index.html"))
 ROOT = Path(__file__).resolve().parents[2]
 HOME = Path(os.environ.get("ORCA_HOME_DIST", ROOT / "web" / "dist"))
 MEDIA = ROOT / "docs"
-MEDIA_FILES = {"orca-tour.mp4", "orca-tour.vtt", "orca-tour-poster.jpg", "orca-tour-score.mp3", "benchmark.png"}
+MEDIA_FILES = {"orca-tour.mp4", "orca-tour.webm", "orca-tour.vtt", "orca-tour-poster.jpg", "orca-tour-score.mp3", "benchmark.png"}
 FRAME_HZ, SUMMARY_EVERY = 10, 10   # summary every 10th frame
+MAX_FLEET = 10000                  # cars per dispatcher a reset may ask for
 
 
 def dumps(obj) -> str:
@@ -58,38 +68,102 @@ class Hub:
         self.engine = self._new_engine(opts)
         self.tick = 0
         self.cache: dict = {}
+        self.last: dict = {}                  # the last good frame / summary of each kind
+        self.last_ok = time.perf_counter()    # when the clock last stepped (or held still on purpose)
+        self.explicit_data = bool(opts.get("data"))
         self.lock = asyncio.Lock()
+        self.switch = asyncio.Lock()          # one rebuild at a time
+        self.building = False                 # the clock holds still while a new engine is built
         self.task = None
 
     def _new_engine(self, opts):
-        e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=opts["demand"], data=opts.get("data"),
-                   zones=opts.get("zones"), db=opts.get("db") or ":memory:")
+        from . import city as G
+        from . import cityspec
+        name = opts.get("city") or G.available()[0]
+        data, demand = opts.get("data") or cityspec.trips_file(name), opts["demand"]
+        if demand == "tlc" and (data is None or not Path(data).exists()):
+            demand, data = "synthetic", None                 # this city's real trips are not prepared yet
+        e = Engine(seed=opts["seed"], fleet=opts["fleet"], demand=demand, data=str(data) if data else None,
+                   zones=opts.get("zones"), db=opts.get("db") or ":memory:", city=name, pool=bool(opts.get("pool")),
+                   ev=opts.get("ev"), events=True)
+        if demand != opts["demand"]:
+            e.world.log("sys", f"No prepared real trips for {e.city.label}: running synthetic demand "
+                               f"(python scripts/prepare_trips.py --city {name})")
         e.warm_up(opts.get("warm", 540))
         e.speed = opts.get("speed", 20.0)
         return e
 
     async def run(self):
+        # The clock must never stop: a failed step is logged and the next one runs. Before this, one exception
+        # ended the task silently and every client saw a city frozen at the moment it was built.
         last = time.perf_counter()
+        failures = 0
         while True:
             now = time.perf_counter()
-            async with self.lock:
-                self.engine.advance(now - last)
-                self.tick += 1
-                self.cache.clear()
+            if self.building:
+                # One city is active per process (city.use): while another city is being built, stepping the
+                # old engine would read the new city's zones and streets.
+                last = self.last_ok = now
+                await asyncio.sleep(1 / 30)
+                continue
+            try:
+                async with self.lock:
+                    self.engine.advance(now - last)
+                    self.tick += 1
+                    self.cache.clear()
+                failures = 0
+                self.last_ok = now
+            except Exception:
+                failures += 1
+                if failures <= 3 or failures % 300 == 0:
+                    log.exception("engine step failed (%d in a row)", failures)
             last = now
             await asyncio.sleep(1 / 30)
 
-    def frame(self, view):
-        key = ("f", view, self.tick)
+    def _cached(self, key, make):
+        # While a new city is built the old engine may not be read (the active city is process-wide), and a
+        # failed read must not end a client's stream: both fall back to the last good copy.
         if key not in self.cache:
-            self.cache[key] = dumps(self.engine.frame(view))
+            last = self.last.get(key[:-1])
+            if self.building and last is not None:
+                return last
+            try:
+                self.cache[key] = dumps(make())
+            except Exception:
+                if last is None:
+                    raise
+                log.exception("building %s failed; resending the previous one", key[0])
+                return last
+            self.last[key[:-1]] = self.cache[key]
         return self.cache[key]
 
+    def frame(self, view, packed=False):
+        return self._cached(("f", view, packed, self.tick), lambda: self.engine.frame(view, packed))
+
     def summary(self):
-        key = ("s", self.tick)
-        if key not in self.cache:
-            self.cache[key] = dumps(self.engine.summary())
-        return self.cache[key]
+        return self._cached(("s", self.tick), self.engine.summary)
+
+
+class CachedStatic(StaticFiles):
+    """Static files with a Cache-Control header (ETag and Last-Modified revalidation come from StaticFiles)."""
+
+    def __init__(self, *a, cache: str, **kw):
+        super().__init__(*a, **kw)
+        self.cache = cache
+
+    def file_response(self, *a, **kw):
+        resp = super().file_response(*a, **kw)
+        resp.headers["Cache-Control"] = self.cache
+        return resp
+
+
+# HTML must be revalidated on every visit: a cached page points at hashed assets a new build has removed.
+NO_CACHE = {"Cache-Control": "no-cache"}
+STALL_AFTER = 10.0                      # seconds without a clock step before /api/health fails
+
+
+def LOADING():
+    return JSONResponse({"ok": False, "error": "A new city is loading, try again in a moment."}, status_code=503)
 
 
 def build_app(opts: dict) -> Starlette:
@@ -100,15 +174,16 @@ def build_app(opts: dict) -> Starlette:
         hub.task = asyncio.create_task(hub.run())
         yield
         hub.task.cancel()
+        hub.engine.bus.close(timeout=2)
 
     async def home(request):
         if (HOME / "index.html").exists():
-            return FileResponse(HOME / "index.html")
+            return FileResponse(HOME / "index.html", headers=NO_CACHE)
         return RedirectResponse("/app")            # home page not built: go straight to the control room
 
     async def index(request):
         if FRONTEND.exists():
-            return FileResponse(FRONTEND)
+            return FileResponse(FRONTEND, headers=NO_CACHE)
         return PlainTextResponse("frontend/index.html not found", status_code=404)
 
     async def media(request):
@@ -119,11 +194,19 @@ def build_app(opts: dict) -> Starlette:
 
     async def health(request):
         e = hub.engine
-        return JSONResponse(dict(ok=True, mode="live", t=e.world.t, fleet=len(e.smart.agents), demand=e.demand_label(),
+        # A clock that has not stepped for STALL_AFTER seconds is a failure: 503 makes Docker, load balancers and
+        # uptime monitors notice, where a frozen city used to look healthy forever.
+        stall = time.perf_counter() - hub.last_ok
+        if stall > STALL_AFTER:
+            return JSONResponse(dict(ok=False, mode="live", error="the simulation clock has stopped",
+                                     stalled_seconds=round(stall, 1), city=e.city.name), status_code=503)
+        return JSONResponse(dict(ok=True, mode="live", loading=hub.building, t=e.world.t, fleet=e.smart.n, demand=e.demand_label(), pool=e.smart.pool,
+                                 city=e.city.name, city_label=e.city.label,
                                  eta_model=e.smart.eta.kind, forecaster=e.smart.forecaster.kind, speed=e.speed))
 
     async def stream(request: Request):
         view = "base" if request.query_params.get("view") == "base" else "smart"
+        packed = request.query_params.get("enc") == "b64"
 
         async def gen():
             n = 0
@@ -133,7 +216,7 @@ def build_app(opts: dict) -> Starlette:
                     break
                 if n % SUMMARY_EVERY == 0:
                     yield f"event: summary\ndata: {hub.summary()}\n\n"
-                yield f"event: frame\ndata: {hub.frame(view)}\n\n"
+                yield f"event: frame\ndata: {hub.frame(view, packed)}\n\n"
                 n += 1
                 await asyncio.sleep(1 / FRAME_HZ)
 
@@ -141,6 +224,8 @@ def build_app(opts: dict) -> Starlette:
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     async def command(request: Request):
+        if hub.building:
+            return LOADING()
         try:
             body = await request.json()
         except Exception:
@@ -155,15 +240,54 @@ def build_app(opts: dict) -> Starlette:
         except Exception:
             body = {}
         opts = dict(hub.opts)
-        opts["fleet"] = int(max(200, min(4000, body.get("fleet", opts["fleet"]))))
+        try:
+            opts["fleet"] = int(max(200, min(MAX_FLEET, float(body.get("fleet", opts["fleet"])))))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "fleet must be a number"}, status_code=400)
+        if "pool" in body:
+            opts["pool"] = bool(body["pool"])
+        if "ev" in body:
+            if body["ev"] not in (None, "smart", "naive"):
+                return JSONResponse({"ok": False, "error": "ev must be null, \"smart\" or \"naive\""}, status_code=400)
+            opts["ev"] = body["ev"]
         opts["seed"] = int(body.get("seed", int(time.time()) % 100000))
-        new = await asyncio.to_thread(hub._new_engine, opts)
-        async with hub.lock:
-            new.speed = hub.engine.speed
-            hub.engine, hub.opts = new, opts
-        return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"]})
+        if "city" in body:
+            from . import city as G
+            if body["city"] not in G.available():
+                return JSONResponse({"ok": False, "error": f"Unknown city '{body['city']}'"}, status_code=400)
+            if os.environ.get("ORCA_LOCK_CITY") == "1" and body["city"] != hub.engine.city.name:
+                # behind orca.router every city has its own process: open that city instead of switching this one
+                return JSONResponse({"ok": False, "error": f"This process runs {hub.engine.city.name}; "
+                                                           f"open /app?city={body['city']}"}, status_code=409)
+            opts["city"] = body["city"]
+            if not hub.explicit_data:
+                opts["data"] = None
+        async with hub.switch:
+            async with hub.lock:                      # wait for the step in flight, then hold the clock
+                hub.building = True
+            try:
+                new = await asyncio.to_thread(hub._new_engine, opts)
+            except Exception:
+                log.exception("rebuilding the engine failed")
+                from . import city as G
+                G.use(hub.engine.city.name)           # the running city stays active
+                hub.building = False
+                return JSONResponse({"ok": False, "error": "The new city could not be built; see the server log"},
+                                    status_code=500)
+            async with hub.lock:
+                new.speed = hub.engine.speed
+                old, hub.engine, hub.opts = hub.engine, new, opts
+                hub.tick += 1
+                hub.cache.clear()
+                hub.last.clear()
+                hub.building = False
+        old.bus.close(timeout=2)
+        return JSONResponse({"ok": True, "fleet": opts["fleet"], "seed": opts["seed"], "city": new.city.name,
+                             "pool": bool(opts.get("pool")), "ev": opts.get("ev")})
 
     async def explain(request: Request):
+        if hub.building:
+            return LOADING()
         try:
             rid = int(request.path_params["rid"])
         except ValueError:
@@ -172,6 +296,8 @@ def build_app(opts: dict) -> Starlette:
             return JSONResponse(hub.engine.explain(rid))
 
     async def analytics(request: Request):
+        if hub.building:
+            return LOADING()
         since = request.query_params.get("since")
         try:
             since = float(since) if since else None
@@ -181,6 +307,8 @@ def build_app(opts: dict) -> Starlette:
             return JSONResponse(hub.engine.ledger.analytics(since, hub.engine.world.t))
 
     async def trips(request: Request):
+        if hub.building:
+            return LOADING()
         try:
             limit = max(1, min(500, int(request.query_params.get("limit", 50))))
         except ValueError:
@@ -188,31 +316,52 @@ def build_app(opts: dict) -> Starlette:
         async with hub.lock:
             return JSONResponse(hub.engine.ledger.recent(limit))
 
+    async def events(request: Request):
+        try:
+            after = int(request.query_params.get("after", 0))
+            limit = max(1, min(2000, int(request.query_params.get("limit", 500))))
+        except ValueError:
+            return JSONResponse({"error": "after and limit must be whole numbers"}, status_code=400)
+        bus = hub.engine.bus
+        return JSONResponse(dict(sink=bus.sink, last=bus.seq, events=bus.since(after, limit)))
+
     async def models(request):
         return JSONResponse(hub.engine.models())
 
     async def metrics(request):
-        return PlainTextResponse(hub.engine.prometheus(), media_type="text/plain; version=0.0.4")
+        lines = [hub.engine.prometheus().rstrip("\n"),
+                 "# HELP orca_clock_stall_seconds Seconds since the simulation clock last stepped (alert above 10).",
+                 "# TYPE orca_clock_stall_seconds gauge",
+                 f"orca_clock_stall_seconds {time.perf_counter() - hub.last_ok:.3f}",
+                 "# HELP orca_http_requests_total HTTP requests by method, route and status class.",
+                 "# TYPE orca_http_requests_total counter"]
+        for (m, route, cls), n in sorted(request.app.state.http_metrics.items()):
+            lines.append(f'orca_http_requests_total{{method="{m}",route="{route}",status="{cls}xx"}} {n}')
+        return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     routes = [
         Route("/", home), Route("/app", index), Route("/app/", index), Route("/media/{name}", media),
         Route("/api/health", health), Route("/api/stream", stream),
         Route("/api/command", command, methods=["POST"]), Route("/api/reset", reset, methods=["POST"]),
         Route("/api/explain/{rid}", explain), Route("/api/analytics", analytics), Route("/api/trips", trips),
-        Route("/api/models", models), Route("/metrics", metrics),
+        Route("/api/models", models), Route("/api/events", events), Route("/metrics", metrics),
     ]
-    from starlette.routing import Mount
-    from starlette.staticfiles import StaticFiles
-    if (HOME / "assets").is_dir():
-        routes.append(Mount("/assets", StaticFiles(directory=HOME / "assets")))
-    if (HOME / "favicon.svg").exists():
-        routes.append(Route("/favicon.svg", lambda r: FileResponse(HOME / "favicon.svg")))
+    if (HOME / "assets").is_dir():                         # content-hashed file names: cache for a year
+        routes.append(Mount("/assets", CachedStatic(directory=HOME / "assets", cache="public, max-age=31536000, immutable")))
+    city_data = FRONTEND.parent / "data"
+    if city_data.is_dir():                                 # each city's streets, buildings, trips and config for /app
+        routes.append(Mount("/app/data", CachedStatic(directory=city_data, cache="public, max-age=600, must-revalidate")))
+    icon = HOME / "favicon.svg"
+    routes.append(Route("/favicon.svg", lambda r: FileResponse(icon) if icon.exists() else Response(status_code=204)))
+    routes.append(Route("/favicon.ico", lambda r: RedirectResponse("/favicon.svg", status_code=301)))
     if os.environ.get("ORCA_DEV_STATIC"):          # development only: serve extra static files
-        from starlette.routing import Mount
-        from starlette.staticfiles import StaticFiles
         routes.append(Mount("/stub", StaticFiles(directory=os.environ["ORCA_DEV_STATIC"])))
-    app = Starlette(routes=routes, lifespan=lifespan)
+    http_metrics: dict = defaultdict(int)
+    # gzip shrinks the city data about fourfold; Starlette leaves the event stream uncompressed
+    app = Starlette(routes=routes, lifespan=lifespan, middleware=[Middleware(HardeningMiddleware, metrics=http_metrics),
+                                                                  Middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)])
     app.state.hub = hub
+    app.state.http_metrics = http_metrics
     return app
 
 
@@ -224,19 +373,31 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--speed", type=float, default=20.0)
     ap.add_argument("--demand", choices=["synthetic", "tlc"], default=os.environ.get("ORCA_DEMAND", "tlc"))
-    ap.add_argument("--data", default=os.environ.get("ORCA_DATA") or str(REAL_DATA))
+    ap.add_argument("--data", default=os.environ.get("ORCA_DATA"), help="trip file to replay (default: the city's own)")
     ap.add_argument("--zones", default=None)
+    from . import city as G
+    ap.add_argument("--city", choices=G.available(), default=os.environ.get("ORCA_CITY"),
+                    help="city to run: a built real city (Manhattan first) or the synthetic grid")
     ap.add_argument("--db", default=os.environ.get("ORCA_DB"), help="SQLite file for the trip ledger (default: in memory)")
     a = ap.parse_args()
-    if a.demand == "tlc" and not Path(a.data).exists():
-        ap.error(f"real trip data not found at {a.data}. Download and prepare it once with `make data` "
-                 "(python scripts/download_tlc.py && python scripts/prepare_tlc.py), "
-                 "or run with --demand synthetic.")
+    if a.demand == "tlc" and a.data and not Path(a.data).exists():
+        ap.error(f"trip file not found: {a.data}")
     import uvicorn
     print("Warming up the city…")
     app = build_app(vars(a))
     print(f"ORCA home page:    http://{a.host}:{a.port}")
     print(f"ORCA control room: http://{a.host}:{a.port}/app")
+    if os.environ.get("ORCA_EXIT_WITH_PARENT") == "1":
+        # Started by orca.router with a pipe on stdin: the pipe closes when the router dies, however it dies
+        # (even a hard kill on Windows, which skips its shutdown), and this process must not outlive it.
+        import sys
+        import threading
+
+        def watch_parent():
+            sys.stdin.read()
+            os._exit(0)
+
+        threading.Thread(target=watch_parent, daemon=True, name="parent-watch").start()
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
 
 

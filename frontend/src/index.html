@@ -27,10 +27,10 @@ button,input{font:inherit;color:inherit}
 #gl{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
 @media (hover:hover) and (pointer:fine){ #gl{cursor:none} }
 #tags{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-.plate{position:absolute;transform:translate(-50%,calc(-100% - 10px));padding:6px 9px;font-size:12.5px;font-weight:650;line-height:1;white-space:nowrap;
+.plate{--lift:0px;position:absolute;transform:translate(-50%,calc(-100% - 10px - var(--lift)));padding:6px 9px;font-size:12.5px;font-weight:650;line-height:1;white-space:nowrap;
   background:#000;color:#fff;border-radius:3px;font-feature-settings:"tnum" 1;opacity:0;transition:opacity .3s}
 .plate.on{opacity:1}
-.plate::after{content:"";position:absolute;left:50%;top:100%;width:1.5px;height:10px;background:inherit;transform:translateX(-50%)}
+.plate::after{content:"";position:absolute;left:50%;top:100%;width:1.5px;height:calc(10px + var(--lift));background:inherit;transform:translateX(-50%)}
 .plate.pick{background:var(--taxi);color:#000}
 .plate.near{background:#fff;color:var(--ink-2);box-shadow:inset 0 0 0 1.5px var(--slate)}
 
@@ -69,6 +69,7 @@ a.wordmark:not([href]){pointer-events:none}
 .key{position:absolute;left:24px;top:70px;display:flex;flex-wrap:wrap;gap:5px 14px;max-width:540px;font-size:12.5px;color:var(--ink-2);pointer-events:none;
   padding:8px 10px;background:rgba(251,251,250,.78);border-radius:6px}
 .key span{display:inline-flex;align-items:center;gap:6px}
+.key span[hidden]{display:none}
 .key i{width:11px;height:7px;border-radius:2px;display:inline-block}
 .key i.ring{width:10px;height:10px;border-radius:50%;background:none!important;box-shadow:inset 0 0 0 2px currentColor}
 
@@ -94,6 +95,8 @@ a.wordmark:not([href]){pointer-events:none}
 .incident:hover{box-shadow:0 0 0 1.5px #000,0 8px 22px rgba(30,40,55,.12)}
 .incident:active{transform:translateY(1px)}
 .incident i{width:10px;height:10px;border-radius:2px}
+.incident[aria-pressed="true"]{box-shadow:0 0 0 2px #000}
+canvas.placing{cursor:crosshair}
 .row{display:flex;gap:8px;align-items:center}
 .slider{display:flex;align-items:center;gap:10px;background:#fff;border-radius:6px;padding:9px 12px}
 .slider output{font-weight:700;font-size:13.5px;min-width:44px;text-align:right}
@@ -216,6 +219,12 @@ table.cands{width:100%;border-collapse:collapse;font-size:13px}
 .zgrids h4{margin:0 0 8px;font-size:13.5px;font-weight:650}
 .zmap{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
 .zmap span{aspect-ratio:1;border-radius:2px;background:var(--line);transition:background .6s}
+.zsvg{display:block;width:100%;max-height:360px}
+body.night .wordmark,body.night .clock,body.night .clock b{color:#fff;text-shadow:0 1px 8px rgba(0,0,0,.6)}
+body.night .key{background:rgba(20,24,32,.72);color:#E6E9EE}body.night .key span{color:#E6E9EE}
+.citysel{font:inherit;font-size:13px;font-weight:650;padding:7px 28px 7px 11px;border-radius:999px;border:0;background:#fff;box-shadow:0 0 0 1px var(--line-strong);cursor:pointer;appearance:none;background-image:linear-gradient(45deg,transparent 50%,#000 50%),linear-gradient(135deg,#000 50%,transparent 50%);background-position:calc(100% - 15px) 52%,calc(100% - 10px) 52%;background-size:5px 5px;background-repeat:no-repeat}
+.zsvg path{fill:var(--line);stroke:#fff;stroke-width:.35;transition:fill .6s}
+.zsvg path:hover{stroke:#000;stroke-width:.7}
 .zscale{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:12px;color:var(--ink-3)}
 .zscale i{flex:1;height:8px;border-radius:2px;background:linear-gradient(90deg,#F4F1E6,#FFD84D,#FF9A2E,#E5352B)}
 .hist{margin-top:18px}
@@ -291,6 +300,10 @@ body.capture .spot{outline-offset:6px}
     <span><i style="background:var(--taxi)"></i>Going to pickup</span>
     <span><i style="background:var(--blue)"></i>Rider on board</span>
     <span><i style="background:var(--red)"></i>No GPS</span>
+    <span class="k-pool" hidden><i style="background:#0E9FA0"></i>Sharing a ride</span>
+    <span class="k-ev" hidden><i style="background:#12A150"></i>Going to charge</span>
+    <span class="k-ev" hidden><i style="background:#3DDC84"></i>Charging</span>
+    <span class="k-ev" hidden><i class="ring" style="border-color:#12A150"></i>Charging station</span>
     <span style="color:#000"><i class="ring"></i>Waiting rider</span>
     <span style="color:var(--red)"><i class="ring"></i>Urgent</span>
   </div>
@@ -327,7 +340,7 @@ body.capture .spot{outline-offset:6px}
         <button type="button" data-view="smart" class="y" aria-pressed="true">ORCA</button>
         <button type="button" data-view="base" aria-pressed="false">Nearest car</button>
       </div></div>
-    <div class="ctl"><span class="lab">Cause an incident</span>
+    <div class="ctl"><span class="lab">Cause an incident, then click where</span>
       <div class="row">
         <button class="incident shadow" type="button" data-cmd="spike"><i style="background:var(--violet)"></i>Demand spike</button>
         <button class="incident shadow" type="button" data-cmd="outage"><i style="background:var(--red)"></i>GPS outage</button>
@@ -336,7 +349,13 @@ body.capture .spot{outline-offset:6px}
     <div class="ctl"><label for="demand">Demand</label>
       <div class="slider shadow"><input type="range" id="demand" min="0.6" max="1.6" step="0.05" value="1"><output id="demandV" class="num">1.00×</output></div></div>
     <div class="ctl"><label for="fleet">Cars per dispatcher</label>
-      <div class="slider shadow"><input type="range" id="fleet" min="400" max="3000" step="100" value="1200"><output id="fleetV" class="num">1,200</output></div></div>
+      <div class="slider shadow"><input type="range" id="fleet" min="400" max="10000" step="200" value="1200"><output id="fleetV" class="num">1,200</output></div></div>
+    <div class="ctl" id="whatif" hidden><span class="lab">What if</span>
+      <div class="row">
+        <button class="incident shadow" type="button" id="logoff"><i style="background:#737B86"></i>200 drivers log off</button>
+        <button class="incident shadow" type="button" id="poolT" aria-pressed="false"><i style="background:#0E9FA0"></i>Shared rides</button>
+        <button class="incident shadow" type="button" id="evT" aria-pressed="false"><i style="background:#12A150"></i>Electric fleet</button>
+      </div></div>
   </div>
 
   <div id="tour" aria-live="polite">

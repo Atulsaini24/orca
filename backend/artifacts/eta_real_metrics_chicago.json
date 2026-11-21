@@ -1,0 +1,113 @@
+{
+  "task": "eta_real",
+  "city": "chicago",
+  "source": "City of Chicago: Transportation Network Providers (Uber, Lyft, Via) trips, September 2026",
+  "features": [
+    "pu_zone",
+    "do_zone",
+    "dist_line_m",
+    "dist_zones_m",
+    "same_zone",
+    "hour",
+    "minute_of_day_sin",
+    "minute_of_day_cos",
+    "weekday"
+  ],
+  "target": "log trip duration",
+  "n_train": 984152,
+  "n_test": 237623,
+  "train_days": [
+    "2026-09-01",
+    "2026-09-24"
+  ],
+  "test_days": [
+    "2026-09-25",
+    "2026-09-30"
+  ],
+  "results": [
+    {
+      "model": "distance / citywide median speed",
+      "mae": 296.4738938277098,
+      "median_abs_err": 227.43359821729018,
+      "p90_abs_err": 636.2871346990773,
+      "mape": 0.4672855889092158
+    },
+    {
+      "model": "distance / real median speed for the hour",
+      "mae": 280.992079836208,
+      "median_abs_err": 215.9851614892949,
+      "p90_abs_err": 599.6036331647257,
+      "mape": 0.4418333575545439
+    },
+    {
+      "model": "historical median for zone pair and hour",
+      "mae": 189.04867373949492,
+      "median_abs_err": 141.5,
+      "p90_abs_err": 394.0,
+      "mape": 0.3127794616013588
+    },
+    {
+      "model": "gradient boosting (ORCA)",
+      "mae": 165.9416360281635,
+      "median_abs_err": 119.67266597461435,
+      "p90_abs_err": 347.8590437912627,
+      "mape": 0.26553637692499665
+    }
+  ],
+  "mae_by_hour": {
+    "orca": [
+      123.2,
+      120.0,
+      120.7,
+      139.8,
+      135.0,
+      122.8,
+      129.2,
+      157.4,
+      185.3,
+      177.2,
+      167.4,
+      161.5,
+      162.3,
+      151.4,
+      161.6,
+      179.4,
+      213.3,
+      236.8,
+      205.5,
+      160.1,
+      135.0,
+      128.5,
+      134.5,
+      131.3
+    ],
+    "pair_hour": [
+      137.7,
+      133.4,
+      139.7,
+      151.0,
+      146.7,
+      136.7,
+      146.5,
+      184.8,
+      216.5,
+      200.4,
+      186.2,
+      180.6,
+      182.9,
+      171.2,
+      182.5,
+      205.4,
+      236.0,
+      271.3,
+      231.3,
+      183.7,
+      155.0,
+      150.6,
+      156.9,
+      150.5
+    ]
+  },
+  "note": "Positions inside a zone are reconstructed (the TLC publishes zone IDs), so features use zone-level geometry.",
+  "trained_at": "2026-11-16 16:35"
+}

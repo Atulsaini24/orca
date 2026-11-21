@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
 
 from . import config as C
 from .city import zone_of
+from .geo import FT, Frame, to_state_plane
 
 MANHATTAN_ANGLE = math.radians(29.0)
 TIME_COLS = ["tpep_pickup_datetime", "pickup_datetime", "lpep_pickup_datetime", "Trip_Pickup_DateTime"]
@@ -59,17 +61,15 @@ def load_trips(path: str | Path, zones: str | Path | None = None, nrows: int | N
     elif all(c in df.columns for c in LONLAT):
         lon, lat, dlon, dlat = (df[c].astype(float) for c in LONLAT)
         box = lat.between(40.70, 40.88) & lon.between(-74.02, -73.91) & dlat.between(40.70, 40.88) & dlon.between(-74.02, -73.91)
-        lat0, lon0 = 40.78, -73.97
-        kx = 111_320 * math.cos(math.radians(lat0))
-        out["ex"], out["ny"] = (lon - lon0) * kx, (lat - lat0) * 110_540
-        out["dex"], out["dny"] = (dlon - lon0) * kx, (dlat - lat0) * 110_540
+        out["ex"], out["ny"] = to_state_plane(lon.values, lat.values)            # EPSG:2263 metres
+        out["dex"], out["dny"] = to_state_plane(dlon.values, dlat.values)
         out = out[box.values]
     elif "PULocationID" in df.columns and zones is not None:
         zt = pd.read_csv(zones).set_index("LocationID")
         pu, do = df["PULocationID"].map(zt["x"]), df["PULocationID"].map(zt["y"])
-        out["ex"], out["ny"] = pu.values, do.values
-        out["dex"] = df["DOLocationID"].map(zt["x"]).values
-        out["dny"] = df["DOLocationID"].map(zt["y"]).values
+        out["ex"], out["ny"] = pu.values * FT, do.values * FT                    # shapefile feet -> metres
+        out["dex"] = df["DOLocationID"].map(zt["x"]).values * FT
+        out["dny"] = df["DOLocationID"].map(zt["y"]).values * FT
         if "borough" in zt.columns:
             man = df["PULocationID"].map(zt["borough"]).eq("Manhattan") & df["DOLocationID"].map(zt["borough"]).eq("Manhattan")
             out = out[man.values]
@@ -99,13 +99,28 @@ class Projector:
         return x, z
 
 
+class StreetProjector:
+    """State-plane metres -> the street city's world frame: the exact transform its streets were built with."""
+
+    def __init__(self, city):
+        f = city.frame
+        self.frame = Frame(f["e0"], f["n0"], f["angle"], f["unit_m"])
+        self.off = (f["x_off"], f["z_off"])
+        self.WX, self.WZ = city.WX, city.WZ
+
+    def __call__(self, e, n):
+        x, z = self.frame.to_world(e, n)
+        return np.clip(x - self.off[0], 0, self.WX), np.clip(z - self.off[1], 0, self.WZ)
+
+
 class TLCReplay:
     name = "nyc-tlc"
 
-    _cache: dict = {}
+    _cache: ClassVar[dict] = {}
 
     def __init__(self, path, zones=None, nrows=None):
-        key = (str(Path(path).resolve()), str(zones), nrows)
+        from . import city as G
+        key = (str(Path(path).resolve()), str(zones), nrows, G.current().name)
         if key in TLCReplay._cache:                 # many engines (benchmark, training) share one parsed file
             self.__dict__.update(TLCReplay._cache[key])
             self.world, self.keep = None, 1.0
@@ -117,13 +132,19 @@ class TLCReplay:
         df = load_trips(path, zones, nrows)
         if len(df) < 100:
             raise ValueError(f"Only {len(df)} usable trips found in {path}")
-        proj = Projector(df)
+        from . import city as G
+        c = G.current()
+        proj = StreetProjector(c) if hasattr(c, "frame") else Projector(df)
         px, pz = proj(df.ex.values, df.ny.values)
         dx, dz = proj(df.dex.values, df.dny.values)
         order = np.argsort(df.sec.values, kind="stable")
         self.sec = df.sec.values[order].astype(float)
         self.px, self.pz, self.dx, self.dz = px[order], pz[order], dx[order], dz[order]
         self.days = max(1, df.date.nunique())
+        dur = df.dur.values[order]
+        self.peak_hour = int(np.bincount((self.sec // 3600).astype(int), minlength=24).argmax())
+        in_peak = (self.sec // 3600 == self.peak_hour) & np.isfinite(dur) & (dur > 0)
+        self.peak_trip_s = float(np.mean(np.clip(dur[in_peak], 60, 3600))) if in_peak.any() else 720.0
         self.n = len(df)
         self.path = str(path)
         self.label = f"NYC TLC file {Path(path).name}"
@@ -134,14 +155,29 @@ class TLCReplay:
     def attach(self, world):
         self.world = world
         # Size the replay so the busiest hour of the data is about 1.25x what the fleet is built for.
-        self.keep = self.keep_for(world.fleet)
+        self.keep = self.keep_for(world.demand_fleet)
         scale = f"sampled at {self.keep * 100:.1f}%" if self.keep < 1 else f"scaled up {self.keep:.1f}x"
         world.log("data", f"Replaying {self.n:,} trips from {self.label} over {self.days} day(s), {scale} "
-                          f"so the busiest hour is 1.25x fleet capacity")
+                          f"so the {self.peak_hour}:00 peak brings {self.peak_rate(world.demand_fleet) * 3600:,.0f} requests an hour "
+                          f"(real mean trip then: {self.peak_trip_s / 60:.1f} min)")
 
     def keep_for(self, fleet: int) -> float:
         hourly = np.bincount((self.sec // 3600).astype(int), minlength=24) / (self.days * 3600)
-        return 1.25 * fleet * C.DEMAND_PER_UNIT / max(hourly.max(), 1e-9)
+        return self.peak_rate(fleet) / max(hourly.max(), 1e-9)
+
+    def peak_rate(self, fleet: int) -> float:
+        """Requests per second in the busiest hour.
+
+        Grid city: 1.25x the nominal capacity of the synthetic fleet (its cars are fast and trips short).
+        Street city: sized from reality. A car is busy for the real mean trip duration in the peak hour
+        plus about five minutes to reach the rider and turn around, and the peak is set to keep 80% of
+        the fleet busy: loaded enough that dispatch decisions matter, not so overloaded that no
+        dispatcher can keep up.
+        """
+        from . import city as G
+        if hasattr(G.current(), "frame"):
+            return 0.8 * fleet / (self.peak_trip_s + 300)
+        return 1.25 * fleet * C.DEMAND_PER_UNIT
 
     def base_rate(self) -> float:
         w = self.world
@@ -174,6 +210,8 @@ class TLCReplay:
 
 def zone_minute_counts(frame: pd.DataFrame) -> pd.DataFrame:
     """Pickups per (date, minute-of-day, zone), for training the demand forecaster on real data."""
-    z = [zone_of(x, zz) for x, zz in zip(frame.x.values, frame.z.values)]
+    from . import city as G
+    c = G.current()
+    z = c.zone_of_many(frame.x.values, frame.z.values) if hasattr(c, "zone_of_many") else         [zone_of(x, zz) for x, zz in zip(frame.x.values, frame.z.values)]
     g = pd.DataFrame({"date": frame.date.values, "minute": (frame.sec.values // 60).astype(int), "zone": z})
     return g.groupby(["date", "minute", "zone"]).size().rename("count").reset_index()

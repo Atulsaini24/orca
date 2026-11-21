@@ -1,0 +1,28 @@
+groups:
+  - name: orca
+    rules:
+      - alert: OrcaDown
+        expr: up{job="orca"} == 0
+        for: 1m
+        labels: { severity: page }
+        annotations: { summary: "The ORCA server is not answering /metrics" }
+      - alert: RiderWaitHigh
+        expr: orca_wait_seconds{policy="orca",stat="p95"} > 600
+        for: 5m
+        labels: { severity: warn }
+        annotations: { summary: "95% of riders wait over 10 minutes for a car" }
+      - alert: MatchingSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(orca_match_latency_ms_bucket[5m]))) > 250
+        for: 5m
+        labels: { severity: warn }
+        annotations: { summary: "Deciding a batch of requests takes over 250 ms (p95)" }
+      - alert: EngineBehindRealTime
+        expr: histogram_quantile(0.95, sum by (le) (rate(orca_engine_advance_ms_bucket[5m]))) > 33
+        for: 5m
+        labels: { severity: warn }
+        annotations: { summary: "One engine advance takes longer than the 30 Hz loop allows" }
+      - alert: EventStreamFailing
+        expr: rate(orca_events_total{outcome=~"failed|dropped"}[5m]) > 0
+        for: 2m
+        labels: { severity: warn }
+        annotations: { summary: "Events are not reaching Redis" }

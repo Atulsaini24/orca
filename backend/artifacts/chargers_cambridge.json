@@ -1,0 +1,214 @@
+{
+ "city": "cambridge",
+ "source": "OpenStreetMap amenity=charging_station",
+ "fetched": 23,
+ "stations": [
+  {
+   "node": 1692,
+   "x": 255.592326396554,
+   "z": 127.37142823200374,
+   "plugs": 8,
+   "kw": 72.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 3722,
+   "x": 223.01537401529848,
+   "z": 70.43784087150127,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 3844,
+   "x": 189.90270059227961,
+   "z": 16.47017028919177,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1965,
+   "x": 85.650879547067,
+   "z": 126.43200420270301,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2373,
+   "x": 104.79900925127099,
+   "z": 87.0727588261166,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2807,
+   "x": 194.87231574880593,
+   "z": 111.91686303042002,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2332,
+   "x": 98.4381374015059,
+   "z": 96.11222543542343,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1200,
+   "x": 189.69155827266837,
+   "z": 171.34425097793678,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1973,
+   "x": 91.90217388720988,
+   "z": 117.80339975756115,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2574,
+   "x": 153.60967811348922,
+   "z": 117.30007435608769,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1986,
+   "x": 104.51826891221677,
+   "z": 129.14098858765476,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 1180,
+   "x": 198.88496956795288,
+   "z": 166.90373870572452,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1980,
+   "x": 91.79649568276204,
+   "z": 132.31459396758078,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "CITYOFCAMBRIDGE"
+  },
+  {
+   "node": 3603,
+   "x": 197.6037193823475,
+   "z": 65.23784571455383,
+   "plugs": 16,
+   "kw": 325.0,
+   "dc": true,
+   "name": "Tesla Supercharger"
+  },
+  {
+   "node": 1661,
+   "x": 225.94102125205552,
+   "z": 123.62905561186382,
+   "plugs": 1,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Charging station"
+  },
+  {
+   "node": 2576,
+   "x": 142.81480769808917,
+   "z": 116.253943407702,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1996,
+   "x": 86.35821305678887,
+   "z": 115.63534021641283,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 3859,
+   "x": 210.0575407686122,
+   "z": 43.75751204131835,
+   "plugs": 3,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Electrify America"
+  },
+  {
+   "node": 262,
+   "x": 127.00992079437609,
+   "z": 216.0012894124087,
+   "plugs": 3,
+   "kw": 100.0,
+   "dc": true,
+   "name": "Charging station"
+  },
+  {
+   "node": 1175,
+   "x": 189.96776672978248,
+   "z": 166.20278531685176,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 1215,
+   "x": 190.42427364518988,
+   "z": 155.2266673343261,
+   "plugs": 5,
+   "kw": 11.0,
+   "dc": false,
+   "name": "ChargePoint"
+  },
+  {
+   "node": 2776,
+   "x": 168.96848346657202,
+   "z": 117.2688979287856,
+   "plugs": 10,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Charging station"
+  },
+  {
+   "node": 1849,
+   "x": 89.28822314709478,
+   "z": 137.96652249610923,
+   "plugs": 2,
+   "kw": 11.0,
+   "dc": false,
+   "name": "Cambridge"
+  }
+ ]
+}

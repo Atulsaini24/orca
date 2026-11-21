@@ -9,11 +9,14 @@ from __future__ import annotations
 import json
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
+from . import city as G
 from . import config as C
-from .city import clamp, snap, zone_name, zone_of
+from .city import clamp, zone_name, zone_of
 
 TRAFFIC_PROFILE = Path(__file__).resolve().parents[1] / "artifacts" / "nyc_traffic_profile.json"
 
@@ -26,6 +29,17 @@ def load_traffic() -> list[float] | None:
         return None
 
 
+def hash2(a: int, b: int) -> float:
+    """Deterministic uniform [0, 1) from two ints, so both policies see identical rider and driver decisions."""
+    h = (a * 0x9E3779B1 ^ (b + 0x632BE59B) * 0x85EBCA6B) & 0xFFFFFFFF
+    h ^= h >> 16
+    h = (h * 0x7FEB352D) & 0xFFFFFFFF
+    h ^= h >> 15
+    h = (h * 0x846CA68B) & 0xFFFFFFFF
+    h ^= h >> 16
+    return h / 4294967296
+
+
 @dataclass(slots=True)
 class Request:
     id: int
@@ -36,6 +50,7 @@ class Request:
     dz: float
     p1: bool
     zone: int
+    share: bool = False          # the rider accepts a shared ride (used only by a pooling dispatcher)
 
 
 @dataclass(slots=True)
@@ -87,19 +102,19 @@ class SyntheticDemand:
 
     name = "synthetic"
 
-    def __init__(self, world: "World"):
+    def __init__(self, world: World):
         self.world = world
         r = world.rng
+        city = world.city
         self.hotspots = [
-            Hotspot(C.W * (0.15 + 0.7 * r.random()), C.W * (0.15 + 0.7 * r.random()),
-                    (r.random() - 0.5) * 0.04, (r.random() - 0.5) * 0.04, 14 + r.random() * 16, 0.6 + r.random())
+            Hotspot(*world.inner_point(0.15), (r.random() - 0.5) * 0.04, (r.random() - 0.5) * 0.04, 14 + r.random() * 16, 0.6 + r.random())
             for _ in range(5)
         ]
-        self.hotspots.append(Hotspot(C.W * 0.5, C.W * 0.48, 0, 0, 30, 1.6))
+        self.hotspots.append(Hotspot(*city.snap(city.WX * 0.5, city.WZ * 0.48), 0, 0, 30, 1.6))
 
     def base_rate(self) -> float:
         w = self.world
-        return w.fleet * C.DEMAND_PER_UNIT * w.demand_mult * w.rush_factor()
+        return w.demand_fleet * C.DEMAND_PER_UNIT * w.city.demand_scale * w.demand_mult * w.rush_factor()
 
     def step(self, dt: float) -> list[tuple[float, float, float, float]]:
         out = []
@@ -114,8 +129,9 @@ class SyntheticDemand:
 
 
 class World:
-    def __init__(self, seed: int, fleet: int, demand: str = "synthetic", tlc=None):
+    def __init__(self, seed: int, fleet: int, demand: str = "synthetic", tlc=None, demand_fleet: int | None = None):
         self.seed, self.fleet = seed, fleet
+        self.demand_fleet = demand_fleet or fleet          # demand is sized for this many cars
         self.rng = random.Random(seed)
         self.t = 0.0
         self.demand_mult = 1.0
@@ -124,11 +140,17 @@ class World:
         self.event_seq = 0
         self.events: list[Event] = []
         self.listeners = []
-        self.HEAT = 54
-        self.heat = [0.0] * (self.HEAT * self.HEAT)
+        self.city = G.current()
+        WX, WZ = self.city.WX, self.city.WZ
+        self.heat_cell = max(WX, WZ) / 54                # demand heat map: square cells, as many as fit the city
+        self.HEAT_W, self.HEAT_H = math.ceil(WX / self.heat_cell), math.ceil(WZ / self.heat_cell)
+        self.HEAT = self.HEAT_W                          # kept for the grid city, where W == H
+        self.heat = [0.0] * (self.HEAT_W * self.HEAT_H)
         r = self.rng
-        self.blobs = [Blob(C.W * r.random(), C.W * r.random(), (r.random() - 0.5) * 0.05, (r.random() - 0.5) * 0.05,
+        self.blobs = [Blob(*self.city.random_point(r), (r.random() - 0.5) * 0.05, (r.random() - 0.5) * 0.05,
                            22 + r.random() * 20, 0.35 + r.random() * 0.25) for _ in range(4)]
+        if not self.city.ambient_congestion:
+            self.blobs = []                              # real hourly traffic replaces synthetic congestion
         self.spikes: list[Hotspot] = []
         self.outages: list[Outage] = []
         self.source = tlc if tlc is not None else SyntheticDemand(self)
@@ -136,6 +158,8 @@ class World:
             tlc.attach(self)
         self.spike_boost = 0.0
         self.traffic = load_traffic() if tlc is not None else None
+        # street cities with real data: speed by zone and hour; otherwise one citywide factor per hour
+        self.city_traffic = tlc is not None and hasattr(self.city, "traffic")
 
     # ---- time, traffic ----------------------------------------------------
     def clock(self) -> float:
@@ -150,7 +174,24 @@ class World:
         for b in self.blobs:
             dx, dz = x - b.x, z - b.z
             m *= 1 - b.s * math.exp(-(dx * dx + dz * dz) / (2 * b.r * b.r))
-        return max(0.22, m * self.traffic_factor())
+        local = self.city.traffic(x, z, self.clock()) if self.city_traffic else self.traffic_factor()
+        return max(0.22, m * local)
+
+    def zone_factor_array(self) -> np.ndarray:
+        """Local speed multiplier of every zone right now, for the fleet kernel."""
+        if self.city_traffic:
+            return np.asarray(self.city.zone_factors(self.clock()), dtype=float)
+        return np.full(self.city.N_ZONES, self.traffic_factor())
+
+    def blob_array(self) -> np.ndarray:
+        """Slow-traffic patches and accidents as rows (x, z, radius, strength)."""
+        return np.array([(b.x, b.z, b.r, b.s) for b in self.blobs], dtype=float).reshape(-1, 4)
+
+    def speed_now(self) -> float:
+        """Divide a routing-tree distance by this to get seconds of driving now (for planning shared-ride stops)."""
+        if self.city_traffic:
+            return self.city.plan_speed(self.clock())
+        return self.city.base_speed * self.traffic_factor()
 
     def traffic_factor(self) -> float:
         """Citywide speed multiplier for the hour: measured from real NYC trips when available."""
@@ -179,9 +220,9 @@ class World:
     def move_bounce(self, h, dt):
         h.x += h.vx * dt
         h.z += h.vz * dt
-        if h.x < 10 or h.x > C.W - 10:
+        if h.x < 10 or h.x > self.city.WX - 10:
             h.vx *= -1
-        if h.z < 10 or h.z > C.W - 10:
+        if h.z < 10 or h.z > self.city.WZ - 10:
             h.vz *= -1
 
     def sample_from(self, spots, p_hot):
@@ -194,29 +235,37 @@ class World:
                 if pick <= 0:
                     hs = h
                     break
-            return clamp(hs.x + r.gauss(0, hs.s), 0, C.W), clamp(hs.z + r.gauss(0, hs.s), 0, C.W)
-        return r.random() * C.W, r.random() * C.W
+            return clamp(hs.x + r.gauss(0, hs.s), 0, self.city.WX), clamp(hs.z + r.gauss(0, hs.s), 0, self.city.WZ)
+        return self.city.random_point(r)
 
     def random_dropoff(self, x, z):
         r = self.rng
         d = 20 - math.log(1 - r.random()) * 45
         a = r.random() * math.tau
-        return clamp(x + math.cos(a) * d, 0, C.W), clamp(z + math.sin(a) * d, 0, C.W)
+        return clamp(x + math.cos(a) * d, 0, self.city.WX), clamp(z + math.sin(a) * d, 0, self.city.WZ)
+
+    def inner_point(self, margin: float) -> tuple[float, float]:
+        """A road point away from the city's edges (for hotspots and incidents)."""
+        r, c = self.rng, self.city
+        return c.snap(c.WX * (margin + (1 - 2 * margin) * r.random()), c.WZ * (margin + (1 - 2 * margin) * r.random()))
 
     def make_request(self, x, z, dx, dz) -> Request:
-        px, pz = snap(x), snap(z)
-        qx, qz = snap(dx), snap(dz)
+        c = self.city
+        px, pz = c.snap(x, z)
+        qx, qz = c.snap(dx, dz)
         if qx == px and qz == pz:
-            qx = px - C.CELL * 3 if px > C.W / 2 else px + C.CELL * 3
-        req = Request(self.next_req, self.t, px, pz, qx, qz, self.rng.random() < 0.08, zone_of(px, pz))
+            qx, qz = c.snap(px - 30 if px > c.WX / 2 else px + 30, pz)
+        rid = self.next_req
+        req = Request(rid, self.t, px, pz, qx, qz, self.rng.random() < 0.08, zone_of(px, pz),
+                      hash2(rid * 977 + 13, self.seed) < C.POOL_OPT_IN)
         self.next_req += 1
-        H = self.HEAT
-        hx, hz = round(px / C.W * (H - 1)), round(pz / C.W * (H - 1))
+        HW, HH = self.HEAT_W, self.HEAT_H
+        hx, hz = int(px / self.heat_cell), int(pz / self.heat_cell)
         for oz in range(-2, 3):
             for ox in range(-2, 3):
                 X, Z = hx + ox, hz + oz
-                if 0 <= X < H and 0 <= Z < H:
-                    self.heat[Z * H + X] += math.exp(-(ox * ox + oz * oz) / 2.2)
+                if 0 <= X < HW and 0 <= Z < HH:
+                    self.heat[Z * HW + X] += math.exp(-(ox * ox + oz * oz) / 2.2)
         return req
 
     # ---- step ----------------------------------------------------------------
@@ -227,6 +276,9 @@ class World:
             self.move_bounce(b, dt)
         self.source.drift(dt)
         self.blobs = [b for b in self.blobs if b.until > t]
+        if hasattr(self.city, "set_conditions"):         # drivers navigate by the hour's traffic and around accidents
+            self.city.set_conditions(self.clock() if self.city_traffic else -1.0,
+                                     [(b.x, b.z, b.r, b.s) for b in self.blobs if b.accident])
         self.spikes = [s for s in self.spikes if s.until > t]
         self.outages = [o for o in self.outages if o.until > t]
         self.spike_boost = sum(s.boost for s in self.spikes)
@@ -251,22 +303,24 @@ class World:
             f(e)
         return e
 
-    def _spot(self):
-        r = self.rng
-        return C.W * (0.2 + 0.6 * r.random()), C.W * (0.2 + 0.6 * r.random())
+    def _spot(self, at=None):
+        """A road point for an incident: where the operator clicked, or somewhere away from the edges."""
+        if at is None:
+            return self.inner_point(0.2)
+        return self.city.snap(clamp(float(at[0]), 0, self.city.WX), clamp(float(at[1]), 0, self.city.WZ))
 
-    def trigger_spike(self):
-        x, z = self._spot()
+    def trigger_spike(self, at=None):
+        x, z = self._spot(at)
         self.spikes.append(Hotspot(x, z, 0, 0, 16, 1.0, self.t + 600, True, 0.55))
         self.log("spike", f"Demand spike near {zone_name(zone_of(x, z))}: 55% more requests citywide for 10 min")
 
-    def trigger_outage(self):
-        x, z = self._spot()
+    def trigger_outage(self, at=None):
+        x, z = self._spot(at)
         self.outage_seq += 1
         self.outages.append(Outage(self.outage_seq, x, z, 55, self.t + 420))
         self.log("outage", f"Network outage around {zone_name(zone_of(x, z))}: cars inside stop reporting GPS")
 
-    def trigger_accident(self):
-        x, z = self._spot()
+    def trigger_accident(self, at=None):
+        x, z = self._spot(at)
         self.blobs.append(Blob(x, z, 0, 0, 20, 0.78, self.t + 900, True))
         self.log("accident", f"Major accident near {zone_name(zone_of(x, z))}: road speed down about 75%")

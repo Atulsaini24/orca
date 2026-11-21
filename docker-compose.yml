@@ -1,12 +1,73 @@
+# ORCA on its own:                        docker compose up --build
+# ORCA with the full production stack:   docker compose --profile stack --env-file deploy/stack.env up --build
+#   ORCA         http://localhost:8000          the control room and API
+#   Grafana      http://localhost:3000          dashboard "ORCA dispatch" (anonymous viewer access)
+#   Prometheus   http://localhost:9090          scrapes /metrics every 5 s, with alert rules
+#   Jaeger       http://localhost:16686         traces of engine steps and matching batches
+#   Redis        localhost:6379                 the event stream "orca:events" (python tools/stream_consumer.py)
+#   PostgreSQL   localhost:5432                 the trip ledger (tables trips, lost)
 services:
   orca:
     build: .
     ports: ["8000:8000"]
     environment:
-      ORCA_DEMAND: ${ORCA_DEMAND:-tlc}            # real NYC TLC trips, prepared during the image build
-      ORCA_DB: /app/backend/ledger/orca.db        # keep trip history across restarts
+      ORCA_DEMAND: ${ORCA_DEMAND:-tlc}            # real trips, prepared during the image build
+      ORCA_DB: ${ORCA_DB:-/app/backend/ledger/orca.db}     # SQLite in a volume, or PostgreSQL (deploy/stack.env)
+      ORCA_REDIS_URL: ${ORCA_REDIS_URL:-}         # the event stream (deploy/stack.env)
+      ORCA_OTLP_ENDPOINT: ${ORCA_OTLP_ENDPOINT:-} # traces (deploy/stack.env)
+      # Local use: anyone at this machine may use speed / pause / demand / fleet controls.
+      # Public deployment: remove this line and set ORCA_ADMIN_TOKEN instead (open /app?token=... once).
+      ORCA_OPEN_CONTROLS: ${ORCA_OPEN_CONTROLS:-1}
+      ORCA_ADMIN_TOKEN: ${ORCA_ADMIN_TOKEN:-}
     volumes:
       - orca-ledger:/app/backend/ledger
     restart: unless-stopped
+
+  redis:
+    profiles: [stack]
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10 }
+
+  postgres:
+    profiles: [stack]
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: orca, POSTGRES_PASSWORD: orca, POSTGRES_DB: orca }
+    ports: ["5432:5432"]
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U orca"], interval: 5s, timeout: 3s, retries: 10 }
+
+  prometheus:
+    profiles: [stack]
+    image: prom/prometheus:v2.54.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    ports: ["9090:9090"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  grafana:
+    profiles: [stack]
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/orca.json
+    ports: ["3000:3000"]
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+
+  jaeger:
+    profiles: [stack]
+    image: jaegertracing/all-in-one:1.60
+    environment: { COLLECTOR_OTLP_ENABLED: "true" }
+    ports: ["16686:16686", "4318:4318"]
+
 volumes:
   orca-ledger:
+  redis-data:
+  pg-data:

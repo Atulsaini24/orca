@@ -1,0 +1,41 @@
+{
+  "task": "demand",
+  "source": "tlc",
+  "features": [
+    "lag1",
+    "lag2",
+    "lag3",
+    "lag4",
+    "lag5",
+    "mean15",
+    "city_lag1",
+    "city_mean5",
+    "minute_sin",
+    "minute_cos",
+    "zone_x",
+    "zone_z"
+  ],
+  "n_train": 596400,
+  "n_test": 149100,
+  "results": [
+    {
+      "model": "last minute x 5",
+      "mae": 2.7355943426686458,
+      "p90_abs_err": 6.793865328599079,
+      "r2": 0.6941829446843968
+    },
+    {
+      "model": "EWMA with trend",
+      "mae": 2.0832687833619046,
+      "p90_abs_err": 5.339684612295808,
+      "r2": 0.8151275454522637
+    },
+    {
+      "model": "gradient boosting, Poisson (ORCA)",
+      "mae": 1.2716974103836063,
+      "p90_abs_err": 3.1449683204368526,
+      "r2": 0.9336651447541783
+    }
+  ],
+  "trained_at": "2026-11-16 16:32"
+}

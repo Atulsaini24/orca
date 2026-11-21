@@ -1,0 +1,113 @@
+{
+  "task": "eta_real",
+  "city": "manhattan",
+  "source": "NYC Taxi & Limousine Commission: yellow taxi and Uber / Lyft (high-volume for-hire) trips, September 2026",
+  "features": [
+    "pu_zone",
+    "do_zone",
+    "dist_line_m",
+    "dist_zones_m",
+    "same_zone",
+    "hour",
+    "minute_of_day_sin",
+    "minute_of_day_cos",
+    "weekday"
+  ],
+  "target": "log trip duration",
+  "n_train": 1612518,
+  "n_test": 387371,
+  "train_days": [
+    "2026-09-01",
+    "2026-09-24"
+  ],
+  "test_days": [
+    "2026-09-25",
+    "2026-09-30"
+  ],
+  "results": [
+    {
+      "model": "distance / citywide median speed",
+      "mae": 421.76143188042016,
+      "median_abs_err": 269.55701008616313,
+      "p90_abs_err": 940.6535715873856,
+      "mape": 0.4630952280367155
+    },
+    {
+      "model": "distance / real median speed for the hour",
+      "mae": 390.0612914595507,
+      "median_abs_err": 248.71209889633877,
+      "p90_abs_err": 863.8103115094154,
+      "mape": 0.4285432090827822
+    },
+    {
+      "model": "historical median for zone pair and hour",
+      "mae": 236.02100689069846,
+      "median_abs_err": 167.5,
+      "p90_abs_err": 503.5,
+      "mape": 0.2873356994584971
+    },
+    {
+      "model": "gradient boosting (ORCA)",
+      "mae": 221.82236056930492,
+      "median_abs_err": 156.92451963034296,
+      "p90_abs_err": 470.1439505201208,
+      "mape": 0.2708763850903167
+    }
+  ],
+  "mae_by_hour": {
+    "orca": [
+      147.7,
+      133.5,
+      140.9,
+      135.8,
+      125.5,
+      119.7,
+      135.7,
+      193.0,
+      228.1,
+      242.1,
+      260.7,
+      278.7,
+      262.7,
+      250.8,
+      256.8,
+      259.3,
+      263.5,
+      249.3,
+      228.1,
+      208.6,
+      194.2,
+      191.0,
+      190.4,
+      169.6
+    ],
+    "pair_hour": [
+      161.1,
+      151.7,
+      168.9,
+      180.8,
+      166.2,
+      141.3,
+      144.3,
+      204.1,
+      234.1,
+      250.9,
+      268.8,
+      286.4,
+      275.5,
+      266.2,
+      268.3,
+      270.7,
+      277.6,
+      263.4,
+      238.6,
+      221.7,
+      213.6,
+      210.3,
+      214.1,
+      195.3
+    ]
+  },
+  "note": "Positions inside a zone are reconstructed (the TLC publishes zone IDs), so features use zone-level geometry.",
+  "trained_at": "2026-11-16 15:46"
+}

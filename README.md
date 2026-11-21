@@ -1,167 +1,258 @@
-# ORCA: real-time dispatch engine
+# ORCA: real-time ride dispatch on real cities
 
-ORCA decides which car should take each ride request, live, across a fleet of
-over a thousand moving cars, on **real New York City taxi demand** (12.7 million
-NYC TLC trip records). It runs head to head against the standard
-"send the nearest car" rule on the **same requests, traffic and incidents**, so
-every difference in the results comes from the dispatch decisions alone.
+ORCA decides which car takes each ride request, live, for a fleet of 1,200 cars driving the **real
+street networks** of **Manhattan** and **Chicago** (OpenStreetMap, one-way rules included), past
+**100,000 real buildings** extruded from official footprints, serving **real ride demand** from
+September 2026: NYC taxi and Uber / Lyft trips, and Chicago's Uber / Lyft / Via trips. It runs head
+to head against the standard "send the nearest car" rule on the **same riders, traffic, incidents and
+drivers**, so every difference in the results comes from the dispatch decisions alone.
 
-Every 3 seconds ORCA scores each (request, car) pair on
+Every 3 seconds ORCA scores each (rider, car) pair on
 
-* **drive time**, from a gradient-boosted ETA model fed by live zone speeds,
+* **drive time by road**, from a gradient-boosted ETA model on top of the fastest path through the street network,
 * **acceptance**, a per-driver Beta-Bernoulli estimate learned online from offers,
 * **GPS freshness**, so it never offers rides to cars that went silent,
-* **zone supply**, from a demand forecaster, so it avoids taking the last spare car out of a zone about to get busy,
+* **zone supply**, from a demand forecaster over each city's official zones,
+* **the rider's deadline**, so a car that arrives after the rider would give up is not preferred,
 
-then solves the whole batch as a min-cost assignment with the Hungarian
-algorithm. Between batches it moves idle cars toward zones forecast to run short.
+then solves the whole batch as an exact min-cost assignment (dense Hungarian, or sparse LAPJV for
+large batches), and moves idle cars toward zones forecast to run short. On top of that it can offer
+**shared rides**, run an **electric fleet** on the city's real charging stations, reposition cars with
+a **learned value network**, and build **any city** from OpenStreetMap with one command. The engine is
+a structure of arrays advanced by **Numba-compiled kernels**: 10,000 cars per dispatcher run 89 times
+faster than real time.
 
-The control room is drawn by a **hand-written WebGL2 renderer** (no 3D library):
-instanced geometry for 3,400 buildings, 1,300 trees and up to 4,000 cars, a
-shadow-mapped sun with cached static shadows, screen-space lines and a water
-surface. A **100-second guided tour** plays inside the page like a video, with
-chapters, captions, narration and an original score, and a narrated recording is in
-[`docs/orca-tour.mp4`](docs/orca-tour.mp4). A **home page** (React, TypeScript, Vite,
-Tailwind) at `/` explains the product and links into the control room at `/app`.
+The control room is a **hand-written WebGL2 renderer** (no 3D library): glass and masonry facades, lit
+windows and headlamps at night, cloud shadows, a sky with sun and stars, all following the city clock; the **home page** (React, TypeScript, Vite, Tailwind, Three.js, Motion, Lenis) opens with a scroll-driven journey through the real cities: Manhattan's OpenStreetMap streets light up, its 44,375 real buildings rise, a fleet drives the real street graph, one dispatch decision plays out on real fastest routes, a real weekday's zone speeds rise and fall, then Chicago and Cambridge take its place; a **narrated tour**
+with an original score is in [`docs/orca-tour.mp4`](docs/orca-tour.mp4).
 
 ## Results
 
-Real NYC demand (January 2015 Manhattan weekdays) and real hourly traffic speed,
-45 simulated minutes per run, 1,200 cars per dispatcher, two seeds. Full table in
-[`docs/benchmark.md`](docs/benchmark.md), reproduce with `make bench`.
+### Against the industry baseline
 
-| Scenario | Nearest car | ORCA, heuristic models | ORCA, learned models |
+Platforms replaced nearest-car dispatch with **batched matching**: collect requests for a few seconds,
+then solve one assignment minimising total predicted pickup time. ORCA is benchmarked against a faithful
+version of it built from ORCA's own batching, ETA model and exact solver, so the gap is what ORCA's extra
+signals add. 10 paired seeds, 95% intervals, Wilcoxon p = 0.002 (ORCA wins on every seed):
+
+| Mean wait | Nearest car | Batched ETA (industry) | **ORCA** | **ORCA vs batched** |
+|---|---:|---:|---:|---:|
+| Manhattan, steady | 134 s | 124 s | **108 s** | **−13%** (p95 −20%) |
+| Manhattan, spike + GPS outage + accident | 184 s | 169 s | **151 s** | **−11%** (p95 −13%) |
+| Chicago, steady | 95 s | 90 s | **80 s** | **−11%** (p95 −15%) |
+| Chicago, spike + GPS outage + accident | 118 s | 112 s | **99 s** | **−11%** (p95 −13%) |
+
+An ablation finds the wait gain comes from forecast-driven **repositioning**; ORCA's matching signals
+alone keep waits level with batched matching but **halve wasted offers** under stress. Method, ablation
+and limitations: [`docs/REPORT.md`](docs/REPORT.md); reproduce with `make industry`.
+
+### Full benchmark
+
+45 simulated minutes per run, 1,200 cars per dispatcher, **10 seeds**, means with **95% bootstrap
+confidence intervals**, real September 2026 demand and real traffic by zone and hour. Full tables,
+paired significance tests and a 24-hour day: [`docs/benchmark_manhattan.md`](docs/benchmark_manhattan.md),
+[`docs/benchmark_chicago.md`](docs/benchmark_chicago.md); reproduce with `make bench`.
+
+| Mean wait, request to pickup | Nearest car | ORCA, heuristic models | **ORCA, learned models** |
 |---|---:|---:|---:|
-| Steady demand, mean wait | 74 s | 40 s | **39 s** (−47%) |
-| Steady demand, p95 wait | 188 s | 100 s | **96 s** |
-| Spike + GPS outage + accident, mean wait | 152 s | **88 s** | 90 s (−40%) |
-| Same, riders who gave up | 14 | 14 | **10** |
+| Manhattan, steady demand | 136 s | 122 s | **109 s** (−19%, CI 17-22%) |
+| Manhattan, spike + GPS outage + accident | 186 s | 163 s | **152 s** (−18%, CI 14-21%) |
+| Manhattan, full 24-hour day | 171 s | | **112 s** (−35%) |
+| Chicago, steady demand | 97 s | 88 s | **81 s** (−15%, CI 12-19%) |
+| Chicago, spike + GPS outage + accident | 118 s | 106 s | **99 s** (−16%, CI 13-19%) |
+| Chicago, full 24-hour day | 116 s | | **79 s** (−32%) |
 
-![benchmark](docs/benchmark.png)
+| Riders who gave up (15 min) | Nearest car | ORCA, heuristic | **ORCA, learned** |
+|---|---:|---:|---:|
+| Manhattan, under stress | 13.4 | 7.0 | **5.3** |
+| Chicago, under stress | 0.3 | 0.0 | **0.0** |
+| Chicago, full 24-hour day | 81 | | **1** |
 
-Almost all of the gain comes from batch matching, GPS awareness and acceptance
-modelling. The learned models add a little on a steady day and are within noise
-of the heuristics under stress. Model quality, on held-out data from later in time
-than the training data:
+![benchmark](docs/benchmark_manhattan.png)
+![benchmark, Chicago](docs/benchmark_chicago.png)
 
-| Model | Baseline it replaces | Baseline MAE | ORCA MAE |
-|---|---|---:|---:|
-| Pickup ETA, gradient boosting on a physics baseline (26k pickup legs) | free-flow distance / speed | 36.7 s | **17.3 s** |
-| Pickup ETA | observed zone-speed heuristic | 22.8 s | **17.3 s** |
-| Rides per zone, next 5 min, Poisson GBM, trained on real NYC pickups | EWMA with trend | 2.24 | **1.36** |
+* **Learned models** beat the heuristic fallbacks on mean wait in both cities and every scenario
+  (Wilcoxon p = 0.002), and lose the fewest riders under stress in Manhattan.
+* **Tuned weights** (successive halving on seeds the benchmark never sees, separately per city) beat the
+  hand-set ones in Manhattan in both scenarios (p ≤ 0.004) and in Chicago under stress (p = 0.01); in
+  Chicago's steady scenario the gain (84 s to 81 s) is not significant (p = 0.06).
+* **The give-up guard** is kept by the tuner, but switching it off changes riders lost only within
+  noise (5.7 vs 5.3 in Manhattan, p = 0.5): the stress-test improvement comes from the retrained models
+  and tuned weights. Chicago's core has fewer riders per car, so almost no one gives up in a 45-minute
+  run with either dispatcher; over a full day the nearest-car rule loses 81 riders, ORCA 1.
+
+## Beyond dispatch
+
+Each feature has its own reproducible benchmark on real Manhattan demand (paired seeds, 95% intervals),
+written to `docs/` by the command shown.
+
+| | Result | Details |
+|---|---|---|
+| **Shared rides** | With half the riders accepting a shared ride, ORCA keeps the 108 s mean wait of 1,200 solo cars with about **1,083 cars, 10% fewer** (95% interval 5-13%); shared rides take 6-11% longer than driving direct. Chicago, with fewer riders heading the same way: **5% fewer** (2-10%) | [`pooling_manhattan.md`](docs/pooling_manhattan.md), [`pooling_chicago.md`](docs/pooling_chicago.md), `python -m orca.poolbench` |
+| **Electric fleet** | Over a 12-hour shift on 42 real public stations, ORCA's charging cuts the **queue at the charger from 25 to 1.6 minutes** and **car-hours spent charging by 43%**; no car runs out of charge. Chicago has plugs to spare, so queues are short either way; ORCA still cuts **car-hours charging by 24%** | [`ev_manhattan.md`](docs/ev_manhattan.md), [`ev_chicago.md`](docs/ev_chicago.md), `python -m orca.evbench` |
+| **Speed and scale** | **10,000 cars** per dispatcher at 11 ms per simulated second (**89x real time**, 12x faster than before); 20,000 at 42x; an exact assignment of 5,000 requests in 225 ms | [`scale.md`](docs/scale.md), `python -m orca.scale` |
+| **Real traffic** | Routes follow each zone's real speed for the hour and avoid live accidents; routes through an accident save **7-10%** of driving time (the hourly effect is small: speeds are known per zone) | [`routing.md`](docs/routing.md), `python -m orca.routing_report` |
+| **Learned policy** | A value network trained by fitted TD learning recovers **39-97%** of the hand-written rebalancer's gain over no repositioning, but **does not beat it**; the rules stay the default | [`rl_manhattan.md`](docs/rl_manhattan.md), `python -m orca.rl train` / `bench` |
+| **Load** | One server process streams the live city to **400 viewers at 8.4 frames per second each** | [`loadtest.md`](docs/loadtest.md), `python tools/loadtest.py` |
+
+![shared rides](docs/pooling_manhattan.png)
+
+### Reality check
+
+For every Uber and Lyft trip the TLC records when the rider asked and when the driver arrived. Across
+3.4 million Manhattan rides in September 2026 the driver was on scene after **3:59 on average** (p90
+8:04). The simulation's waits (1:49 with ORCA, 2:16 with nearest car) are the same order of magnitude;
+it is not a like-for-like race, since the platforms run thousands of drivers and the simulation 1,200
+cars on a sampled share of the demand.
+
+### Models (held-out data, later in time than training)
+
+| Mean absolute error | Manhattan: baseline → **ORCA** | Chicago: baseline → **ORCA** |
+|---|---:|---:|
+| Pickup ETA on real streets (baseline: zone-speed heuristic) | 42.6 s → **34.7 s** | 34.8 s → **31.3 s** |
+| Rides per zone, next 5 min (baseline: EWMA with trend) | 1.25 → **0.75** | 2.08 → **1.27** |
+| Real trip duration, later days (baseline: zone-pair median) | 236 s → **222 s** | 189 s → **166 s** |
+
+Simulated trip times are calibrated against reality per city: the median routed trip matches the
+median real one (Manhattan 15.2 min, Chicago 11.6 min), with per-trip correlations of 0.73 and 0.72.
 
 ## Run it
 
 ```bash
-make install        # pip install -e "backend[dev]" and npm ci in web/
-make data           # download 12.7M real NYC TLC trips + taxi zone shapefile, prepare the replay (~1 min)
+make install        # Python deps from backend/requirements-dev.lock, home-page deps (npm ci)
+make data           # download and prepare September 2026 trips for both cities
 make web            # build the home page
-python -m orca.server --help    # from backend/; or simply:
 make run            # http://localhost:8000 (home page), http://localhost:8000/app (control room)
+make run-all        # every city live at once, each in its own supervised process (orca.router)
 ```
 
-Or with Docker, which downloads and prepares the real data during the build:
-`docker compose up --build`, then open http://localhost:8000.
+Or `docker compose up --build`: the image build downloads and prepares every city's real data. The full
+production stack (Redis event stream, PostgreSQL ledger, Prometheus with alerts, Grafana dashboard,
+Jaeger traces): `docker compose --profile stack --env-file deploy/stack.env up --build`.
 
-The control room also works on its own (open `frontend/index.html`). Without a
-server it runs the same engine logic in the browser on a bundled 24,000-trip
-sample of the real data, at the real hourly rate, and says so in the header.
-
-In the control room: drag to rotate, right-drag or shift-drag to pan, scroll to
-zoom toward the cursor, double-click to fly somewhere, `W A S D` / `Q E` / `R F`
-from the keyboard. Click any ring to see why ORCA chose that car, every
-candidate's score and the request's timeline. Press **Watch the tour** for the
-guided walkthrough.
-
-## Real NYC taxi data
-
-Source: [NYC TLC trip records](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page),
-yellow taxi, January 2015, plus the official taxi-zone shapefile.
-
-The TLC now publishes every year with pickup and drop-off **taxi zone IDs** instead
-of GPS points. `scripts/prepare_tlc.py`:
-
-* keeps Manhattan-to-Manhattan trips on ordinary weekdays (New Year, MLK Day and the
-  26-27 January blizzard removed): **6,193,626 trips over 17 days** across 63 zones;
-* places each trip at a uniformly random point inside its real pickup and drop-off
-  zone polygons;
-* measures the **real median taxi speed for every hour** (trip distance / duration)
-  and drives the simulated city's road speed with it;
-* writes the 2M-trip server replay, the traffic profile and the browser sample.
-
-The replay folds the days into one typical weekday, keeps the real time-of-day and
-spatial pattern, and scales the rate so the busiest hour is 1.25× fleet capacity.
-`--demand synthetic` remains available for tests and experiments.
-
-## Train and benchmark
+**Any city**, from OpenStreetMap, in one command (roads, parks, place names, 3D buildings, chargers):
 
 ```bash
-make train          # demand model on real NYC pickups; ETA model on fleet telemetry under real demand + traffic
-make bench          # head-to-head benchmark, writes docs/benchmark.*
-make test           # 16 tests: routing, invariants, matching optimality, ledger, timelines, real data, API
+cd backend
+python -m orca.newcity --name cambridge --place "Cambridge, Massachusetts"
+python -m orca.server --city cambridge
 ```
 
-## The tour video
+Street networks, skylines and zone boundaries are committed; rebuild them with `make cities`.
+Open a city directly with `/app?city=chicago`, or switch in the control room. Run the synthetic test
+grid with `--city grid`.
+
+The control room also works on its own (open `frontend/index.html`): it then runs the same engine in
+the browser on the same streets with a 24,000-trip real-data sample, loading only the chosen city.
+
+In the control room: drag to rotate, right-drag to pan, scroll to zoom; `W A S D`, `Q E`, `R F`.
+Click any ring to see why ORCA chose that car. **What if**: press an incident button, then click the
+map to place it; send 200 drivers home; restart the city with shared rides or an electric fleet. `?light=night` pins the lighting; by default it
+follows the city clock.
+
+### Operator controls
+
+Anyone can watch and trigger incidents. Speed, pause, demand level, fleet size and switching city
+change the simulation for every viewer, so they are operator-only: set `ORCA_ADMIN_TOKEN` and open
+`/app?token=…` once, or run locally (loopback is trusted). `ORCA_OPEN_CONTROLS=1` opens them to
+everyone, which `docker-compose.yml` does for local use.
+
+## Real data
+
+| City | What | Source |
+|---|---|---|
+| both | drivable streets, parks | [OpenStreetMap](https://www.openstreetmap.org) (ODbL) |
+| Manhattan | 5.5M weekday trips: yellow taxis, Uber, Lyft (Sept 2026); 63 taxi zones | [NYC TLC trip records](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) |
+| Manhattan | 44,375 building footprints with surveyed heights | [NYC Open Data, BUILDING](https://data.cityofnewyork.us/d/5zhs-2jue) |
+| Chicago | 1.2M weekday Uber / Lyft / Via trips in the core (Sept 2026) | [City of Chicago, TNP trips](https://data.cityofchicago.org/d/6dvr-xwnh) |
+| Chicago | 25 neighbourhoods, 7 community areas; 55,784 building footprints with storeys | City of Chicago Data Portal |
+
+Each city uses its own state-plane projection (implemented in `orca/geo.py`): New York Long Island
+(EPSG:2263) and Illinois East (EPSG:3435). Streets, buildings and trips share one transform per city.
+
+## Train, tune, benchmark
 
 ```bash
-pip install -e "backend[video]" && playwright install chromium
-make video          # or: python tools/make_tour_video.py [--skip-record] [--tts edge|gtts]
+make train          # per city: demand, ETA, real-trip model, speed calibration
+make tune           # per city: scoring weights by successive halving on seeds 101-109
+make bench          # per city: 10 seeds x 2 scenarios + a full day, CIs, significance tests, ablations
+make test           # unit, both real cities, real data, security, browser end-to-end and visual tests
+make lint           # ruff, ESLint, TypeScript
+make video          # record, narrate (neural voice), score and encode the tour
+make perf           # frame rate and GPU time of the control room on this machine
 ```
 
-Records the guided tour frame by frame in headless Chromium on the real-data
-engine, voices one line per chapter from what the captions actually show,
-composes an original score whose sections follow the chapters, ducks it under the
-voice, normalises to -16 LUFS and writes `docs/orca-tour.mp4` with WebVTT captions.
-It uses a neural voice when `edge-tts` is installed (`pip install edge-tts`),
-otherwise Google TTS.
+```bash
+cd backend
+python -m orca.poolbench --city manhattan     # shared rides: fleet sweep at fixed demand, opt-in sweep
+python -m orca.evbench --city manhattan       # electric fleet: 12-hour shift, three charging policies
+python -m orca.scale                          # simulation speed and dispatch throughput, 1,200 to 20,000 cars
+python -m orca.routing_report                 # what traffic-aware routing changes
+python -m orca.rl train && python -m orca.rl bench    # learned repositioning
+python ../tools/loadtest.py                   # concurrent viewers
+```
 
 ## API
 
 | Method | Path | |
 |---|---|---|
-| GET | `/` | home page (built from `web/`) |
-| GET | `/app` | control room |
-| GET | `/media/{file}` | tour video, captions, poster and score |
-| GET | `/api/health` | engine status and which models are loaded |
-| GET | `/api/stream?view=smart\|base` | Server-Sent Events: `frame` at 10 Hz, `summary` at 1 Hz |
-| POST | `/api/command` | `{"cmd": "spike" \| "outage" \| "accident" \| "speed" \| "pause" \| "demand", "value": …}` |
-| POST | `/api/reset` | `{"fleet": 1200, "seed": 7}` |
-| GET | `/api/explain/{request_id}` | why ORCA chose that car, every candidate's score, and the request's timeline |
-| GET | `/api/analytics?since=60` | wait statistics per dispatcher from the SQLite trip ledger: percentiles, per zone, per hour |
+| GET | `/` | home page |
+| GET | `/app?city=` | control room |
+| GET | `/app/data/{city}/…` | a city's streets, buildings, trip sample and browser config |
+| GET | `/media/{file}` | tour video (MP4, WebM), captions, poster, score |
+| GET | `/api/health` | engine status, city, which models are loaded |
+| GET | `/api/stream?view=smart\|base&enc=b64` | Server-Sent Events: `frame` at 10 Hz (packed binary with `enc=b64`), `summary` at 1 Hz |
+| POST | `/api/command` | `{"cmd": "spike" \| "outage" \| "accident", "x": .., "z": ..}` (optional place), `{"cmd": "logoff", "value": 200, "minutes": 30}`; operator: `"speed" \| "pause" \| "demand"` with `"value"` |
+| POST | `/api/reset` | operator: `{"fleet": 1200, "seed": 7, "city": "chicago", "pool": true, "ev": "smart"}` |
+| GET | `/api/explain/{request_id}` | why ORCA chose that car, every candidate's score, the request's timeline |
+| GET | `/api/analytics?since=60` | wait statistics from the trip ledger (SQLite or PostgreSQL): percentiles, per zone, per hour |
+| GET | `/api/events?after=0` | the domain event stream (also Redis Streams with `ORCA_REDIS_URL`) |
 | GET | `/api/trips?limit=50` | most recent pickups |
 | GET | `/api/models` | training metrics of the models in use, and the latest benchmark |
-| GET | `/metrics` | Prometheus metrics for both dispatchers |
+| GET | `/metrics` | Prometheus: dispatch metrics, matching and engine latency histograms, events, HTTP requests |
 
-## Layout
+## Engineering
 
-```
-backend/orca/
-  city.py        road grid, routing, zones
-  world.py       clock, traffic (real hourly speed profile), synthetic demand, incidents
-  demand.py      NYC TLC trip loading, projection and replay
-  features.py    real-time feature store (zone speeds from GPS, demand history)
-  models/        ETA, acceptance and demand models with fallbacks
-  dispatch.py    fleet, nearest-car baseline, ORCA (Hungarian matching, rebalancing), request timelines
-  ledger.py      SQLite trip ledger and analytics queries
-  engine.py      both dispatchers on one world; snapshots for clients
-  server.py      Starlette API, SSE stream, home page, control room, media, Prometheus metrics
-  train.py       model training and evaluation
-  bench.py       reproducible benchmark
-backend/scripts/ download_tlc.py, prepare_tlc.py (real data), zone_centroids.py
-web/             home page: React, TypeScript, Vite, Tailwind CSS, Framer Motion
-frontend/src/    control room: tlc_data.js (real-trip sample), sim.js (browser engine), gl.js (WebGL2
-                 renderer), city.js (procedural city), app.js (data sources, input, console, tour)
-tools/           make_tour_video.py (recording, narration, score, mix)
-docs/            architecture notes, benchmark output, tour video, captions and score
-```
+* **CI** on every push: lint, type-check, unit + real-data + browser + visual-regression tests, Docker
+  build and smoke test, lock freshness ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+* **Fast core**: the fleet is a structure of arrays; one Numba kernel advances every car per tick, and
+  compiled kernels build routes, walk shortest-path trees for a whole batch, search k-nearest cars and
+  plan shared-ride insertions. Exact matching at any batch size (dense Hungarian or sparse LAPJV).
+* **Production stack**: domain events to Redis Streams from a non-blocking batched writer, the trip
+  ledger on SQLAlchemy (SQLite or PostgreSQL), Prometheus histograms and alert rules, a provisioned
+  Grafana dashboard, OpenTelemetry traces; CI tests the ledger and the stream against real PostgreSQL
+  and Redis.
+* **Reproducible**: exact dependency locks, fixed seeds, data pipelines as scripts, large files in Git LFS.
+* **Secure by default**: operator-only global controls, rate limits, body and stream limits, a CSP
+  without `eval`, non-root container.
+* **Fast on integrated graphics**: the 100,000-building city is split into 1 km tiles that are culled
+  against the view and drawn front to back, low-rise buildings and cars switch to lighter models with
+  distance, the shadow map is redrawn only when the sun or the view moves, and the resolution adapts
+  to keep frames under about 21 ms. City data is served gzip-compressed with cache revalidation.
+* **Deployable**: Docker multi-stage image with health check; [`render.yaml`](render.yaml) and [`fly.toml`](fly.toml).
+
+Design notes, the data pipelines and how this would scale out: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Honest limits
 
-* Demand and hourly traffic speed are real. The street grid, individual car
-  movement and driver behaviour are simulated, because no public dataset has live
-  taxi GPS traces. Manhattan is fitted onto a square city, so it is stretched.
-* Trip positions inside a taxi zone are reconstructed (uniform within the real
-  polygon), since the TLC no longer publishes coordinates.
-* The ETA model learns from the simulator's pickup legs, not from real trips.
-* One process holds the whole state in memory. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-  describes how this would split into services at real scale.
+* Streets, buildings, demand and traffic speeds (by zone and hour) are real. Individual car movement
+  along the streets and driver behaviour (acceptance, response time) are simulated: no public dataset
+  has live GPS traces.
+* Trip records give zones (NYC) or census-tract centres (Chicago) rather than exact points; trips are
+  placed within them. Chicago's timestamps are rounded to 15 minutes for privacy and spread within.
+* Chicago building heights come from storey counts (3.6 m per storey), not surveyed heights.
+* The simulation uses 1,200 cars per dispatcher on a sampled share of the demand, so its wait times
+  are comparable with reality in magnitude, not in level.
+* The ETA model learns from simulated pickup legs; the real-trip model validates the approach on real data.
+* Shared rides assume half the riders accept sharing (the opt-in sweep shows 25-100%); electric cars
+  use typical figures (75 kWh, 0.18 kWh/km, drivers charging overnight to 35-100%), not a real fleet's.
+* Traffic speeds are known per zone and hour, not per street, so time-aware routing changes little except
+  around accidents.
+* The learned repositioning policy does not beat the hand-written rules; it is reported, not used by default.
+* Cities built with `orca.newcity` have no trip records: they run synthetic demand and flat traffic, with no trained
+  models or tuned weights. In the example city, Cambridge, 1,200 cars are stretched thin and ORCA's
+  repositioning cuts the mean wait 22-37% against batched matching ([`docs/industry_cambridge.md`](docs/industry_cambridge.md)),
+  but that is synthetic demand, not evidence about real riders. Training and tuning need a city's real trips.
+* Each city runs in its own process (`orca.router` supervises them behind one port and restarts any that
+  dies or stalls); a city's state lives in memory, so one city cannot span machines.
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the split into services at real scale.

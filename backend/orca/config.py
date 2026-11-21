@@ -13,6 +13,7 @@ ZSIZE = W / ZONES
 BASE_SPEED = 0.3          # units per second on a free local road (~32 km/h)
 ART_MULT = 1.55           # arterial roads are faster
 IDLE_CRUISE = 0.55        # idle units cruise slowly
+TRAFFIC_ROUTING = True    # street cities: route by the hour's real zone speeds and around accidents
 
 OFFER_TIMEOUT = 20.0      # an unanswered offer expires after this
 STALE_AFTER = 15.0        # GPS older than this is unreliable
@@ -23,8 +24,75 @@ BATCH = 3.0               # ORCA matches in 3 s batches
 REBAL = 20.0              # rebalancing cadence
 K = 10                    # candidate units per request
 REOFFER = 45.0            # expected cost of a declined / expired offer (s)
-HUNGARIAN_MAX = 150       # above this many waiting requests, fall back to greedy
+HUNGARIAN_MAX = 150       # above this many waiting requests, solve the assignment as a sparse problem
 COVER = 0.5               # idle cars wanted per zone, as a share of its forecast 5-min demand
 
+# Shared rides (OrcaDispatcher(pool=True)). A rider who opts in may share the car with up to CAP - 1
+# others; the plan keeps every pickup before the rider gives up and every ride within DETOUR x the
+# direct drive plus SLACK seconds. DELAY_W prices one second of delay to riders already in the plan
+# against one second of the new rider's wait.
+POOL_OPT_IN = 0.5         # share of riders who accept a shared ride (decided per rider, the same for both policies)
+POOL_CAP = 3              # riders per car
+POOL_DETOUR = 0.5         # a shared ride may take up to 50% longer than driving direct ...
+POOL_SLACK = 120.0        # ... plus two minutes
+POOL_DELAY_W = 0.3
+POOL_K = 8                # busy cars considered per request
+
+# Electric fleet (Engine(ev=True)): a 75 kWh car using 0.18 kWh per km in city traffic covers ~400 km.
+EV_BATTERY_KWH = 75.0
+EV_KWH_PER_KM = 0.18
+EV_RESERVE = 0.10         # a ride is offered only if the car finishes it with this much left
+EV_LOW = 0.20             # below this a car stops taking rides and charges
+EV_TARGET = 0.80          # fast charging slows down above 80%: stop there
+EV_TOPUP = 0.0            # ORCA: idle cars below this top up early while the city has cars to spare (0: off) ...
+EV_TOPUP_MARGIN = 0.15    # ... beyond this share of the fleet over what the demand forecast needs
+EV_TOPUP_RADIUS = 40.0    # ... at a free plug within this distance (world units, ~1.2 km)
+EV_SOC0 = (0.35, 1.0)     # charge at the start of the shift (drivers charge overnight, not all fully)
+EV_DETOUR = 1.35          # road distance over straight line, for energy estimates
+
 START_CLOCK = 7 * 3600 + 30 * 60   # simulation starts at 07:30
+START_DEFAULT = START_CLOCK
 DEMAND_PER_UNIT = 0.00118          # requests / s per fleet unit at 1.0x demand
+
+# Scoring weights (see docs/ARCHITECTURE.md, "Score"). Hand-set defaults; `python -m orca.tune`
+# searches them on seeds disjoint from the benchmark's and writes artifacts/dispatch_params.json,
+# which overrides these values when present.
+ZONE_SLOPE = 20.0         # seconds of cost per unit of zone shortfall ratio
+ZONE_CAP = 60.0           # maximum zone supply cost (s)
+URGENT_W = 0.55           # urgent requests' cost multiplier
+WAIT_W = 0.25             # cost credit per second a request has already waited
+WAIT_CAP = 300.0          # ... up to this many seconds
+DEADLINE_W = 1.0          # weight of the give-up penalty: riders cancel after ABANDON seconds without a car
+DEADLINE_COST = 600.0     # cost (s) of a pairing that would arrive after the rider has given up
+TUNABLE = ("REOFFER", "COVER", "ZONE_SLOPE", "ZONE_CAP", "URGENT_W", "WAIT_W", "DEADLINE_W", "K")
+DEFAULTS = {k: globals()[k] for k in TUNABLE}
+SETTABLE = (*TUNABLE, "POOL_OPT_IN", "POOL_CAP", "POOL_DETOUR", "POOL_SLACK", "POOL_DELAY_W", "POOL_K",
+            "EV_TOPUP", "EV_TOPUP_MARGIN")
+INTS = ("K", "POOL_CAP", "POOL_K")
+POOL_DEFAULTS = {k: globals()[k] for k in SETTABLE if k.startswith(("POOL_", "EV_"))}
+
+
+def apply(params: dict) -> None:
+    """Override dispatch parameters in this process (used by tuning and benchmark workers and at start-up)."""
+    for k, v in params.items():
+        if k not in SETTABLE:
+            raise KeyError(f"{k} is not a dispatch parameter")
+        globals()[k] = round(v) if k in INTS else float(v)
+
+
+def load_tuned(city: str = "grid") -> dict:
+    """Tuned weights for a city (python -m orca.tune), or {} if none; ORCA_PARAMS=default ignores them."""
+    import json
+    import os
+    from pathlib import Path
+    if os.environ.get("ORCA_PARAMS") == "default":
+        return {}
+    name = "dispatch_params.json" if city == "grid" else f"dispatch_params_{city}.json"
+    p = Path(__file__).resolve().parents[1] / "artifacts" / name
+    try:
+        return json.loads(p.read_text())["params"]
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+TUNED: dict = {}          # set by city.use() for the active city

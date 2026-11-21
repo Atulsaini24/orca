@@ -2,8 +2,27 @@
 // ORCA control room: data sources, live drawing, input, console and guided tour.
 // Bundled after sim.js (engine), gl.js (renderer) and city.js (model).
 // =============================================================================
-const W = CFG.W, ZN = CFG.ZONES * CFG.ZONES, MAX_AGENTS = 4000, MAX_REQ = 5000;
+const CITY0 = city(), WX = CITY0.WX, WZ = CITY0.WZ, W = Math.max(WX, WZ), ZN = CITY0.N, MAX_AGENTS = 10000, MAX_REQ = 5000;
+const STREETS = CITY0.name !== 'grid';
+const CITY_SHORT = STREETS ? CITY0.short : 'the grid city';
+// Camera targets at real places, named by zone. The tour is written for Manhattan; other cities map its shots
+// onto equivalent places of their own.
+const PLACE_ALIAS = {
+  chicago: { 'Midtown North': 'River North', 'Midtown Center': 'Loop', 'Murray Hill': 'Streeterville', 'Times Sq/Theatre District': 'Loop',
+    'Union Sq': 'West Loop', 'Midtown East': 'Magnificent Mile' },
+};
+const place = (name, fx, fz) => {
+  if (STREETS) {
+    const want = (PLACE_ALIAS[CITY0.name] || {})[name] || name;
+    const i = CITY0.zones.findIndex((z) => z.name === want);
+    if (i >= 0) { const [x, z] = CITY0.zoneCenter(i); return [x, 0, z]; }
+    return [WX / 2, 0, WZ / 2];
+  }
+  return [W * fx, 0, W * fz];
+};
 const $ = (s) => document.querySelector(s);
+const textCache = new Map();
+function setText(sel, t) { if (textCache.get(sel) !== t) { textCache.set(sel, t); $(sel).textContent = t; } }   // per-frame text: touch the DOM only on change
 const QS = new URLSearchParams(location.search);
 const CAPTURE = QS.has('capture');
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches && !CAPTURE;
@@ -32,7 +51,7 @@ class DemoSource extends Emitter {
     w.demandMult = this.demand;
     w.listeners.push((e) => { e.seq = ++this.seq; });
     w.log('sys', `Engine started in this browser with ${fmtInt(this.fleet)} cars per dispatcher.`);
-    if (REAL) w.log('data', `Replaying real NYC taxi demand: ${REAL.source}. Hourly rate and traffic speed are measured; ${fmtInt(REAL.n)} sampled trips give the pickup and dropoff spots.`);
+    if (REAL_ALL && REAL_ALL.city === CITY0.name) w.log('data', `Replaying real ${CITY_SHORT} ride demand: ${REAL_ALL.source}. Hourly rate and traffic speed are measured; ${fmtInt(REAL_ALL.n)} sampled trips give the pickup and dropoff spots.`);
     for (let i = 0; i < 540; i++) this.sim.step(1);
   }
   start() { this.emit('status', 'demo'); this.emit('summary', this.summary()); }
@@ -47,7 +66,7 @@ class DemoSource extends Emitter {
     for (let i = 0; i < ag.length; i++) {
       const a = ag[i];
       b.x[i] = a.x; b.z[i] = a.z;
-      b.h[i] = a.hz > 0 ? 0 : a.hx > 0 ? 1 : a.hz < 0 ? 2 : 3;
+      b.h[i] = Math.round((Math.atan2(a.hx, a.hz) / (Math.PI * 2)) * 256) & 255;
       b.s[i] = a.offlineUntil >= t ? 5 : a.state === 'idle' ? (a.rebal ? 1 : 0) : a.state === 'offered' ? 2 : a.state === 'pickup' ? 3 : 4;
       if (a.rs && a.state !== 'idle') { const r = a.rs.r; b.tx[i] = a.state === 'trip' ? r.dx : r.x; b.tz[i] = a.state === 'trip' ? r.dz : r.z; }
       else { b.tx[i] = -1; b.tz[i] = -1; }
@@ -71,10 +90,10 @@ class DemoSource extends Emitter {
       zones: { smart: this.zoneMeans(sm), base: this.zoneMeans(s.base) }, hist: { smart: Array.from(sm.hist), base: Array.from(s.base.hist) },
       fx: { outages: w.outages.map((o) => [o.x, o.z, o.r, o.id]), accidents: w.blobs.filter((b) => b.accident).map((b) => [b.x, b.z, b.r]),
         spikes: w.hotspots.filter((h) => h.spike).map((h) => [h.x, h.z, h.s * 1.6]) },
-      heat: w.heat, heatScale: 1,
+      heat: w.heat, heatScale: 1, heat_w: w.HEAT_W, heat_h: w.HEAT_H,
       notable: rec ? { ...rec, zone_name: zoneName(rec.zone), timeline: this.timeline(rec.id) } : null,
       events: w.events.slice(-40).map((e) => ({ seq: e.seq || 0, clock: e.clock, type: e.type, msg: e.msg })),
-      engine: { speed: this.speed, paused: this.paused, fleet: sm.agents.length, demand: REAL ? 'real NYC TLC taxi trips' : 'synthetic city demand', eta_model: 'stand-in', forecaster: 'EWMA with trend', solver: 'greedy' },
+      engine: { speed: this.speed, paused: this.paused, fleet: sm.agents.length, demand: (REAL || (REAL_ALL && REAL_ALL.city === CITY0.name)) ? `real ${CITY_SHORT} trips` : 'synthetic city demand', eta_model: 'stand-in', forecaster: 'EWMA with trend', solver: 'greedy' },
     };
   }
   async explain(id) {
@@ -88,9 +107,10 @@ class DemoSource extends Emitter {
     if (c.cmd === 'speed') this.speed = c.value;
     else if (c.cmd === 'pause') this.paused = c.value;
     else if (c.cmd === 'demand') { this.demand = c.value; w.demandMult = c.value; }
-    else if (c.cmd === 'spike') w.triggerSpike();
-    else if (c.cmd === 'outage') w.triggerOutage();
-    else if (c.cmd === 'accident') w.triggerAccident();
+    else if (c.cmd === 'spike') w.triggerSpike(at(c));
+    else if (c.cmd === 'outage') w.triggerOutage(at(c));
+    else if (c.cmd === 'accident') w.triggerAccident(at(c));
+    else return { ok: false, error: 'Only the Python server runs this. Start it with make run.' };
     return { ok: true };
   }
   setView(v) { this.view = v; }
@@ -98,24 +118,91 @@ class DemoSource extends Emitter {
   async models() { return window.ORCA_REPORT; }
 }
 
+const at = (c) => (c.x != null && c.z != null ? [c.x, c.z] : null);
+// Packed frame (server ?enc=b64): positions as uint16 in 1/q world units (65535 = none), codes as uint8.
+function b64bytes(s) { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function unpackAgents(a) {
+  const n = a.n, inv = 1 / a.q;
+  const pos = (s, none) => {
+    const v = new Uint16Array(b64bytes(s).buffer), f = new Float32Array(n);
+    for (let i = 0; i < n; i++) f[i] = none && v[i] === 65535 ? -1 : v[i] * inv;
+    return f;
+  };
+  const out = { x: pos(a.x), z: pos(a.z), tx: pos(a.tx, true), tz: pos(a.tz, true), h: b64bytes(a.h), s: b64bytes(a.s) };
+  if (a.o) out.o = b64bytes(a.o);
+  if (a.b) out.b = b64bytes(a.b);
+  return out;
+}
+
 class LiveSource extends Emitter {
   constructor(health) { super(); this.kind = 'live'; this.health = health; this.view = 'smart'; this.speed = health.speed; this.paused = false; }
   start() { this.connect(); }
   connect() {
     if (this.es) this.es.close();
-    this.es = new EventSource(`/api/stream?view=${this.view}`);
-    this.es.addEventListener('frame', (e) => { const f = JSON.parse(e.data); f.n = f.agents.x.length; this.emit('frame', f); });
-    this.es.addEventListener('summary', (e) => { const s = JSON.parse(e.data); s.heatScale = 1 / (s.heat_scale || 10); this.emit('summary', s); });
+    this.es = new EventSource(`${API}/api/stream?view=${this.view}&enc=b64`);
+    this.es.addEventListener('frame', (e) => {
+      if (this.wrongCity) return;
+      const f = JSON.parse(e.data);
+      if (typeof f.agents.x === 'string') f.agents = unpackAgents(f.agents);
+      f.n = f.agents.x.length; this.emit('frame', f);
+    });
+    this.es.addEventListener('summary', (e) => {
+      const s = JSON.parse(e.data);
+      const sc = s.engine && s.engine.city;
+      if (sc && sc !== CITY0.name) {
+        // Someone switched the server to another city: its cars do not belong on this map. Reloading picks the
+        // right source (follow the server, or run this city in the browser if it was asked for by name).
+        if (!this.wrongCity) { this.wrongCity = true; this.es.close(); toast(`The server switched to another city. Reloading…`); setTimeout(() => location.reload(), 900); }
+        return;
+      }
+      s.heatScale = 1 / (s.heat_scale || 10); this.emit('summary', s); });
     this.es.onopen = () => this.emit('status', 'live');
     this.es.onerror = () => this.emit('status', 'reconnecting');
   }
   tick() {}
   setView(v) { this.view = v; this.connect(); }
-  async post(url, body) { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return r.json(); }
+  async post(url, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (OPERATOR_TOKEN) headers.Authorization = `Bearer ${OPERATOR_TOKEN}`;
+    let res;
+    try {
+      const r = await fetch(API + url, { method: 'POST', headers, body: JSON.stringify(body) });
+      res = await r.json().catch(() => ({ ok: r.ok }));
+      if (!r.ok && !res.error) res.error = r.status === 429 ? 'Too many requests, slow down.' : `The server refused (${r.status}).`;
+    } catch (e) { res = { ok: false, error: 'The server is unreachable.' }; }
+    if (!res.ok && res.error) toast(res.error);
+    return res;
+  }
   command(c) { if (c.cmd === 'speed') this.speed = c.value; if (c.cmd === 'pause') this.paused = c.value; return this.post('/api/command', c); }
-  async explain(id) { return (await fetch(`/api/explain/${id}`)).json(); }
-  reset(fleet) { return this.post('/api/reset', { fleet }); }
-  async models() { try { return await (await fetch('/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
+  async explain(id) {
+    try { const r = await fetch(`${API}/api/explain/${id}`); if (r.ok) return await r.json(); } catch (e) { /* network hiccup */ }
+    return { found: false, waiting: false, id };
+  }
+  reset(fleet, opts = {}) { return this.post('/api/reset', { fleet, ...opts }); }
+  async models() { try { return await (await fetch(API + '/api/models')).json(); } catch (e) { return window.ORCA_REPORT; } }
+}
+
+// Operator token for servers in protected mode: open /app?token=... once; kept for this browser tab only.
+const OPERATOR_TOKEN = (() => {
+  try {
+    const t = QS.get('token');
+    if (t) { sessionStorage.setItem('orca-token', t); history.replaceState(null, '', location.pathname); }
+    return sessionStorage.getItem('orca-token');
+  } catch (e) { return null; }
+})();
+
+// Behind orca.router each city has its own server process under /cities/<city>/; a plain orca.server
+// answers at the root. API is the prefix this page talks to.
+let API = '';
+async function cityProcess(routed) {
+  // Only a router names its cities in X-Orca-Router; a plain server is never asked for /cities/... (it would 404).
+  if (!routed || !routed.split(' ').includes(CITY0.name)) return null;
+  try {
+    const r = await fetch(`/cities/${CITY0.name}/api/health`, { cache: 'no-store' });
+    if (!r.ok) return null;
+    const h = await r.json();
+    return h && h.mode === 'live' && h.city === CITY0.name ? h : null;
+  } catch (e) { return null; }
 }
 
 async function pickSource() {
@@ -123,7 +210,17 @@ async function pickSource() {
   try {
     const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 1500);
     const r = await fetch('/api/health', { signal: ctl.signal, cache: 'no-store' }); clearTimeout(to);
-    if (r.ok) { const h = await r.json(); if (h && h.mode === 'live') return new LiveSource(h); }
+    const own = await cityProcess(r.headers.get('x-orca-router'));
+    if (own) { API = `/cities/${CITY0.name}`; return new LiveSource(own); }
+    if (r.ok) {
+      const h = await r.json();
+      if (h && h.city && h.city !== CITY0.name) {
+        // The server simulates another city: follow it, unless this city was asked for; then run it in the browser.
+        if (!QS.has('city')) { location.search = `?city=${h.city}`; return new Promise(() => {}); }
+        return new DemoSource();
+      }
+      if (h && h.mode === 'live') return new LiveSource(h);
+    }
   } catch (e) { /* no server: run the demo */ }
   return new DemoSource();
 }
@@ -132,19 +229,49 @@ async function pickSource() {
 if (!/^https?:$/.test(location.protocol)) $('#homeLink').removeAttribute('href');   // opened as a file: no home page
 const canvas = $('#gl'), stage = $('.stage');
 let R;
-try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, pcf: 1 } : {}); } catch (e) {
+try { R = new Renderer(canvas, CAPTURE ? { shadowSize: 1536, preserve: true } : {}); } catch (e) {
   $('#fatal').style.display = 'grid';
   $('#fatal').textContent = 'This browser cannot start WebGL2, so the city cannot be drawn. Try a recent Chrome, Edge, Firefox or Safari.';
   throw e;
 }
 const DPR = CAPTURE ? 1 : Math.min(devicePixelRatio || 1, 2);
+// A GPU reset (driver update, sleep, too many tabs) used to leave the map blank for good: rebuild by reloading.
+let glLost = false;
+canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); glLost = true; }, false);
+canvas.addEventListener('webglcontextrestored', () => location.reload(), false);
 const sunDir = (() => { const v = [-0.62, 0.5, 0.48], l = Math.hypot(...v); return v.map((x) => x / l); })();
 R.light = { dir: sunDir, color: [2.9, 2.72, 2.45], sky: [0.44, 0.50, 0.60], ground: [0.32, 0.30, 0.29] };
-R.fog = [0.905, 0.922, 0.94]; R.skyTop = [0.80, 0.85, 0.91]; R.fogRange = [560, 1500]; R.exposure = 0.62; R.ao = 0.42;
+const DAY = { fog: [0.905, 0.922, 0.94], sky: [0.80, 0.85, 0.91], amb: [0.44, 0.50, 0.60], gnd: [0.32, 0.30, 0.29], exp: 0.62 };
+const NIGHT = { fog: [0.11, 0.13, 0.19], sky: [0.05, 0.07, 0.13], amb: [0.10, 0.12, 0.20], gnd: [0.05, 0.05, 0.07], exp: 0.95 };
+const mixv = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+let lightMode = QS.get('light') || 'clock';                 // 'clock' follows the city clock; 'day' / 'night' pin it
+function updateDaylight(cityClock) {
+  const h = lightMode === 'day' ? 13 : lightMode === 'night' ? 22.5 : ((cityClock || 0) / 3600) % 24;
+  const ang = ((h - 6) / 12) * Math.PI;                       // sunrise 06:00, noon overhead-ish, sunset 18:00
+  const elev = Math.sin(ang), az = ang;
+  const e = Math.max(0.06, elev);
+  const dir = [-Math.cos(az) * 0.8, e, 0.45 + 0.2 * Math.sin(az)], l = Math.hypot(...dir);
+  R.light.dir = dir.map((v) => v / l);
+  const night = clamp01((0.12 - elev) / 0.32), dusk = clamp01(1 - Math.abs(elev - 0.08) / 0.2) * (1 - night);
+  const sunCol = mixv([2.9, 2.72, 2.45], [3.0, 1.75, 1.05], dusk);
+  R.light.color = sunCol.map((v) => v * (1 - night * 0.92));
+  R.light.sky = mixv(DAY.amb, NIGHT.amb, night); R.light.ground = mixv(DAY.gnd, NIGHT.gnd, night);
+  R.fog = mixv(mixv(DAY.fog, [0.93, 0.80, 0.70], dusk * 0.5), NIGHT.fog, night);
+  R.skyTop = mixv(mixv(DAY.sky, [0.62, 0.62, 0.78], dusk * 0.6), NIGHT.sky, night);
+  R.exposure = DAY.exp + (NIGHT.exp - DAY.exp) * night;
+  R.night = night;
+  if (R.water) { R.water.deep = mixv([0.60, 0.70, 0.77], [0.05, 0.07, 0.11], night); R.water.shallow = mixv([0.70, 0.79, 0.84], [0.08, 0.10, 0.15], night); }
+}
+R.fog = [0.905, 0.922, 0.94]; R.skyTop = [0.80, 0.85, 0.91]; R.fogRange = STREETS ? [900, 2600] : [560, 1500]; R.exposure = 0.62; R.ao = 0.42;
+performance.mark('orca-city-start');
 buildCity(R);
+performance.measure('orca-city-build', 'orca-city-start');
 
-const cars = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, cast: true, order: 4 });
-const pins = R.mesh(pinGeometry(), 1500, { dynamic: true, cast: true, order: 4 });
+const carsNear = R.mesh(carGeometry(), MAX_AGENTS, { dynamic: true, order: 4, self: 0.45 });
+const carsFar = R.mesh(carGeometryFar(), MAX_AGENTS, { dynamic: true, order: 4, self: 0.6 });
+const beams = R.mesh(new Geo().ring(0, 1, 14, [1, 1, 1]), MAX_AGENTS, { dynamic: true, unlit: true, alpha: true, soft: true, order: 5, depthWrite: false });
+const CAR_FAR = 240;                                // beyond this camera distance cars use the simple model
+const pins = R.mesh(pinGeometry(), 1500, { dynamic: true, order: 4 });
 const rings = R.mesh(new Geo().ring(1.25, 1.95, 40, [1, 1, 1]), MAX_REQ, { dynamic: true, unlit: true, alpha: true, order: 6, depthWrite: false });
 const pops = R.mesh(new Geo().ring(0.86, 1.0, 48, [1, 1, 1]), 400, { dynamic: true, unlit: true, alpha: true, order: 7, depthWrite: false });
 const marker = R.mesh(new Geo().ring(3.2, 4.0, 56, [1, 1, 1]), 1, { dynamic: true, unlit: true, alpha: true, order: 8, depthWrite: false });
@@ -152,31 +279,53 @@ const jobLines = R.lines(9000, { order: 1 });
 const fxLines = R.lines(6000, { order: 2, depth: false });
 const discs = R.mesh(new Geo().ring(0, 1, 72, [1, 1, 1]), 24, { dynamic: true, unlit: true, alpha: true, order: 5, depthWrite: false });
 const exLines = R.lines(64, { order: 3, depth: false });
-const HN = 54, heatPix = new Uint8Array(HN * HN * 4), heatTex = R.heatTexture(HN);
-R.planes.push({ tex: heatTex, rect: new Float32Array([0, 0, W, W]), y: 0.48, alpha: 0.9, visible: true });
+const HCELL = W / 54, HW = Math.ceil(WX / HCELL), HH = Math.ceil(WZ / HCELL);
+const heatPix = new Uint8Array(HW * HH * 4), heatTex = R.heatTexture(HW, HH);
+const heatPlane = { tex: heatTex, rect: new Float32Array([0, 0, HW * HCELL, HH * HCELL]), y: 0.48, alpha: 0.9, visible: true };
+R.planes.push(heatPlane);
 
-const STATE_COLORS = ['#737B86', '#7FB0C8', '#FF7A00', '#FFC20A', '#2D5BE3', '#E5352B'].map(srgb);
+// 0 free, 1 repositioning, 2 offer sent, 3 to pickup, 4 rider on board, 5 no GPS, 6 to a charger, 7 charging, 8 off duty
+const STATE_COLORS = ['#737B86', '#7FB0C8', '#FF7A00', '#FFC20A', '#2D5BE3', '#E5352B', '#12A150', '#3DDC84', '#737B86'].map(srgb);
+const C_SHARED = srgb('#0E9FA0');                   // two or three riders on board
 const C_WAIT0 = srgb('#15171A'), C_WAIT1 = srgb('#E5352B'), C_OFFER = srgb('#FF7A00'), C_ASSIGNED = srgb('#C79200'), C_P1 = srgb('#E5352B');
 const LINE_COL = { 2: [1.0, 0.48, 0.0, 0.9], 3: [0.69, 0.5, 0.0, 0.85], 4: [0.18, 0.36, 0.89, 0.28] };
-const HEAD_ANGLE = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+const headAngle = (h) => (h / 256) * Math.PI * 2;
+let CAR_K = 1.25;                                   // car and ring scale; adapts to zoom on the real map
 
 // ----------------------------------------------------------------------------- camera + resize
-const cam = new OrbitCam([W / 2, 0, W / 2 + 6], 0.62, 1.45, 520);
-cam.limits.cx = W / 2; cam.limits.cz = W / 2; cam.limits.bound = W / 2 + 60;
-cam.lightCenter = [W / 2, 0, W / 2]; cam.lightRadius = 200;
+const HOME_T = STREETS ? place('Midtown North') : [W / 2, 0, W / 2 + 6];
+const cam = new OrbitCam(HOME_T, 0.62, 1.45, STREETS ? 900 : 520);
+cam.limits.cx = WX / 2; cam.limits.cz = WZ / 2; cam.limits.bound = W / 2 + 60;
+cam.limits.boundX = WX / 2 + 60; cam.limits.boundZ = WZ / 2 + 60;
+if (STREETS) { cam.limits.distMax = 1300; cam.limits.distMin = 14; }   // close enough to see a car's lamps
+cam.lightCenter = [WX / 2, 0, WZ / 2]; cam.lightRadius = STREETS ? 260 : 200;
 const VIEWS = {
-  home: { t: [W / 2, 0, W / 2 + 6], yaw: 0.62, pitch: 0.72, dist: 340 },
+  home: { t: HOME_T, yaw: STREETS ? 0.55 : 0.62, pitch: STREETS ? 0.66 : 0.72, dist: STREETS ? 520 : 340 },
   top: { pitch: 1.5 },
 };
 let viewW = 1, viewH = 1;
 function resize() {
-  viewW = stage.clientWidth; viewH = stage.clientHeight;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  if (w < 2 || h < 2) return;    // not laid out yet (a 0 x 0 stage gave a NaN camera and an empty map); the observer calls again
+  viewW = w; viewH = h;
   R.resize(viewW, viewH, DPR); cam.aspect = viewW / viewH; sizeChart();
+}
+// Dynamic resolution: the 3D view draws a smaller area of its full-size target while frames run slow and scales it
+// up (Renderer.present), so changing resolution costs nothing and can follow the load continuously. It falls
+// quickly when frames take over 18.5 ms, and climbs slowly while they keep the display's pace; never below
+// about 0.75 device pixels per CSS pixel.
+const SCALE_MIN = Math.min(1, Math.max(0.5, 0.75 / DPR));
+let frameEma = 1 / 60;
+function adaptResolution(dt) {
+  if (CAPTURE || document.hidden) return;
+  frameEma += (Math.min(dt, 0.1) - frameEma) * 0.08;
+  if (frameEma > 0.0185) R.scale = Math.max(SCALE_MIN, R.scale * 0.985);
+  else if (frameEma < 0.0172) R.scale = Math.min(1, R.scale * 1.0015);
 }
 
 // ----------------------------------------------------------------------------- live frame state + drawing
 let src, curF = null, prevF = null, recvAt = 0, summary = null, view = 'smart';
-let renderReqs = [];
+let renderReqs = [], frameGap = 0.1;          // seconds between frames from the server, smoothed
 const angle = new Float32Array(MAX_AGENTS); let angleInit = false;
 const born = new Map(), lastStatus = new Map(), lastPos = new Map();
 const effects = [];   // expanding rings: {x, z, t0, dur, r0, r1, col}
@@ -185,6 +334,7 @@ function addEffect(x, z, col, r1 = 4, dur = 0.8, r0 = 1) { if (effects.length < 
 function onFrame(f) {
   if (f.view && f.view !== view) return;
   prevF = src.kind === 'live' && curF && curF.n === f.n ? { n: curF.n, agents: { x: Float32Array.from(curF.agents.x), z: Float32Array.from(curF.agents.z) } } : null;
+  if (curF) frameGap += (Math.min(0.4, Math.max(0.03, clock - recvAt)) - frameGap) * 0.15;
   curF = f; recvAt = clock;
   // request lifecycle effects
   const seen = new Set();
@@ -203,25 +353,37 @@ function onFrame(f) {
 let clock = 0;
 function drawFrame(dt) {
   const f = curF; if (!f) return;
-  const A = f.agents, n = f.n, P = prevF ? prevF.agents : null;
-  const alpha = P ? clamp01((clock - recvAt) / 0.105) : 1;
+  CAR_K = STREETS ? Math.max(0.32, Math.min(1.25, cam.dist / 380)) : 1.25;
+  const A = f.agents, n = f.n, P = prevF ? prevF.agents : null, far = cam.dist > CAR_FAR, cars = far ? carsFar : carsNear;
+  (far ? carsNear : carsFar).commit(0);
+  const alpha = P ? clamp01((clock - recvAt) / frameGap) : 1;
   const turn = 1 - Math.exp(-dt * 14);
   jobLines.reset();
+  R.dash = Math.max(0.5, 2.0 * CAR_K);
+  const night = R.night || 0, lamps = !far && night > 0.05; let nb = 0;
   for (let i = 0; i < n; i++) {
     let x = A.x[i], z = A.z[i];
     if (P) { const px = P.x[i], pz = P.z[i]; if (Math.abs(x - px) + Math.abs(z - pz) < 8) { x = px + (x - px) * alpha; z = pz + (z - pz) * alpha; } }
-    const target = HEAD_ANGLE[A.h[i]] || 0;
+    const target = headAngle(A.h[i]);
     if (!angleInit) angle[i] = target;
     else { let d = target - angle[i]; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; angle[i] += d * turn; }
-    const st = A.s[i], c = STATE_COLORS[st];
-    cars.set(i, x, 0, z, 1.25, 1.25, 1.25, angle[i], c[0], c[1], c[2], 1);
+    const st = A.s[i], c = A.o && A.o[i] >= 2 ? C_SHARED : STATE_COLORS[st];
+    if (st === 8) { cars.set(i, x, -9, z, 0, 0, 0, 0, 0, 0, 0, 0); continue; }     // logged off: not on the map
+    cars.set(i, x, 0, z, CAR_K, CAR_K, CAR_K, angle[i], c[0], c[1], c[2], 1);
+    if (lamps && st !== 5 && st !== 7) {                              // headlamp pool on the road ahead
+      const fx = Math.sin(angle[i]), fz = Math.cos(angle[i]);
+      beams.set(nb++, x + fx * 2.9 * CAR_K, 0.09, z + fz * 2.9 * CAR_K, 1.25 * CAR_K, 1, 2.3 * CAR_K, angle[i], 1.0, 0.86, 0.58, 0.42 * night);
+    }
     if ((st === 2 || st === 3 || st === 4) && A.tx[i] >= 0) {
       const lc = LINE_COL[st], y = st === 4 ? 0.9 : 1.3;
-      jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : 1.7);
+      // straight lines to far destinations would cross the whole island: on the real map show pickup legs only
+      if (!STREETS || (st !== 4 && Math.hypot(A.tx[i] - x, A.tz[i] - z) < 120)) {
+        jobLines.seg(x, y, z, A.tx[i], y, A.tz[i], lc[0], lc[1], lc[2], lc[3], st === 4 ? 1.2 : -2.0);
+      }
     }
   }
   angleInit = true;
-  cars.commit(n); jobLines.commit();
+  cars.commit(n); jobLines.commit(); beams.commit(nb);
 
   let nr = 0, np = 0;
   renderReqs = f.reqs;
@@ -229,12 +391,15 @@ function drawFrame(dt) {
     if (nr >= MAX_REQ) break;
     const [id, x, z, status, p1, age] = q, w = Math.min(1, age / 600);
     const b = born.get(id) ?? -10, grow = reduceMotion ? 1 : easeOutBack(clamp01((clock - b) / 0.45));
-    let s = (1 + w * 0.8) * grow * (reduceMotion ? 1 : 1 + 0.07 * Math.sin(clock * 4 + id));
+    let s = (1 + w * 0.8) * grow * (reduceMotion ? 1 : 1 + 0.07 * Math.sin(clock * 4 + id)) * (CAR_K / 1.25);
     let c;
     if (status === 2) { s *= 0.55; c = C_ASSIGNED; } else if (status === 1) c = C_OFFER; else if (p1) c = C_P1;
     else c = [C_WAIT0[0] + (C_WAIT1[0] - C_WAIT0[0]) * w, C_WAIT0[1] + (C_WAIT1[1] - C_WAIT0[1]) * w, C_WAIT0[2] + (C_WAIT1[2] - C_WAIT0[2]) * w];
     rings.set(nr++, x, 0.1, z, s, 1, s, 0, c[0], c[1], c[2], 0.92);
-    if (p1 && status !== 2 && np < 1500) { const k = grow; pins.set(np++, x, 0, z, k, k, k, 0, C_P1[0], C_P1[1], C_P1[2], 1); }
+    if (p1 && status !== 2 && np < 1500) {                 // urgent pins drop in, then bob
+      const k = (CAR_K / 1.25) * Math.max(0.6, grow), drop = reduceMotion ? 0 : (1 - easeOut(clamp01((clock - b) / 0.6))) * 9 + 0.35 * (1 + Math.sin(clock * 3 + id)) * k;
+      pins.set(np++, x, drop, z, k, k, k, 0, C_P1[0], C_P1[1], C_P1[2], 1);
+    }
   }
   rings.commit(nr); pins.commit(np);
 
@@ -247,7 +412,7 @@ function drawFrame(dt) {
     pops.set(ne++, e.x, 0.6, e.z, r, 1, r, 0, e.col[0], e.col[1], e.col[2], (1 - k) * 0.9);
   }
   pops.commit(ne);
-  $('#clock').textContent = hhmm(f.clock);
+  setText('#clock', hhmm(f.clock));
 }
 
 // ----------------------------------------------------------------------------- incidents and short zones (with shockwaves)
@@ -259,7 +424,15 @@ function drawFx() {
   const disc = (x, z, r, col) => { if (nd < 24) discs.set(nd++, x, 0.7, z, r, 1, r, 0, col[0], col[1], col[2], 0.13 + 0.05 * pulse); };
   const pulse = 0.65 + 0.35 * Math.sin(clock * 3);
   if (view === 'smart') for (const zi of S.deficit) {
-    const zx = zi % CFG.ZONES, zz = Math.floor(zi / CFG.ZONES), Z = CFG.ZSIZE, p = 2.5, y = 1.2, c = [0.78, 0.57, 0.0, 0.75 * pulse];
+    const y = 1.2, c = [0.78, 0.57, 0.0, 0.75 * pulse];
+    if (STREETS) {
+      for (let r = CITY0.zoneRingOff[zi]; r < CITY0.zoneRingOff[zi + 1]; r++) {
+        const a0 = CITY0.ringOff[r], a1 = CITY0.ringOff[r + 1];
+        for (let k = a0; k < a1 - 1; k++) fxLines.seg(CITY0.rx[k], y, CITY0.rz[k], CITY0.rx[k + 1], y, CITY0.rz[k + 1], ...c, 2.2);
+      }
+      continue;
+    }
+    const zx = zi % CFG.ZONES, zz = Math.floor(zi / CFG.ZONES), Z = CFG.ZSIZE, p = 2.5;
     const x0 = zx * Z + p, x1 = (zx + 1) * Z - p, z0 = zz * Z + p, z1 = (zz + 1) * Z - p;
     for (const [a, b, cc, d] of [[x0, z0, x1, z0], [x1, z0, x1, z1], [x1, z1, x0, z1], [x0, z1, x0, z0]]) fxLines.seg(a, y, b, cc, y, d, ...c, 2.2);
   }
@@ -274,12 +447,20 @@ function drawFx() {
   for (const [x, z, r] of S.fx.outages) ring(`o${Math.round(x)},${Math.round(z)}`, x, z, r, [0.9, 0.14, 0.1]);
   for (const [x, z, r] of S.fx.accidents) { ring(`a${Math.round(x)},${Math.round(z)}`, x, z, r, [1.0, 0.45, 0.0]); fxLines.circle(x, 1.4, z, r * 0.45, 1, 0.45, 0, 0.9, 2.4, 48); }
   for (const [x, z, r] of S.fx.spikes) ring(`s${Math.round(x)},${Math.round(z)}`, x, z, r, [0.42, 0.24, 0.94]);
+  const st = S.fx.chargers && S.fx.chargers[view];
+  if (st) for (const [x, z, plugs, used, queue, dc] of st) {     // a charging station: plugs in use, and a red ring when cars queue
+    const r = (dc ? 3.2 : 2.2) * Math.max(0.6, CAR_K), busy = used / Math.max(1, plugs);
+    fxLines.circle(x, 1.2, z, r, 0.07, 0.63, 0.31, 0.95, 2.2, 24);
+    if (busy > 0) fxLines.circle(x, 1.25, z, r * 0.55, 0.24, 0.86, 0.52, 0.5 + 0.5 * busy, 3.2 * busy + 1, 18);
+    if (queue > 0) fxLines.circle(x, 1.3, z, r * 1.45, 0.9, 0.14, 0.1, 0.9 * pulse, 2.2, 24);
+  }
   fxLines.commit();
 }
 function paintHeat(arr, scale) {
   let mx = 4; for (let i = 0; i < arr.length; i++) if (arr[i] * scale > mx) mx = arr[i] * scale;
   const ST = [[0, 255, 214, 60, 0], [0.35, 255, 200, 40, 60], [0.7, 255, 130, 20, 110], [1, 229, 53, 43, 140]];
-  for (let i = 0; i < HN * HN; i++) {
+  if (arr.length !== HW * HH) return;          // different city on the server: nothing sensible to paint
+  for (let i = 0; i < HW * HH; i++) {
     const v = Math.min(1, (arr[i] * scale) / mx), o = i * 4;
     let k = 1; while (k < ST.length - 1 && v > ST[k][0]) k++;
     const a = ST[k - 1], b = ST[k], f = clamp01((v - a[0]) / (b[0] - a[0]));
@@ -301,16 +482,42 @@ function drawExplain() {
   if (r.base && !r.base.same) seg(r.base.rx, r.base.rz, [0.33, 0.35, 0.39, 1], 3, 2.4);
   seg(r.chosen.rx, r.chosen.rz, [0.88, 0.66, 0.0, 1], 4.2, 2.6);
   exLines.commit();
-  const m = 1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3));
+  const m = (1 + (reduceMotion ? 0 : 0.08 * Math.sin(clock * 3))) * (CAR_K / 1.25);   // sized with the cars, so it stays a marker up close
   marker.set(0, r.x, 0.2, r.z, m, 1, m, 0, 0, 0, 0, 0.9); marker.commit(1);
-  plate(plates[0], r.x, 10, r.z, `Request ${r.id}`, '');
-  plate(plates[1], r.chosen.rx, 4, r.chosen.rz, `ORCA picks ${car(r.chosen.id)}`, 'pick');
-  if (r.base && !r.base.same) plate(plates[2], r.base.rx, 4, r.base.rz, `Nearest: ${car(r.base.id)}`, 'near'); else plates[2].classList.remove('on');
+  const on = [plate(plates[0], r.x, 10, r.z, `Request ${r.id}`, ''),
+    plate(plates[1], r.chosen.rx, 4, r.chosen.rz, `ORCA picks ${car(r.chosen.id)}`, 'pick')];
+  if (r.base && !r.base.same) on.push(plate(plates[2], r.base.rx, 4, r.base.rz, `Nearest: ${car(r.base.id)}`, 'near')); else plates[2].classList.remove('on');
+  unstack(on.filter(Boolean));
 }
 function plate(el, x, y, z, text, cls) {
   const [sx, sy, vis] = cam.project(x, y, z, viewW, viewH);
-  if (!vis || sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40 || clock - shownAt < 0.5) { el.classList.remove('on'); return; }
-  el.className = 'plate on ' + cls; el.textContent = text; el.style.left = sx + 'px'; el.style.top = sy + 'px';
+  if (!vis || sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40 || clock - shownAt < 0.5) { el.classList.remove('on'); return null; }
+  const c = 'plate on ' + cls;
+  if (el.className !== c) el.className = c;
+  if (el.textContent !== text) { el.textContent = text; el._w = 0; }
+  el.style.left = sx + 'px'; el.style.top = sy + 'px';
+  if (!el._w) { el._w = el.offsetWidth; el._h = el.offsetHeight; }
+  return { el, sx, sy };
+}
+// Zoomed out, the request and its candidate cars project to nearly the same pixel and the plates pile up.
+// Lift each plate above any it would cover; its stem stretches down to the point it labels.
+function unstack(ps) {
+  ps.sort((a, b) => b.sy - a.sy);
+  const placed = [];
+  for (const p of ps) {
+    const w = p.el._w, h = p.el._h;
+    let lift = 0, moved = true;
+    while (moved) {
+      moved = false;
+      const top = p.sy - 10 - h - lift, l = p.sx - w / 2;
+      for (const q of placed) {
+        if (l < q.r + 4 && l + w > q.l - 4 && top < q.b + 4 && top + h > q.t - 4) { lift = p.sy - 10 - (q.t - 4) ; moved = true; break; }
+      }
+    }
+    p.el.style.setProperty('--lift', lift + 'px');
+    const top = p.sy - 10 - h - lift;
+    placed.push({ l: p.sx - w / 2, r: p.sx + w / 2, t: top, b: top + h });
+  }
 }
 
 // ----------------------------------------------------------------------------- input: camera, picking, custom cursor
@@ -346,6 +553,12 @@ canvas.addEventListener('pointermove', (e) => {
 });
 canvas.addEventListener('pointerup', (e) => {
   const d = drag; drag = null;
+  if (d && d.moved < 6 && placing) {
+    const [x, y] = local(e), g = cam.ground(x, y, viewW, viewH);
+    if (g) { src.command({ cmd: placing, x: g[0], z: g[2] }); addEffect(g[0], g[2], [0, 0, 0], 8, 0.7); }
+    setPlacing(null);
+    return;
+  }
   if (d && d.moved < 6) {
     const [x, y] = local(e), q = nearestReq(x, y);
     if (q) { pinned = q[0]; selectTab('why'); refreshPinned(); addEffect(q[1], q[2], [0, 0, 0], 4, 0.5); }
@@ -380,6 +593,7 @@ const keys = new Set();
 addEventListener('keydown', (e) => {
   if (e.target.closest('input, dialog')) return;
   if (e.key === ' ') { e.preventDefault(); if (touring) tourTogglePlay(); else togglePause(); return; }
+  if (e.key === 'Escape' && placing) { setPlacing(null); return; }
   if (e.key === 'Escape') { if (touring) endTour(); else { pinned = null; lastSwap = 0; if (summary) renderWhy(summary.notable); } return; }
   if (e.target !== document.body && e.target !== canvas) return;
   const k = e.key.toLowerCase();
@@ -387,6 +601,7 @@ addEventListener('keydown', (e) => {
   if (k === 'h') goHome();
 });
 addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+addEventListener('blur', () => keys.clear());   // a key released in another window never sends keyup: the camera kept flying
 function keyboardCam(dt) {
   if (!keys.size) return;
   const sp = cam.dist * 0.9 * dt, c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
@@ -413,12 +628,14 @@ function updateCursor() {
   if (!on) return;
   ptr.cx += (ptr.x - ptr.cx) * 0.45; ptr.cy += (ptr.y - ptr.cy) * 0.45;
   cursor.style.transform = `translate(${ptr.cx}px, ${ptr.cy}px)`;
-  const state = drag ? (drag.mode === 'pan' ? 'pan' : drag.moved > 6 ? 'drag' : '') : hoverReq ? 'hover' : '';
-  cursor.className = 'show ' + state + (state ? ' labeled' : '');
-  cursorLbl.className = 'lbl' + (state === 'hover' ? ' yellow' : '');
-  cursorLbl.textContent = state === 'hover' ? `Inspect request ${hoverReq[0]}${hoverReq[4] ? ', urgent' : ''}` : state === 'drag' ? 'Rotate' : state === 'pan' ? 'Move' : '';
+  const state = drag ? (drag.mode === 'pan' ? 'pan' : drag.moved > 6 ? 'drag' : '') : placing ? 'place' : hoverReq ? 'hover' : '';
+  cursor.className = 'show ' + (state === 'place' ? 'hover' : state) + (state ? ' labeled' : '');
+  cursorLbl.className = 'lbl' + (state === 'hover' || state === 'place' ? ' yellow' : '');
+  cursorLbl.textContent = state === 'place' ? `Place the ${PLACE_NAME[placing]} here` : state === 'hover' ? `Inspect request ${hoverReq[0]}${hoverReq[4] ? ', urgent' : ''}`
+    : state === 'drag' ? 'Rotate' : state === 'pan' ? 'Move' : '';
 }
-setInterval(() => { const deg = (-cam.yaw * 180) / Math.PI; $('#compass svg').style.transform = `rotate(${deg}deg)`; }, 50);
+const compass = $('#compass svg'); let compassDeg = null;
+function updateCompass() { const deg = Math.round((-cam.yaw * 180) / Math.PI); if (deg !== compassDeg) { compassDeg = deg; compass.style.transform = `rotate(${deg}deg)`; } }
 
 // ----------------------------------------------------------------------------- console: scoreboard (tweened), grid, chart
 const GRID_ROWS = [
@@ -441,7 +658,7 @@ function tweenBoard(dt) {
   if (tw.a == null) return;
   const k = 1 - Math.exp(-dt * 5);
   tw.a += (tw.ta - tw.a) * k; tw.b += (tw.tb - tw.b) * k;
-  $('#w-orca').textContent = mmss(tw.a); $('#w-near').textContent = mmss(tw.b);
+  setText('#w-orca', mmss(tw.a)); setText('#w-near', mmss(tw.b));
 }
 const chart = $('#chart'), cg = chart.getContext('2d');
 function sizeChart() { const r = chart.getBoundingClientRect(); const d = Math.min(devicePixelRatio || 1, 2); chart.width = Math.max(1, r.width * d); chart.height = Math.max(1, r.height * d); chart.dpr = d; if (summary) drawChart(summary); }
@@ -527,6 +744,19 @@ function renderForecast(S) {
       <span class="n">${Math.round(f.forecast)}</span><span class="n idle">${f.idle}</span></div>`).join('');
 }
 const ZCOL = [[244, 241, 230], [255, 216, 77], [255, 154, 46], [229, 53, 43]];
+function zoneSvg(id) {
+  const s = 1 / Math.max(WX, WZ) * 100, paths = [];
+  for (let zi = 0; zi < ZN; zi++) {
+    let d = '';
+    for (let r = CITY0.zoneRingOff[zi]; r < CITY0.zoneRingOff[zi + 1]; r++) {
+      const a0 = CITY0.ringOff[r], a1 = CITY0.ringOff[r + 1];
+      for (let k = a0; k < a1; k += Math.max(1, Math.floor((a1 - a0) / 60))) d += `${k === a0 ? 'M' : 'L'}${(CITY0.rx[k] * s).toFixed(1)} ${(CITY0.rz[k] * s).toFixed(1)}`;
+      d += 'Z';
+    }
+    paths.push(`<path data-z="${zi}" d="${d}"><title>${CITY0.zoneName(zi)}</title></path>`);
+  }
+  return `<svg class="zsvg" id="${id}" viewBox="0 0 ${(WX * s).toFixed(1)} ${(WZ * s).toFixed(1)}" role="img" aria-label="Map of ${CITY0.cityLabel}: ${CITY0.zoneLabel}">${paths.join('')}</svg>`;
+}
 function zoneColor(v, mx) {
   if (v == null) return '#E9EBEE';
   const t = Math.min(1, v / mx) * 3, i = Math.min(2, Math.floor(t)), f = t - i, a = ZCOL[i], b = ZCOL[i + 1];
@@ -536,8 +766,8 @@ let zonesBuilt = false;
 function renderZones(S) {
   if (!S.zones) { $('#p-zn').innerHTML = '<p class="muted">Zone statistics will appear after the first pickups.</p>'; return; }
   if (!zonesBuilt) {
-    const cells = (id) => `<div class="zmap" id="${id}">${Array.from({ length: ZN }, (_, i) => `<span data-z="${i}"></span>`).join('')}</div>`;
-    $('#p-zn').innerHTML = `<p class="muted" style="margin:0 0 12px">Average wait in each of the 49 zones since the city started, on the same colour scale. North is at the top.</p>
+    const cells = (id) => STREETS ? zoneSvg(id) : `<div class="zmap" id="${id}">${Array.from({ length: ZN }, (_, i) => `<span data-z="${i}"></span>`).join('')}</div>`;
+    $('#p-zn').innerHTML = `<p class="muted" style="margin:0 0 12px">Average wait in each of the ${ZN} ${STREETS ? `${CITY0.zoneLabel} of ${CITY_SHORT}` : 'zones'} since the city started, on the same colour scale. North is at the top.</p>
       <div class="zgrids"><div><h4>ORCA</h4>${cells('zm-a')}</div><div><h4>Nearest car</h4>${cells('zm-b')}</div></div>
       <div class="zscale"><span>0:00</span><i></i><span id="zmax">5:00</span></div>
       <div class="hist"><h4>How long riders waited</h4><div class="hrow" id="hrow"></div><div class="hax"><span>0 min</span><span>3 min</span><span>6+ min</span></div>
@@ -546,8 +776,8 @@ function renderZones(S) {
   }
   const all = [...S.zones.smart, ...S.zones.base].filter((v) => v != null), mx = Math.max(120, ...all);
   $('#zmax').textContent = mmss(mx);
-  for (const [id, arr, other, name] of [['#zm-a', S.zones.smart, S.zones.base, 'ORCA'], ['#zm-b', S.zones.base, S.zones.smart, 'Nearest']]) {
-    $(id).querySelectorAll('span').forEach((c, i) => { c.style.background = zoneColor(arr[i], mx); c.title = `${zoneName(i)}: ${arr[i] == null ? 'no pickups yet' : mmss(arr[i])} with ${name}`; });
+  for (const [id, arr, name] of [['#zm-a', S.zones.smart, 'ORCA'], ['#zm-b', S.zones.base, 'Nearest']]) {
+    $(id).querySelectorAll('[data-z]').forEach((c, i) => { c.style[STREETS ? 'fill' : 'background'] = zoneColor(arr[i], mx); if (!STREETS) c.title = `${zoneName(i)}: ${arr[i] == null ? 'no pickups yet' : mmss(arr[i])} with ${name}`; });
   }
   const ha = S.hist.smart, hb = S.hist.base, ta = ha.reduce((a, b) => a + b, 0) || 1, tb = hb.reduce((a, b) => a + b, 0) || 1;
   const mh = Math.max(...ha.map((v) => v / ta), ...hb.map((v) => v / tb), 0.01);
@@ -570,10 +800,14 @@ function renderEngine(S) {
   const e = S.engine;
   $('#engine').textContent = src.kind === 'live'
     ? `Connected to the ORCA server, ${fmtInt(e.fleet)} cars per dispatcher, demand from ${e.demand}. ETA model: ${e.eta_model}. Forecast: ${e.forecaster}. Matching: ${e.solver}${e.solve_ms != null ? `, ${e.solve_ms} ms per batch` : ''}.`
-    : `Running in this browser, ${fmtInt(e.fleet)} cars per dispatcher, demand from ${e.demand}${REAL ? ' (a 24,000-trip sample at the real hourly rate)' : ''}. Start the Python server for the trained ETA and demand models and the full 2-million-trip replay.`;
+    : `Running in this browser, ${fmtInt(e.fleet)} cars per dispatcher, demand from ${e.demand}${REAL_ALL && REAL_ALL.city === CITY0.name ? ' (a 24,000-trip sample at the real hourly rate)' : ''}. Start the Python server for the trained ETA and demand models and the full 2-million-trip replay.`;
 }
 function onSummary(S) {
   summary = S;
+  const pool = !!(S.engine && S.engine.pool), ev = !!(S.fx && S.fx.chargers);
+  $('#poolT').setAttribute('aria-pressed', pool); $('#evT').setAttribute('aria-pressed', ev);
+  document.querySelectorAll('.k-pool').forEach((k) => (k.hidden = !pool));
+  document.querySelectorAll('.k-ev').forEach((k) => (k.hidden = !ev));
   renderBoard(S); drawChart(S); renderForecast(S); renderZones(S); renderEvents(S); renderEngine(S);
   paintHeat(S.heat, S.heatScale ?? 1);
   if (touring) return;
@@ -593,7 +827,7 @@ $('#repBtn').onclick = async () => {
   };
   const bench = d && d.benchmark ? (() => {
     const pols = [['nearest', 'Nearest car'], ['orca_heuristic', 'ORCA, heuristic models'], ['orca_learned', 'ORCA, learned models']];
-    const agg = (scen, pol, k) => { const rs = d.benchmark.rows.filter((r) => r.scenario === scen); return rs.reduce((a, r) => a + r[pol][k], 0) / rs.length; };
+    const agg = (scen, pol, k) => { const rs = d.benchmark.rows.filter((r) => r.scenario === scen && r[pol]); return rs.length ? rs.reduce((a, r) => a + r[pol][k], 0) / rs.length : NaN; };
     return ['steady', 'stress'].map((sc) => `<h3>${sc === 'steady' ? 'Steady demand' : 'Spike, GPS outage and accident'}</h3><table class="num"><thead><tr><th>Dispatcher</th><th>Mean wait</th><th>95th pct.</th><th>Gave up</th></tr></thead><tbody>${pols.map(([p, l]) =>
       `<tr class="${p === 'orca_learned' ? 'best' : ''}"><td>${l}</td><td>${mmss(agg(sc, p, 'mean'))}</td><td>${mmss(agg(sc, p, 'p95'))}</td><td>${fmtInt(agg(sc, p, 'lost'))}</td></tr>`).join('')}</tbody></table>`).join('');
   })() : '';
@@ -616,7 +850,30 @@ function setView(v) {
   document.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.view === v));
 }
 document.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => setView(b.dataset.view)));
-document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => src.command({ cmd: b.dataset.cmd })));
+// What if: an incident button arms placement (click the map to put it there; press the button again for
+// somewhere central). Drivers logging off, shared rides and an electric fleet need the Python server.
+let placing = null;
+const PLACE_NAME = { spike: 'demand spike', outage: 'GPS outage', accident: 'accident' };
+function setPlacing(cmd) {
+  placing = cmd;
+  document.querySelectorAll('[data-cmd]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.cmd === cmd));
+  canvas.classList.toggle('placing', !!cmd);
+  if (cmd) toast(`Click the map to place the ${PLACE_NAME[cmd]}. Press the button again to place it in the centre, Esc to cancel.`);
+}
+document.querySelectorAll('[data-cmd]').forEach((b) => (b.onclick = () => {
+  if (placing === b.dataset.cmd) { src.command({ cmd: placing }); setPlacing(null); } else setPlacing(b.dataset.cmd);
+}));
+$('#logoff').onclick = () => src.command({ cmd: 'logoff', value: 200, minutes: 30 });
+async function restartWith(opts, msg) {
+  toast(msg);
+  const res = await src.reset(+$('#fleet').value, opts);
+  if (res && res.ok === false) return;
+  lastSeq = -1; pinned = null; shownId = null; prevF = curF = null; angleInit = false; born.clear(); lastStatus.clear(); knownFx.clear();
+}
+$('#poolT').onclick = () => { const on = $('#poolT').getAttribute('aria-pressed') !== 'true';
+  restartWith({ pool: on }, on ? 'Restarting with shared rides: half the riders accept sharing, up to three per car…' : 'Restarting with solo rides…'); };
+$('#evT').onclick = () => { const on = $('#evT').getAttribute('aria-pressed') !== 'true';
+  restartWith({ ev: on ? 'smart' : null }, on ? 'Restarting with an electric fleet and the city\'s real charging stations…' : 'Restarting with petrol cars…'); };
 function setSpeed(v) { src.command({ cmd: 'speed', value: v }); document.querySelectorAll('[data-speed]').forEach((x) => x.setAttribute('aria-pressed', +x.dataset.speed === v)); }
 document.querySelectorAll('[data-speed]').forEach((b) => (b.onclick = () => setSpeed(+b.dataset.speed)));
 const PAUSE_SVG = '<svg viewBox="0 0 14 14" fill="currentColor"><rect x="2" y="1.5" width="3.4" height="11" rx=".6"/><rect x="8.6" y="1.5" width="3.4" height="11" rx=".6"/></svg>';
@@ -633,7 +890,7 @@ $('#fleet').onchange = async (e) => {
   await src.reset(n); lastSeq = -1; pinned = null; shownId = null; prevF = curF = null; angleInit = false; born.clear(); lastStatus.clear(); knownFx.clear();
 };
 $('#mode').onclick = () => toast(src.kind === 'live' ? 'Live: streaming from the Python ORCA server with the trained ETA and demand models.'
-  : 'In-browser engine: the dispatch engine runs inside this page on a sample of real NYC taxi trips. Start the Python server to stream from the full backend.');
+  : `In-browser engine: the dispatch engine runs inside this page on a sample of real ${CITY_SHORT} trips. Start the Python server to stream from the full backend.`);
 function closeWelcome() { $('#welcome').hidden = true; try { sessionStorage.setItem('orca-welcome', '1'); } catch (e) { /* ignore */ } }
 try { if (sessionStorage.getItem('orca-welcome') === '1') $('#welcome').hidden = true; } catch (e) { /* storage unavailable */ }
 $('#w-ok').onclick = closeWelcome;
@@ -644,24 +901,24 @@ function setStatus(s) { $('#mode').classList.toggle('live', s === 'live'); $('#m
 // ----------------------------------------------------------------------------- guided tour (plays like a video)
 // Each chapter: duration, caption, camera move, and what the app does on entry.
 const TOUR = [
-  { dur: 8, t: 'This is ORCA', b: REAL ? 'A live city of 1,200 cars, with ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : 'A live city of 1,200 cars. Every few seconds someone asks for a ride, and a dispatcher has to decide which car goes. ORCA makes that decision.',
-    cam: { t: [W / 2, 0, W / 2 + 6], yaw: 0.35, pitch: 0.95, dist: 420 }, orbit: 0.035 },
+  { dur: 8, t: 'This is ORCA', b: STREETS ? `${CITY_SHORT}’s real streets, 1,200 cars, and ${CITY0.name === 'manhattan' ? 'ride requests replayed from real New York taxi and Uber / Lyft trips' : CITY0.name === 'chicago' ? 'ride requests replayed from real Uber, Lyft and Via trips' : 'ride requests from a demand model (there are no public trip records for this city)'}. For each one, a dispatcher must decide which car goes. ORCA makes that decision.` : REAL_ALL ? 'A live city of 1,200 cars, with ride requests replayed from real New York taxi trips. For each one, a dispatcher must decide which car goes. ORCA makes that decision.' : 'A live city of 1,200 cars. Every few seconds someone asks for a ride, and a dispatcher has to decide which car goes. ORCA makes that decision.',
+    cam: { t: place('Midtown Center', 0.5, 0.52), yaw: 0.35, pitch: 0.95, dist: STREETS ? 560 : 420 }, orbit: 0.035 },
   { dur: 9, t: 'Two dispatchers, one city', b: 'Every request goes to two dispatchers at once. The usual rule sends the nearest car. ORCA decides differently. They share the same requests, traffic and drivers, so any difference comes from the decisions alone.',
-    cam: { t: [W / 2, 0, W / 2], yaw: 0.7, pitch: 0.78, dist: 330 }, spot: '#board', orbit: 0.02 },
+    cam: { t: place('Murray Hill', 0.5, 0.5), yaw: 0.7, pitch: 0.78, dist: STREETS ? 380 : 330 }, spot: '#board', orbit: 0.02 },
   { dur: 9, t: 'Reading the map', b: 'Yellow cars are on their way to a pickup. Blue cars have a rider on board. Grey cars are free. Rings are riders waiting, and red pins mark urgent requests.',
-    cam: { t: [W * 0.7, 0, W * 0.64], yaw: 0.95, pitch: 0.74, dist: 105 }, spot: '.key', orbit: 0.03 },
+    cam: { t: place('Times Sq/Theatre District', 0.7, 0.64), yaw: 0.95, pitch: 0.74, dist: STREETS ? 90 : 105 }, spot: '.key', orbit: 0.03 },
   { dur: 12, t: 'One decision, up close', b: 'ORCA just assigned this request. It scored ten nearby cars on drive time by road, the chance each driver accepts, how fresh its GPS is, and whether taking it leaves a busy zone short.',
     do: 'decision', spot: '#p-why' },
   { dur: 10, t: 'Why not the nearest car?', b: '', do: 'nearest', spot: '#p-why' },
   { dur: 9, t: 'Every 3 seconds, the best match for everyone', b: 'ORCA gathers requests for three seconds and solves them together with the Hungarian algorithm, so one rider\'s best car is not taken by someone who has other good options.',
-    cam: { t: [W / 2, 0, W / 2], yaw: 1.2, pitch: 0.9, dist: 300 }, orbit: 0.03 },
+    cam: { t: place('Union Sq', 0.5, 0.5), yaw: 1.2, pitch: 0.9, dist: STREETS ? 360 : 300 }, orbit: 0.03 },
   { dur: 12, t: 'Breaking the city', b: 'A network outage hits. Cars inside the red circle stop reporting GPS. The nearest-car rule keeps offering rides to cars that cannot answer. ORCA notices the silence and works around it.',
     do: 'outage' },
   { dur: 12, t: 'Seeing demand before it arrives', b: 'Now a demand spike begins. A gradient-boosted model forecasts rides per zone for the next five minutes, and ORCA moves spare cars into zones about to run short, outlined in yellow.',
     do: 'spike', spot: '#p-fc' },
-  { dur: 9, t: 'The result', b: '', do: 'result', spot: '#board', cam: { t: [W / 2, 0, W / 2], yaw: 0.6, pitch: 0.85, dist: 360 }, orbit: 0.02 },
+  { dur: 9, t: 'The result', b: '', do: 'result', spot: '#board', cam: { t: place('Midtown East', 0.5, 0.5), yaw: 0.6, pitch: 0.85, dist: STREETS ? 620 : 360 }, orbit: 0.02 },
   { dur: 10, t: 'How it is built', b: 'A Python engine with scikit-learn models and SciPy matching streams to this page over Server-Sent Events, and a hand-written WebGL2 renderer draws the city. Now try it: switch dispatchers, cause incidents, click any ring.',
-    cam: { t: [W / 2, 0, W / 2 + 6], yaw: 0.62, pitch: 0.72, dist: 340 }, orbit: 0.03 },
+    cam: { ...VIEWS.home }, orbit: 0.03 },
 ];
 const TOUR_TOTAL = TOUR.reduce((a, c) => a + c.dur, 0);
 let touring = false, tourT = 0, tourCh = -1, tourPlaying = false, voice = !CAPTURE, music = !CAPTURE, tourSaved = null;
@@ -681,6 +938,8 @@ function syncMusic() {
 $('#tVoice').setAttribute('aria-pressed', voice); $('#tMusic').setAttribute('aria-pressed', music);
 $('#tMusic').onclick = () => { music = !music; $('#tMusic').setAttribute('aria-pressed', music); syncMusic(); };
 $('#tTrack').innerHTML = TOUR.map((c, i) => `<div class="sg" data-i="${i}" style="flex:${c.dur}" title="${c.t}"><b></b></div>`).join('');
+const tourBars = [...document.querySelectorAll('#tTrack .sg b')];
+const TOUR_START = TOUR.map((_, k) => TOUR.slice(0, k).reduce((a, c) => a + c.dur, 0));
 $('#tTrack').addEventListener('click', (e) => { const s = e.target.closest('.sg'); if (s) seekChapter(+s.dataset.i); });
 $('#tPlay').onclick = () => tourTogglePlay();
 $('#tClose').onclick = () => endTour();
@@ -761,34 +1020,65 @@ function tourTick(dt) {
     const arr = pendingFly === 'outage' ? summary.fx.outages : summary.fx.spikes, o = arr.at(-1);
     if (o) { cam.flyTo({ t: [o[0], 0, o[1]], yaw: cam.yaw + 0.4, pitch: 0.95, dist: pendingFly === 'outage' ? 230 : 210 }, 2.2); pendingFly = null; }
   }
-  document.querySelectorAll('#tTrack .sg').forEach((s, k) => {
-    let st = 0; for (let j = 0; j < k; j++) st += TOUR[j].dur;
-    const p = clamp01((tourT - st) / TOUR[k].dur);
-    s.querySelector('b').style.width = p * 100 + '%';
-  });
-  $('#tTime').textContent = `${mmss(tourT)} / ${mmss(TOUR_TOTAL)}`;
+  tourBars.forEach((b, k) => { const w = Math.round(clamp01((tourT - TOUR_START[k]) / TOUR[k].dur) * 1000) / 10 + '%'; if (b.style.width !== w) b.style.width = w; });
+  setText('#tTime', `${mmss(tourT)} / ${mmss(TOUR_TOTAL)}`);
   if (c.do === 'result' && summary) { const t = resultText(); if ($('#capB').textContent !== t) $('#capB').textContent = t; }
   syncMusic();
 }
 
 // ----------------------------------------------------------------------------- main loop (and a deterministic capture mode for recording video)
+// ----------------------------------------------------------------------------- choosing a city
+(function citySwitcher() {
+  const cities = window.ORCA_CITIES || [];
+  if (cities.length < 2 || CAPTURE) return;
+  const sel = document.createElement('select');
+  sel.className = 'citysel shadow'; sel.setAttribute('aria-label', 'City');
+  sel.innerHTML = cities.map((c) => `<option value="${c.name}"${c.name === CITY0.name ? ' selected' : ''}>${c.short}</option>`).join('');
+  sel.onchange = async () => {
+    const to = sel.value;
+    // An operator switches the server's city; anyone else gets that city run in their browser.
+    if (src && src.kind === 'live' && !API) await src.post('/api/reset', { city: to });   // behind the router every city already runs
+    location.search = `?city=${to}`;
+  };
+  const host = $('.masthead');
+  host.insertBefore(sel, host.querySelector('.clock'));
+})();
+
+function followShadows() {
+  const q = 30, rad = Math.max(140, Math.min(480, Math.round((cam.dist * 0.75) / q) * q));
+  const c = [Math.round(cam.t[0] / q) * q, 0, Math.round(cam.t[2] / q) * q];
+  if (c[0] !== cam.lightCenter[0] || c[2] !== cam.lightCenter[2] || rad !== cam.lightRadius) {
+    cam.lightCenter = c; cam.lightRadius = rad;
+  }
+}
+let isNight = null;
+let stepErrors = 0;
 function step(dt, draw = true) {
   clock += dt;
-  src.tick(dt);
-  tourTick(dt);
-  keyboardCam(dt);
-  cam.update(dt);
-  drawFrame(dt); drawFx(); drawExplain();
-  if (!touring) { /* gentle idle drift is off: the user owns the camera */ }
-  tweenBoard(dt); updateCursor();
+  try {
+    src.tick(dt);
+    tourTick(dt);
+    keyboardCam(dt);
+    cam.update(dt);
+    if (STREETS) followShadows();
+    updateDaylight(curF ? curF.clock : summary ? summary.clock : CFG.START_CLOCK);
+    heatPlane.alpha = 0.9 * clamp01((cam.dist - 110) / 300);          // the demand wash is for the overview, not close-ups
+    const night = (R.night || 0) > 0.55; if (night !== isNight) { isNight = night; document.body.classList.toggle('night', night); }
+    drawFrame(dt); drawFx(); drawExplain();
+    tweenBoard(dt); updateCursor(); updateCompass();
+  } catch (e) {
+    if (stepErrors++ < 5) console.error('ORCA frame update failed', e);   // one bad frame must not stop the map drawing
+  }
   R.time = clock;
-  if (draw) R.render(cam);
+  if (draw && !glLost) R.render(cam);
 }
 addEventListener('resize', resize);
+if ('ResizeObserver' in window) new ResizeObserver(resize).observe(stage);   // the stage can change size without a window resize
 resize();
 (async () => {
   src = await pickSource();
   src.on('frame', onFrame); src.on('summary', onSummary); src.on('status', setStatus);
+  $('#whatif').hidden = src.kind !== 'live';
   setStatus(src.kind === 'live' ? 'live' : 'demo');
   if (src.kind === 'live') document.querySelectorAll('[data-speed]').forEach((x) => x.setAttribute('aria-pressed', +x.dataset.speed === src.speed));
   src.start();
@@ -799,8 +1089,9 @@ resize();
     document.title = 'capture-ready';
     return;
   }
+  if (QS.has('perf')) window.__orcaPerf = { R, cam, step, dpr: () => DPR * R.scale, frame: () => curF };   // frame-cost probes (tools/perf_probe.py)
   cam.flyTo(VIEWS.home, reduceMotion ? 0.001 : 3.4);   // the one orchestrated entrance: plan view settles into the model
   let last = performance.now();
-  const loop = (now) => { requestAnimationFrame(loop); const dt = Math.min(0.1, (now - last) / 1000); last = now; step(dt); };
+  const loop = (now) => { requestAnimationFrame(loop); const raw = (now - last) / 1000, dt = Math.min(0.1, raw); last = now; step(dt); adaptResolution(raw); };
   requestAnimationFrame(loop);
 })();
