@@ -143,6 +143,7 @@ jobs:
           # the server runs as the orca user (uid 10001), and each city wrote its ledger to the mounted volume
           docker exec orca grep -E '^Uid:\s+10001\b' /proc/1/status
           ls -l /tmp/ledger && ls /tmp/ledger | grep -q 'orca_manhattan.db'
+          test -n "$(ls -A /tmp/ledger/numba-cache)"                # compiled kernels persist on the volume
       - if: failure()
         run: docker logs orca || true
 
