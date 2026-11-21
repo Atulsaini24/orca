@@ -14,6 +14,7 @@ dependencies = [
   "joblib>=1.3",
   "threadpoolctl>=3.2",
   "numba>=0.60",                       # compiled fleet, routing and shared-ride kernels (orca/kernels.py)
+  "sqlalchemy>=2.0",                   # the trip ledger (orca/ledger.py), SQLite or PostgreSQL
 ]
 
 [project.optional-dependencies]
