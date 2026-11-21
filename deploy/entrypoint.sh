@@ -9,6 +9,9 @@ if [ "$(id -u)" = 0 ]; then
     *) dir=$(dirname "${ORCA_DB:-/app/backend/ledger/orca.db}")
        mkdir -p "$dir" && chown orca:orca "$dir" ;;
   esac
+  # setpriv keeps the environment: give the server orca's own home, where Numba caches compiled kernels
+  # (with root's HOME it has nowhere writable to cache them and every city process fails at start)
+  export HOME=/home/orca USER=orca LOGNAME=orca
   exec setpriv --reuid=orca --regid=orca --init-groups -- "$@"
 fi
 exec "$@"
