@@ -7,7 +7,9 @@ machine stays on, so visitors never wait for a cold start.
 
 ## One-time setup (about 10 minutes)
 
-Fly needs an account with a payment method. Every command runs from the repository root.
+Fly needs an account with a payment method. **Without one, Fly runs the account as a trial and stops every
+machine after 5 minutes**; the next visitor then waits through a cold start. Add a card at
+https://fly.io/trial before deploying. Every command runs from the repository root.
 
 1. Install the Fly command line and sign in (a browser window opens):
 
@@ -69,6 +71,9 @@ of the trip data.
 | Metrics (Prometheus) | `https://<app>.fly.dev/metrics` |
 
 **Adding Cambridge:** set `ORCA_CITIES = "manhattan chicago cambridge"` and `memory = "4gb"` in `fly.toml`.
+
+**Cold starts:** compiled Numba kernels are cached on the ledger volume (`numba-cache/`), so only the first boot
+after a deploy of new kernel code compiles them.
 
 **Cost:** one always-on 2 GB shared-CPU machine and a 1 GB volume. See Fly's pricing page for current rates.
 To pay only while someone is visiting, set `min_machines_running = 0`. The first visitor after a quiet
