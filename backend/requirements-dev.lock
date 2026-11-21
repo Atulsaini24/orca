@@ -21,7 +21,6 @@ gtts==2.5.1
 h11==0.14.0
 idna==3.10
 imageio-ffmpeg==0.6.0
-importlib-metadata==7.2.1 ; python_version < "3.8"
 iniconfig==2.3.1
 joblib==1.4.2
 kiwisolver==1.4.8
@@ -48,6 +47,7 @@ ruff==0.17.5
 scikit-learn==1.8.0
 scipy==1.18.0
 six==1.17.0
+sqlalchemy==2.0.27
 starlette==1.10.0
 tabulate==0.10.0
 threadpoolctl==3.6.0
@@ -56,4 +56,3 @@ tzdata==2025.1
 urllib3==2.3.0
 uvicorn==0.54.0
 yarl==1.22.0
-zipp==3.21.0 ; python_version < "3.8"

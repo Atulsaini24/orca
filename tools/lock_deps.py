@@ -24,14 +24,32 @@ from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "backend" / "pyproject.toml"
+SUPPORTED = ("3.10", "3.11", "3.12", "3.13")           # requires-python >= 3.10
 
 
 def norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def walk(roots: list[Requirement], extras_env: set[str] | None = None) -> dict[str, tuple[str, str | None]]:
-    """name -> (version, marker that gated it, if any)."""
+def previous(path: Path) -> dict[str, str]:
+    """Pins already in a lock file: name -> version."""
+    pins = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            m = re.match(r"([A-Za-z0-9_.-]+)==([^ ;]+)", line)
+            if m:
+                pins[norm(m.group(1))] = m.group(2)
+    return pins
+
+
+def walk(roots: list[Requirement], prev: dict[str, str] | None = None) -> dict[str, tuple[str, str | None]]:
+    """name -> (version, marker that gated it, if any).
+
+    A dependency gated to another supported Python or platform (async-timeout on Python < 3.11) is not
+    installed here, so its version comes from the existing lock: the result is then the same on every
+    machine, which the CI job "Dependency lock is current" checks.
+    """
+    prev = prev or {}
     out: dict[str, tuple[str, str | None]] = {}
     stack = [(r, None) for r in roots]
     while stack:
@@ -62,11 +80,18 @@ def walk(roots: list[Requirement], extras_env: set[str] | None = None) -> dict[s
                     if not any(Marker(m).evaluate({"extra": e}) for e in wanted):
                         continue
                     r.marker = None
+                elif "python_" in m and not any(r.marker.evaluate({"python_version": v, "python_full_version": v + ".0"})
+                                                for v in SUPPORTED):
+                    # only for Pythons this project does not support (e.g. importlib-metadata on < 3.8):
+                    # pinning it wherever it happened to be installed made the lock differ between machines
+                    continue
                 elif not r.marker.evaluate():
-                    # platform-specific: pin only if it happens to be installed, keep its marker
+                    # platform-specific: pin the installed version, else the one already locked; keep its marker
                     try:
                         metadata.distribution(r.name)
                     except metadata.PackageNotFoundError:
+                        if norm(r.name) in prev and norm(r.name) not in out:
+                            out[norm(r.name)] = (prev[norm(r.name)], str(r.marker))
                         continue
             stack.append((r, marker))
     return out
@@ -86,9 +111,10 @@ def main():
     runtime = [Requirement(r) for r in proj["dependencies"]]
     extras = proj.get("optional-dependencies", {})
     dev = runtime + [Requirement(r) for k in ("dev", "video", "lint") for r in extras.get(k, [])]
-    rt = walk(runtime)
-    write(ROOT / "backend" / "requirements.lock", rt, "Runtime dependencies of the ORCA backend (server, data, training)")
-    write(ROOT / "backend" / "requirements-dev.lock", walk(dev), "Runtime + development dependencies (tests, lint, tour video)")
+    rt_path, dev_path = ROOT / "backend" / "requirements.lock", ROOT / "backend" / "requirements-dev.lock"
+    rt, dv = walk(runtime, previous(rt_path)), walk(dev, previous(dev_path))
+    write(rt_path, rt, "Runtime dependencies of the ORCA backend (server, data, training)")
+    write(dev_path, dv, "Runtime + development dependencies (tests, lint, tour video)")
 
 
 if __name__ == "__main__":
