@@ -3,11 +3,15 @@
 Run with the rest of the suite; skipped automatically when Playwright's Chromium is not
 installed (`pip install playwright && playwright install chromium`).
 """
+import contextlib
+import os
+import re
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -44,7 +48,8 @@ def server():
 @pytest.fixture(scope="module")
 def browser():
     with pw.sync_playwright() as p:
-        args = ["--use-angle=d3d11", "--enable-gpu"] if sys.platform == "win32" else ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+        software = sys.platform != "win32" or os.environ.get("ORCA_E2E_SOFTWARE_GL") == "1"   # CI renders WebGL on the CPU
+        args = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] if software else ["--use-angle=d3d11", "--enable-gpu"]
         try:
             b = p.chromium.launch(args=args)
         except Exception as exc:  # browser binaries not installed
@@ -66,8 +71,34 @@ def _until(fn, timeout=20.0, what="condition"):
     raise AssertionError(f"timed out waiting for {what}")
 
 
+_open_pages: list = []
+LOCAL_HOSTS = {"127.0.0.1", "localhost", ""}
+
+
+@pytest.fixture(autouse=True)
+def _close_pages():
+    """Close each test's pages: a control room left open keeps rendering WebGL (on CI, on the CPU) and starves
+    the server and the next test's page."""
+    yield
+    while _open_pages:
+        with contextlib.suppress(Exception):
+            _open_pages.pop().close()
+
+
+def _offline(route):
+    """The tests never touch the internet: web fonts and other external requests get an empty answer at once,
+    so a slow or unreachable host cannot hold up the page's load event."""
+    if urlparse(route.request.url).hostname in LOCAL_HOSTS:
+        route.continue_()
+    else:
+        route.fulfill(status=200, body="", content_type="text/css" if route.request.resource_type == "stylesheet"
+                      else "application/octet-stream")
+
+
 def _page(browser, errors):
     page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _open_pages.append(page)
+    page.route(re.compile(r"^https?://"), _offline)            # file:// pages load untouched
     page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
     page.on("console", lambda m: m.type == "error" and errors.append(f"console: {m.text}"))
     return page
@@ -77,7 +108,7 @@ def _page(browser, errors):
 def test_home_page(server, browser):
     errors: list[str] = []
     page = _page(browser, errors)
-    page.goto(server + "/")
+    page.goto(server + "/", wait_until="domcontentloaded")
     page.get_by_role("heading", level=1).wait_for()
     assert "every ride" in page.get_by_role("heading", level=1).inner_text()
     page.get_by_text("Engine live").wait_for(timeout=10_000)              # live status from /api/health
@@ -94,7 +125,7 @@ def test_home_page(server, browser):
 def test_control_room_live(server, browser):
     errors: list[str] = []
     page = _page(browser, errors)
-    page.goto(server + "/app")
+    page.goto(server + "/app", wait_until="domcontentloaded")
     _until(lambda: page.inner_text("#modeTxt") == "Live server", what="live server status")
     _until(lambda: ":" in page.inner_text("#w-orca"), what="first wait figures")
     assert page.locator("canvas#gl").is_visible()
@@ -110,7 +141,7 @@ def test_control_room_offline_runs_real_data(browser):
     """Opened as a file, the page runs the engine in the browser on the bundled real trips of the first city."""
     errors: list[str] = []
     page = _page(browser, errors)
-    page.goto((REPO / "frontend" / "index.html").resolve().as_uri())
+    page.goto((REPO / "frontend" / "index.html").resolve().as_uri(), wait_until="domcontentloaded")
     _until(lambda: page.inner_text("#modeTxt") == "In-browser engine", what="in-browser engine")
     _until(lambda: "real Manhattan trips" in page.inner_text("#engine"), what="real-data engine label")
     real = [e for e in errors if "fonts.g" not in e and "ERR_FILE_NOT_FOUND" not in e]
@@ -122,7 +153,7 @@ def test_control_room_other_city_runs_in_browser(server, browser):
     """Regression: asking for a city the server is not simulating must not draw the server's cars on it."""
     errors: list[str] = []
     page = _page(browser, errors)
-    page.goto(server + "/app?city=chicago")
+    page.goto(server + "/app?city=chicago", wait_until="domcontentloaded")
     _until(lambda: page.inner_text("#modeTxt") == "In-browser engine", what="in-browser engine for the other city")
     _until(lambda: "real Chicago trips" in page.inner_text("#engine"), what="Chicago engine label")
     assert not [e for e in errors if "favicon" not in e], errors
