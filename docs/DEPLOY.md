@@ -53,6 +53,11 @@ gh codespace ports visibility 8000:public -c <name>      # the live link: https:
 To show it later, start the codespace (https://github.com/codespaces, or `gh codespace ssh -c <name>`); the link
 stays the same. It stops after up to 4 idle hours, and a stopped codespace uses no compute hours.
 
+Visitors first see GitHub's one-time safety page for shared codespace links ("You are about to access a
+development port served by someone's codespace") and press **Continue**; GitHub shows it on every public codespace
+port and it cannot be turned off. Some networks' DNS refuses `*.app.github.dev` names; on those, use another DNS
+resolver (for example 8.8.8.8) or mobile data.
+
 # Fly.io (the full server)
 
 ORCA runs as one Docker container: `orca.router` on port 8000 with one supervised process per city
