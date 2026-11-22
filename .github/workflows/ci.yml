@@ -71,7 +71,7 @@ jobs:
         run: |
           (cd web && npm ci --no-audit --no-fund && npm run build)
           python frontend/build.py
-          node tools/build_site.mjs          # the static site Vercel serves (vercel.json)
+          node tools/build_site.mjs          # the static site Vercel serves (docs/DEPLOY.md)
       - name: Install Chromium for browser tests
         run: python -m playwright install --with-deps chromium
       - name: Run tests

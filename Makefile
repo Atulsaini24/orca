@@ -1,4 +1,4 @@
-.PHONY: install data cities web frontend run run-all train tune bench industry test test-fast e2e lint lock video perf all
+.PHONY: install data cities web frontend site vercel run run-all train tune bench industry test test-fast e2e lint lock video perf all
 PY ?= python
 CITIES ?= manhattan chicago
 
@@ -9,6 +9,9 @@ data:      ; cd backend && $(PY) scripts/download_tlc.py --zones && $(PY) script
 cities:    ; cd backend && for c in $(CITIES); do $(PY) scripts/build_streets.py --city $$c && $(PY) scripts/build_buildings.py --city $$c || exit 1; done
 web:       ; cd web && npm run build
 frontend:  ; $(PY) frontend/build.py
+# the static site (site/) and its free deploy to Vercel; first time: npx vercel login, npx vercel link --cwd site --project orca --yes
+site:      web frontend ; node tools/build_site.mjs
+vercel:    site ; npx vercel deploy site --prod --yes
 run:       ; cd backend && $(PY) -m orca.server
 run-all:   ; cd backend && $(PY) -m orca.router
 train:     ; cd backend && for c in $(CITIES); do $(PY) -m orca.train demand --city $$c && $(PY) -m orca.train eta --city $$c && $(PY) -m orca.train eta-real --city $$c && $(PY) -m orca.calibrate --city $$c || exit 1; done

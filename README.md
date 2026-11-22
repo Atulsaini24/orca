@@ -229,7 +229,7 @@ python ../tools/loadtest.py                   # concurrent viewers
   against the view and drawn front to back, low-rise buildings and cars switch to lighter models with
   distance, the shadow map is redrawn only when the sun or the view moves, and the resolution adapts
   to keep frames under about 21 ms. City data is served gzip-compressed with cache revalidation.
-* **Deployable**: free static hosting on Vercel, with the simulation running in the visitor's browser; the full server as a Docker multi-stage image with health check, a one-click GitHub deploy to Fly.io, and [`render.yaml`](render.yaml). See [`docs/DEPLOY.md`](docs/DEPLOY.md).
+* **Deployable**: live at https://orca-tau-ten.vercel.app (free static hosting on Vercel, the simulation running in the visitor's browser); the full server as a Docker multi-stage image with health check, a one-click GitHub deploy to Fly.io, and [`render.yaml`](render.yaml). See [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 Design notes, the data pipelines and how this would scale out: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

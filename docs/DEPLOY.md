@@ -4,30 +4,33 @@ Two ways to put ORCA online:
 
 | | Vercel (free) | Fly.io (paid, about $10-15 a month) |
 |---|---|---|
-| What runs | The home page and the control room as static files; the dispatch simulation runs in each visitor's browser on the bundled real trips | The Python server: one process per city, live streaming to every viewer |
+| What runs | The home page and the control room as static files; a lighter JavaScript version of the dispatcher runs in each visitor's browser on a 24,000-trip sample of the real trips | The Python server: one process per city, the learned ETA and demand models, the full trip replay, live streaming to every viewer |
 | Cost | Free (Hobby plan, personal non-commercial use), no card | One always-on 2 GB machine and a 1 GB volume |
 | Sleeps | Never | Never, once a card is on the account (a trial account stops machines after 5 minutes) |
 | Not available | The server-only what-ifs (200 drivers log off, shared rides, electric fleet), the live API, `/metrics` | Nothing |
 
 ## Vercel (free)
 
-[`vercel.json`](../vercel.json) builds the home page and assembles the site with
-[`tools/build_site.mjs`](../tools/build_site.mjs), at the same paths the server uses (`/`, `/app`, `/app/data/...`,
-`/media/...`). There is no `/api`, so the control room runs its in-browser engine, which makes the same decisions as
-the server for each city. CI builds the same site on every pull request.
+Live at **https://orca-tau-ten.vercel.app**.
 
-One-time setup (about 5 minutes):
+[`tools/build_site.mjs`](../tools/build_site.mjs) assembles `site/` at the same paths the server uses (`/`, `/app`,
+`/app/data/...`, `/media/...`) and gives it its own `vercel.json` ([`deploy/vercel-site.json`](../deploy/vercel-site.json): the
+`/app` rewrite, the server's security headers and caching). There is no `/api`, so the control room runs its
+in-browser engine: the same scoring rules, tuned weights and street speeds as the server for each city, with simpler
+models (a grid demand forecast instead of the learned per-zone models, no learned ETA model) on a 24,000-trip sample.
+CI builds the same site on every pull request.
 
-1. Sign in at https://vercel.com with your GitHub account (the Hobby plan is free).
-2. **Add New → Project**, import the `orca` repository and press **Deploy**. Vercel reads `vercel.json`; leave the
-   framework preset, build and output settings as they are.
-3. The tour video and its poster are stored with Git LFS: in the project's **Settings → Git**, turn on
-   **Git Large File Storage (LFS)**, then redeploy (**Deployments → ⋯ → Redeploy**). Without it the site works, only
-   the video section is empty, and the build log says so.
+Vercel deploys the `site/` folder as it is, with nothing built on Vercel's side. Deploying the repository root instead
+does not work: Vercel finds the `Dockerfile` there and sets the project up as a container.
 
-After that, every push to `main` deploys to `https://<project>.vercel.app`, and every pull request gets its own
-preview link. To try the same site locally: `npm ci --prefix web && npm run build --prefix web && python frontend/build.py && node tools/build_site.mjs`,
-then serve `site/` with any static server, for example `python -m http.server --directory site`.
+```bash
+npx vercel login                                   # once: approve in the browser (free Hobby plan, no card)
+npx vercel link --cwd site --project orca --yes    # once per clone, after a first `make site`
+make vercel                                        # builds site/ and deploys it to production
+```
+
+`make site` alone builds the folder; serve it locally with `python -m http.server --directory site` to try it.
+`site/.vercel` keeps the project link across rebuilds.
 
 # Fly.io (the full server)
 

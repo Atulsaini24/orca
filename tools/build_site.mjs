@@ -1,13 +1,17 @@
 // Assemble ORCA as a static site (site/) for free static hosting (Vercel; see docs/DEPLOY.md).
 //
 //   npm ci --prefix web && npm run build --prefix web && node tools/build_site.mjs
+//   npx vercel deploy site --prod        # deploys the folder as it is: nothing is built on Vercel
+//
+// site/ carries its own vercel.json (from deploy/vercel-site.json: the /app rewrite, security headers, caching).
+// Vercel deploys only that folder: at the repository root it would find the Dockerfile and build a container.
 //
 // Same paths as the Python server, so every link keeps working:
 //   /              home page (web/dist)
 //   /app/          control room (frontend/index.html), city data under /app/data/
 //   /media/...     tour video, captions, poster, music
-// There is no /api: the control room's health check gets a 404 and it runs the dispatch simulation in the
-// visitor's browser on the bundled real trips (the same decisions as the server, per frontend/build.py).
+// There is no /api: the control room's health check gets a 404 and it runs its lighter in-browser engine (the
+// server's scoring rules and tuned weights, simpler models) on a 24,000-trip sample of each city's real trips.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,14 +27,16 @@ for (const [path, how] of [['web/dist/index.html', 'npm run build --prefix web']
   if (!existsSync(join(ROOT, path))) fail(`${path} is missing (${how})`);
 }
 
-rmSync(SITE, { recursive: true, force: true });
+// start clean, but keep site/.vercel: the link to the Vercel project, so the next deploy goes to the same site
+if (existsSync(SITE)) for (const e of readdirSync(SITE)) if (e !== '.vercel') rmSync(join(SITE, e), { recursive: true, force: true });
 cpSync(join(ROOT, 'web', 'dist'), SITE, { recursive: true });
 mkdirSync(join(SITE, 'app'), { recursive: true });
 cpSync(join(ROOT, 'frontend', 'index.html'), join(SITE, 'app', 'index.html'));
 cpSync(join(ROOT, 'frontend', 'data'), join(SITE, 'app', 'data'), { recursive: true });
+cpSync(join(ROOT, 'deploy', 'vercel-site.json'), join(SITE, 'vercel.json'));
 
-// Git LFS stores the media; without LFS a checkout holds 130-byte pointer files instead (Vercel: enable Git LFS in
-// the project's Git settings). The site still works without them, only the tour video and poster are missing.
+// Git LFS stores the media; a clone made without Git LFS holds 130-byte pointer files instead. The site still works
+// without them, only the tour video and poster are missing.
 mkdirSync(join(SITE, 'media'), { recursive: true });
 let pointers = 0;
 for (const name of MEDIA) {
