@@ -21,4 +21,5 @@ cd ..
 npm ci --prefix web --no-audit --no-fund
 npm run build --prefix web
 python frontend/build.py
-echo "ORCA is ready. The live server starts with the codespace (.devcontainer/start.sh), on port 8000."
+touch .devcontainer/.ready                                  # the orca-server feature starts the server now
+echo "ORCA is ready: the live server starts within seconds on port 8000 (log: /tmp/orca.log)."
