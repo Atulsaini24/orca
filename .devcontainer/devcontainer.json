@@ -1,0 +1,16 @@
+{
+  // GitHub Codespaces: the full live server, free with a GitHub account (see docs/DEPLOY.md).
+  // Created once: setup.sh installs the locked dependencies, prepares Manhattan's real trips and builds the pages.
+  // Every start: start.sh runs the server on port 8000; make the port public to share the live link.
+  "name": "ORCA live server",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    "ghcr.io/devcontainers/features/git-lfs:1": {}
+  },
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash .devcontainer/start.sh",
+  "forwardPorts": [8000],
+  "portsAttributes": { "8000": { "label": "ORCA live server", "onAutoForward": "silent" } }
+}
