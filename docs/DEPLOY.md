@@ -1,13 +1,13 @@
 # Deploying ORCA
 
-Two ways to put ORCA online:
+Three ways to put ORCA online:
 
-| | Vercel (free) | Fly.io (paid, about $10-15 a month) |
-|---|---|---|
-| What runs | The home page and the control room as static files; a lighter JavaScript version of the dispatcher runs in each visitor's browser on a 24,000-trip sample of the real trips | The Python server: one process per city, the learned ETA and demand models, the full trip replay, live streaming to every viewer |
-| Cost | Free (Hobby plan, personal non-commercial use), no card | One always-on 2 GB machine and a 1 GB volume |
-| Sleeps | Never | Never, once a card is on the account (a trial account stops machines after 5 minutes) |
-| Not available | The server-only what-ifs (200 drivers log off, shared rides, electric fleet), the live API, `/metrics` | Nothing |
+| | Vercel (free) | GitHub Codespaces (free) | Fly.io (paid, about $10-15 a month) |
+|---|---|---|---|
+| What runs | The home page and control room as static files; a lighter JavaScript version of the dispatcher runs in each visitor's browser on a 24,000-trip sample of the real trips | The full Python server (Manhattan): the learned ETA and demand models, the full real trip replay, live streaming to every viewer | The full Python server, one process per city |
+| Cost | Free (Hobby plan, personal non-commercial use), no card | Free with a GitHub account, no card: 120 core-hours a month, about 60 hours on the 2-core machine | One always-on 2 GB machine and a 1 GB volume |
+| Always on | Yes | No: it stops after up to 4 idle hours; start it again with one click | Yes, once a card is on the account (a trial account stops machines after 5 minutes) |
+| Best for | The permanent public link | Live demos: interviews, judging, showing the real server | Production |
 
 ## Vercel (free)
 
@@ -35,6 +35,23 @@ make vercel                                        # builds site/ and deploys it
 The Vercel project is connected to the GitHub repository, but the root [`vercel.json`](../vercel.json) turns off
 Vercel's own deploys on push (`git.deploymentEnabled: false`): they would build from the repository root, which does
 not produce the site. Production changes only through `make vercel`.
+
+## GitHub Codespaces (free, on demand)
+
+[`.devcontainer/`](../.devcontainer) runs the full live server in a codespace. Creating it (once, about 10 minutes)
+installs the locked dependencies, downloads and prepares Manhattan's real trips and builds the pages; every start
+then runs the server on port 8000 (`.devcontainer/start.sh`, log in `/tmp/orca.log`). Manhattan runs on the server;
+Chicago and Cambridge, picked in the control room, run in the visitor's browser. Anyone with the link may use the
+operator controls (`ORCA_OPEN_CONTROLS=1` in `start.sh`).
+
+```bash
+gh auth refresh -h github.com -s codespace               # once: let the GitHub CLI manage codespaces
+gh codespace create -R Atulsaini24/orca -b main -m basicLinux32gb --idle-timeout 240m --display-name orca-live
+gh codespace ports visibility 8000:public -c <name>      # the live link: https://<name>-8000.app.github.dev
+```
+
+To show it later, start the codespace (https://github.com/codespaces, or `gh codespace ssh -c <name>`); the link
+stays the same. It stops after up to 4 idle hours, and a stopped codespace uses no compute hours.
 
 # Fly.io (the full server)
 
