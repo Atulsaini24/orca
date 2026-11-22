@@ -32,6 +32,10 @@ make vercel                                        # builds site/ and deploys it
 `make site` alone builds the folder; serve it locally with `python -m http.server --directory site` to try it.
 `site/.vercel` keeps the project link across rebuilds.
 
+The Vercel project is connected to the GitHub repository, but the root [`vercel.json`](../vercel.json) turns off
+Vercel's own deploys on push (`git.deploymentEnabled: false`): they would build from the repository root, which does
+not produce the site. Production changes only through `make vercel`.
+
 # Fly.io (the full server)
 
 ORCA runs as one Docker container: `orca.router` on port 8000 with one supervised process per city
