@@ -40,9 +40,9 @@ not produce the site. Production changes only through `make vercel`.
 
 [`.devcontainer/`](../.devcontainer) runs the full live server in a codespace. Creating it (once, about 10 minutes)
 installs the locked dependencies, downloads and prepares Manhattan's real trips and builds the pages; every start
-then runs the server on port 8000 (`.devcontainer/start.sh`, log in `/tmp/orca.log`). Manhattan runs on the server;
+keeps the server running on port 8000 (the `orca-server` container feature, log in `/tmp/orca.log`). Manhattan runs on the server;
 Chicago and Cambridge, picked in the control room, run in the visitor's browser. Anyone with the link may use the
-operator controls (`ORCA_OPEN_CONTROLS=1` in `start.sh`).
+operator controls (`ORCA_OPEN_CONTROLS=1` in `.devcontainer/orca-server/orca-server-init.sh`).
 
 ```bash
 gh auth refresh -h github.com -s codespace               # once: let the GitHub CLI manage codespaces

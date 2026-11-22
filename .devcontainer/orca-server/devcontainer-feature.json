@@ -1,0 +1,7 @@
+{
+  "id": "orca-server",
+  "version": "1.0.0",
+  "name": "ORCA live server",
+  "description": "Keeps ORCA's live server running on port 8000 whenever the container runs, once setup.sh has finished. Runs as a container entrypoint: Codespaces stops processes that lifecycle commands (postStartCommand) start in the background.",
+  "entrypoint": "/usr/local/share/orca-server-init.sh"
+}
