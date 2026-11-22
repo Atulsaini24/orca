@@ -4,7 +4,7 @@ Two ways to put ORCA online:
 
 | | Vercel (free) | Fly.io (paid, about $10-15 a month) |
 |---|---|---|
-| What runs | The home page and the control room as static files; the dispatch simulation runs in each visitor's browser on the bundled real trips | The Python server: one process per city, live streaming to every viewer |
+| What runs | The home page and the control room as static files; a lighter JavaScript version of the dispatcher runs in each visitor's browser on a 24,000-trip sample of the real trips | The Python server: one process per city, the learned ETA and demand models, the full trip replay, live streaming to every viewer |
 | Cost | Free (Hobby plan, personal non-commercial use), no card | One always-on 2 GB machine and a 1 GB volume |
 | Sleeps | Never | Never, once a card is on the account (a trial account stops machines after 5 minutes) |
 | Not available | The server-only what-ifs (200 drivers log off, shared rides, electric fleet), the live API, `/metrics` | Nothing |
@@ -16,8 +16,9 @@ Live at **https://orca-tau-ten.vercel.app**.
 [`tools/build_site.mjs`](../tools/build_site.mjs) assembles `site/` at the same paths the server uses (`/`, `/app`,
 `/app/data/...`, `/media/...`) and gives it its own `vercel.json` ([`deploy/vercel-site.json`](../deploy/vercel-site.json): the
 `/app` rewrite, the server's security headers and caching). There is no `/api`, so the control room runs its
-in-browser engine, which makes the same decisions as the server for each city. CI builds the same site on every pull
-request.
+in-browser engine: the same scoring rules, tuned weights and street speeds as the server for each city, with simpler
+models (a grid demand forecast instead of the learned per-zone models, no learned ETA model) on a 24,000-trip sample.
+CI builds the same site on every pull request.
 
 Vercel deploys the `site/` folder as it is, with nothing built on Vercel's side. Deploying the repository root instead
 does not work: Vercel finds the `Dockerfile` there and sets the project up as a container.

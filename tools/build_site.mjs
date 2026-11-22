@@ -10,8 +10,8 @@
 //   /              home page (web/dist)
 //   /app/          control room (frontend/index.html), city data under /app/data/
 //   /media/...     tour video, captions, poster, music
-// There is no /api: the control room's health check gets a 404 and it runs the dispatch simulation in the
-// visitor's browser on the bundled real trips (the same decisions as the server, per frontend/build.py).
+// There is no /api: the control room's health check gets a 404 and it runs its lighter in-browser engine (the
+// server's scoring rules and tuned weights, simpler models) on a 24,000-trip sample of each city's real trips.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
